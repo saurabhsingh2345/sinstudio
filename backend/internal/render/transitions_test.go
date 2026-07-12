@@ -200,6 +200,36 @@ func TestTitleRuns(t *testing.T) {
 	}
 }
 
+// TestOpacityKeyframesRun confirms opacity keyframes compile to a geq alpha
+// animation ffmpeg accepts.
+func TestOpacityKeyframesRun(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "a.mp4")
+	makeTestClip(t, clip, "red")
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 320, Height: 180, FPS: 24},
+		Tracks: []schema.Track{{ID: "v", Kind: schema.TrackVideo, Clips: []schema.Clip{{
+			ID: "c1", AssetID: "a", Start: 0, In: 0, Out: 2,
+			Transform: schema.Transform{Scale: 1, Opacity: 1},
+			Keyframes: map[string][]schema.Keyframe{"opacity": {{T: 0, Value: 0}, {T: 1, Value: 1}, {T: 2, Value: 0}}},
+		}}}},
+	}
+	resolve := func(id string) (string, bool) { return clip, id == "a" }
+	plan, err := Compile(doc, resolve, filepath.Join(dir, "out.mp4"), dir, Options{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !strings.Contains(strings.Join(plan.Args, " "), "geq=") {
+		t.Errorf("expected geq alpha filter for opacity keyframes")
+	}
+	if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg failed: %v\n%s", err, b)
+	}
+}
+
 func makeTestClip(t *testing.T, path, color string) {
 	t.Helper()
 	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i",

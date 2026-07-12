@@ -17,6 +17,7 @@ interface StudioState {
   playhead: number; // seconds
   playing: boolean;
   pxPerSec: number;
+  snapLine: number | null; // transient: seconds of the active snap guide (null = hidden)
 
   load: (id: string) => Promise<void>;
   save: () => Promise<void>;
@@ -25,11 +26,15 @@ interface StudioState {
   redo: () => void;
 
   addAsset: (a: Asset) => void;
+  removeAsset: (assetId: string) => void;
   addClip: (trackId: string, assetId: string, start: number) => void;
   updateClip: (trackId: string, clipId: string, patch: Partial<Clip>) => void;
   removeClip: (trackId: string, clipId: string) => void;
   splitAtPlayhead: () => void;
   deleteSelected: () => void;
+  rippleDelete: () => void;
+  copySelected: () => void;
+  paste: () => void;
   nudgePlayhead: (delta: number) => void;
 
   setCues: (cues: CaptionCue[]) => void;
@@ -44,7 +49,7 @@ interface StudioState {
   moveTrack: (trackId: string, dir: -1 | 1) => void;
   toggleTrackFlag: (trackId: string, flag: "muted" | "hidden" | "solo") => void;
 
-  addKeyframe: (trackId: string, clipId: string, prop: "x" | "y") => void;
+  addKeyframe: (trackId: string, clipId: string, prop: "x" | "y" | "opacity") => void;
   updateKeyframe: (trackId: string, clipId: string, prop: string, index: number, value: number) => void;
   removeKeyframe: (trackId: string, clipId: string, prop: string, index: number) => void;
   updateEffect: (trackId: string, clipId: string, key: keyof NonNullable<Clip["effects"]>, value: number) => void;
@@ -63,9 +68,11 @@ interface StudioState {
   setPlayhead: (t: number) => void;
   setPlaying: (p: boolean) => void;
   setZoom: (px: number) => void;
+  setSnapLine: (t: number | null) => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+let clipboard: { trackId: string; clip: Clip }[] = [];
 
 export const useStudio = create<StudioState>((set, get) => ({
   doc: null,
@@ -79,6 +86,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   playhead: 0,
   playing: false,
   pxPerSec: 80,
+  snapLine: null,
 
   load: async (id) => {
     const doc = await api.getProject(id);
@@ -130,6 +138,13 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
 
   addAsset: (a) => get().mutate((d) => d.assets.push(a)),
+
+  // removeAsset drops an asset and any clips that reference it.
+  removeAsset: (assetId) =>
+    get().mutate((d) => {
+      d.assets = d.assets.filter((a) => a.id !== assetId);
+      for (const t of d.tracks) if (t.clips) t.clips = t.clips.filter((c) => c.assetId !== assetId);
+    }),
 
   addClip: (trackId, assetId, start) =>
     get().mutate((d) => {
@@ -204,6 +219,60 @@ export const useStudio = create<StudioState>((set, get) => ({
     } else if (selCue) {
       get().removeCue(selCue);
     }
+  },
+
+  // rippleDelete removes the selection and closes the gaps: on each track, later
+  // clips shift left by the total duration of deleted clips that preceded them.
+  rippleDelete: () => {
+    const { selClips } = get();
+    if (!selClips.length) return;
+    const ids = new Set(selClips.map((c) => c.clipId));
+    get().mutate((d) => {
+      for (const t of d.tracks) {
+        if (!t.clips) continue;
+        const dead = t.clips.filter((c) => ids.has(c.id));
+        if (!dead.length) continue;
+        t.clips = t.clips.filter((c) => !ids.has(c.id));
+        for (const c of t.clips) {
+          const shift = dead
+            .filter((x) => x.start < c.start)
+            .reduce((s, x) => s + (x.out - x.in), 0);
+          c.start = Math.max(0, c.start - shift);
+        }
+      }
+    });
+    set({ selClip: null, selClips: [] });
+  },
+
+  copySelected: () => {
+    const { doc, selClips } = get();
+    if (!doc) return;
+    clipboard = selClips
+      .map((s) => {
+        const c = doc.tracks.find((t) => t.id === s.trackId)?.clips?.find((cc) => cc.id === s.clipId);
+        return c ? { trackId: s.trackId, clip: structuredClone(c) } : null;
+      })
+      .filter(Boolean) as { trackId: string; clip: Clip }[];
+  },
+
+  // paste inserts the clipboard at the playhead (earliest clip anchored there),
+  // keeping relative offsets, on the original tracks, and selects the copies.
+  paste: () => {
+    const { doc, playhead } = get();
+    if (!doc || !clipboard.length) return;
+    const earliest = Math.min(...clipboard.map((c) => c.clip.start));
+    const delta = playhead - earliest;
+    const pasted: { trackId: string; clipId: string }[] = [];
+    get().mutate((d) => {
+      for (const { trackId, clip } of clipboard) {
+        const track = d.tracks.find((t) => t.id === trackId) || d.tracks.find((t) => t.kind === "video");
+        if (!track) continue;
+        const id = newId("clip_");
+        (track.clips ||= []).push({ ...structuredClone(clip), id, start: Math.max(0, clip.start + delta) });
+        pasted.push({ trackId: track.id, clipId: id });
+      }
+    });
+    if (pasted.length) set({ selClips: pasted, selClip: pasted[pasted.length - 1], selCue: null });
   },
 
   nudgePlayhead: (delta) => set((s) => ({ playhead: Math.max(0, s.playhead + delta) })),
@@ -411,6 +480,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   setPlayhead: (t) => set({ playhead: Math.max(0, t) }),
   setPlaying: (p) => set({ playing: p }),
   setZoom: (px) => set({ pxPerSec: Math.min(400, Math.max(20, px)) }),
+  setSnapLine: (t) => set({ snapLine: t }),
 }));
 
 // Duration of the whole project = furthest clip/cue end.

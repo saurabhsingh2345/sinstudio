@@ -92,6 +92,7 @@ export function Timeline() {
     addMarker,
     removeMarker,
     updateMarker,
+    snapLine,
   } = useStudio();
   const scrollRef = useRef<HTMLDivElement>(null);
   if (!doc) return null;
@@ -152,7 +153,9 @@ export function Timeline() {
           {/* ruler */}
           <div
             className="tl-ruler"
-            onPointerDown={(e) => setPlayhead(snapScalar(secAt(e.clientX), snapPoints(doc, new Set()), pxPerSec))}
+            onPointerDown={(e) =>
+              setPlayhead(magneticScalar(secAt(e.clientX), snapPoints(doc, new Set()), pxPerSec).value)
+            }
           >
             {ticks.map((s) => (
               <div key={s} className="tl-tick" style={{ left: LABEL_W + s * pxPerSec }}>
@@ -193,6 +196,11 @@ export function Timeline() {
               </div>
             </div>
           ))}
+
+          {/* snap guide */}
+          {snapLine != null && (
+            <div className="tl-snapline" style={{ left: LABEL_W + snapLine * pxPerSec, height: "100%" }} />
+          )}
 
           {/* playhead */}
           <div
@@ -307,46 +315,61 @@ function snapPoints(doc: EditDoc, exclude: Set<string>): number[] {
 }
 
 // magneticStart snaps a dragged clip's start so that either edge lands on a snap
-// point within an 8px tolerance; falls back to the 0.1s grid otherwise.
-function magneticStart(rawStart: number, dur: number, pts: number[], pxPerSec: number): number {
+// point within an 8px tolerance; falls back to the 0.1s grid otherwise. snapAt is
+// the point that caught (for the guide line), or null.
+function magneticStart(
+  rawStart: number,
+  dur: number,
+  pts: number[],
+  pxPerSec: number
+): { start: number; snapAt: number | null } {
   const tol = 8 / pxPerSec;
   let best: number | null = null;
   let bestD = tol;
+  let snapAt: number | null = null;
   for (const p of pts) {
     const ds = Math.abs(p - rawStart);
     if (ds < bestD) {
       bestD = ds;
       best = p;
+      snapAt = p;
     }
     const de = Math.abs(p - (rawStart + dur));
     if (de < bestD) {
       bestD = de;
       best = p - dur;
+      snapAt = p;
     }
   }
-  return Math.max(0, best != null ? best : snap(rawStart));
+  return { start: Math.max(0, best != null ? best : snap(rawStart)), snapAt: best != null ? snapAt : null };
 }
 
-// snapScalar snaps a single time (e.g. the playhead) to the nearest point.
-function snapScalar(t: number, pts: number[], pxPerSec: number): number {
+// magneticScalar snaps a single time (playhead / trim edge) to the nearest point.
+function magneticScalar(t: number, pts: number[], pxPerSec: number): { value: number; snapAt: number | null } {
   const tol = 8 / pxPerSec;
   let best = t;
   let bestD = tol;
+  let snapAt: number | null = null;
   for (const p of pts) {
     const d = Math.abs(p - t);
     if (d < bestD) {
       bestD = d;
       best = p;
+      snapAt = p;
     }
   }
-  return Math.max(0, best);
+  return { value: Math.max(0, best), snapAt };
 }
 
 function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSec: number }) {
-  const { updateClip, select, toggleSelect, batchUpdateClips, selClips, doc, setPlayhead } = useStudio();
+  const { updateClip, select, toggleSelect, batchUpdateClips, selClips, doc, setPlayhead, setSnapLine } = useStudio();
   const selected = selClips.some((s) => s.clipId === clip.id);
   const kfTimes = clip.keyframes
-    ? Array.from(new Set([...(clip.keyframes.x || []), ...(clip.keyframes.y || [])].map((k) => k.t))).sort((a, b) => a - b)
+    ? Array.from(
+        new Set(
+          [...(clip.keyframes.x || []), ...(clip.keyframes.y || []), ...(clip.keyframes.opacity || [])].map((k) => k.t)
+        )
+      ).sort((a, b) => a - b)
     : [];
   const dur = clip.out - clip.in;
   const asset = doc?.assets.find((a) => a.id === clip.assetId);
@@ -380,13 +403,15 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
       const pts = doc ? snapPoints(doc, new Set(selClips.map((s) => s.clipId))) : [0];
       const move = (ev: PointerEvent) => {
         const d = (ev.clientX - x0) / pxPerSec;
-        const snappedStart = magneticStart(draggedBase + d, dragDur, pts, pxPerSec);
-        const delta = snappedStart - draggedBase;
+        const r = magneticStart(draggedBase + d, dragDur, pts, pxPerSec);
+        const delta = r.start - draggedBase;
+        setSnapLine(r.snapAt);
         batchUpdateClips(
           bases.map((b) => ({ trackId: b.trackId, clipId: b.clipId, patch: { start: Math.max(0, b.start + delta) } }))
         );
       };
       const up = () => {
+        setSnapLine(null);
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
       };
@@ -404,16 +429,23 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
     const move = (ev: PointerEvent) => {
       const d = (ev.clientX - x0) / pxPerSec;
       if (mode === "move") {
-        updateClip(track.id, clip.id, { start: magneticStart(o.start + d, moveDur, pts, pxPerSec) });
+        const r = magneticStart(o.start + d, moveDur, pts, pxPerSec);
+        setSnapLine(r.snapAt);
+        updateClip(track.id, clip.id, { start: r.start });
       } else if (mode === "l") {
-        const nin = Math.min(Math.max(0, o.in + d), o.out - 0.05);
+        const r = magneticScalar(o.start + d, pts, pxPerSec); // snap the leading edge
+        setSnapLine(r.snapAt);
+        const nin = Math.min(Math.max(0, o.in + (r.value - o.start)), o.out - 0.05);
         updateClip(track.id, clip.id, { in: nin, start: Math.max(0, o.start + (nin - o.in)) });
       } else {
-        const nout = Math.min(Math.max(o.in + 0.05, o.out + d), maxOut);
+        const r = magneticScalar(o.start + (o.out - o.in) + d, pts, pxPerSec); // snap the trailing edge
+        setSnapLine(r.snapAt);
+        const nout = Math.min(Math.max(o.in + 0.05, o.in + (r.value - o.start)), maxOut);
         updateClip(track.id, clip.id, { out: nout });
       }
     };
     const up = () => {
+      setSnapLine(null);
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };

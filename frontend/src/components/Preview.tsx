@@ -70,7 +70,7 @@ function clipBox(clip: Clip, t: number, stageW: number, stageH: number, W: numbe
   const isFade = (ty?: string) => ty === "fade" || ty === "dissolve";
   const alphaIn = Math.max(clip.fadeIn || 0, isFade(clip.transitionIn?.type) ? clip.transitionIn!.duration || DEF_TRANS : 0);
   const alphaOut = Math.max(clip.fadeOut || 0, isFade(clip.transitionOut?.type) ? clip.transitionOut!.duration || DEF_TRANS : 0);
-  let opacity = clip.transform.opacity || 1;
+  let opacity = kf.opacity?.length ? kfValue(kf.opacity, localT) : clip.transform.opacity || 1;
   if (alphaIn > 0 && t < start + alphaIn) opacity *= clamp01((t - start) / alphaIn);
   if (alphaOut > 0 && t > end - alphaOut) opacity *= clamp01((end - t) / alphaOut);
 

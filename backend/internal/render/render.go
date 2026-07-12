@@ -25,9 +25,10 @@ type AssetResolver func(assetID string) (string, bool)
 type Options struct {
 	Preset string  `json:"preset"` // "" (source) | shorts | square | 4k | portrait4k
 	Format string  `json:"format"` // "" (mp4) | mp4 | webm | gif | mov
-	From   float64 `json:"from"`   // range start seconds
-	To     float64 `json:"to"`     // range end seconds (0 = end)
-	FPS    int     `json:"fps"`    // override output fps (0 = doc fps)
+	From    float64 `json:"from"`    // range start seconds
+	To      float64 `json:"to"`      // range end seconds (0 = end)
+	FPS     int     `json:"fps"`     // override output fps (0 = doc fps)
+	FrameAt float64 `json:"frameAt"` // >0: render a single PNG frame at this time
 }
 
 // visual is a resolved visual clip ready for the filtergraph.
@@ -227,13 +228,21 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			// Looped still (title PNG): bound to its span, PTS shifted to start.
 			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", v.path)
 			fmt.Fprintf(&fc,
-				"[%d:v]setpts=PTS-STARTPTS+%.3f/TB,scale=%d:%d:flags=bicubic,format=rgba,colorchannelmixer=aa=%.3f",
-				inputIdx, v.start, v.sw, v.sh, v.opacity)
+				"[%d:v]setpts=PTS-STARTPTS+%.3f/TB,scale=%d:%d:flags=bicubic,format=rgba",
+				inputIdx, v.start, v.sw, v.sh)
 		} else {
 			args = append(args, "-i", v.path)
 			fmt.Fprintf(&fc,
-				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB,scale=%d:%d:flags=bicubic,format=rgba,colorchannelmixer=aa=%.3f",
-				inputIdx, v.in, v.out, sp, v.start, v.sw, v.sh, v.opacity)
+				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB,scale=%d:%d:flags=bicubic,format=rgba",
+				inputIdx, v.in, v.out, sp, v.start, v.sw, v.sh)
+		}
+		// Opacity: animated alpha via geq when keyframed, else a constant multiplier.
+		if okf := v.keyframes["opacity"]; len(okf) > 0 {
+			fmt.Fprintf(&fc,
+				",geq=r='p(X,Y)':g='p(X,Y)':b='p(X,Y)':a='p(X,Y)*clip(%s,0,1)'",
+				kfOpacityExpr(v.start, okf))
+		} else {
+			fmt.Fprintf(&fc, ",colorchannelmixer=aa=%.3f", v.opacity)
 		}
 		// Per-clip color/blur effects.
 		fc.WriteString(effectFilters(v.effects))
@@ -360,6 +369,13 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	} else {
 		args = append(args, "-map", vlab)
 	}
+
+	// Single-frame mode: seek the composited stream and write one PNG (no audio).
+	if opts.FrameAt > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%.3f", opts.FrameAt), "-frames:v", "1", "-update", "1", outPath)
+		return &Plan{Args: args, Dur: 0}, nil
+	}
+
 	// map audio + codec
 	if haveAudio && !gif {
 		args = append(args, "-map", alab)
@@ -614,6 +630,28 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 		still: true,
 	})
 	return nil
+}
+
+// kfOpacityExpr builds a bare piecewise-linear 0..1 expression of geq time T
+// (clip-local via T-S), for animating a clip's alpha. Held outside the range.
+func kfOpacityExpr(S float64, kfs []schema.Keyframe) string {
+	pts := append([]schema.Keyframe(nil), kfs...)
+	sort.SliceStable(pts, func(i, j int) bool { return pts[i].T < pts[j].T })
+	if len(pts) == 1 {
+		return fmt.Sprintf("%.4f", pts[0].Value)
+	}
+	local := fmt.Sprintf("(T-%.3f)", S)
+	expr := fmt.Sprintf("%.4f", pts[len(pts)-1].Value)
+	for i := len(pts) - 2; i >= 0; i-- {
+		a, b := pts[i], pts[i+1]
+		dt := b.T - a.T
+		if dt < 1e-3 {
+			dt = 1e-3
+		}
+		seg := fmt.Sprintf("(%.4f+(%.4f)*(%s-%.3f)/%.3f)", a.Value, b.Value-a.Value, local, a.T, dt)
+		expr = fmt.Sprintf("if(lt(%s,%.3f),%s,%s)", local, b.T, seg, expr)
+	}
+	return fmt.Sprintf("if(lt(%s,%.3f),%.4f,%s)", local, pts[0].T, pts[0].Value, expr)
 }
 
 // playSpan is the on-timeline duration of a source range after speed scaling.

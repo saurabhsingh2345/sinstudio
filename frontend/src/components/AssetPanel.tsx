@@ -12,7 +12,7 @@ const laneFor = (a: Asset) =>
   a.kind === "audio" ? "t_music" : a.kind === "image" ? "t_overlay" : "t_video";
 
 export function AssetPanel({ projectId }: { projectId: string }) {
-  const { doc, addAsset, addClip, playhead } = useStudio();
+  const { doc, addAsset, addClip, removeAsset, playhead } = useStudio();
   const fileRef = useRef<HTMLInputElement>(null);
   const [gen, setGen] = useState(false);
   const [genInit, setGenInit] = useState<string | undefined>();
@@ -90,6 +90,16 @@ export function AssetPanel({ projectId }: { projectId: string }) {
               {a.hasAlpha ? " · alpha" : ""}
             </div>
           </div>
+          <button
+            className="asset-rm"
+            title="Remove asset (and its clips)"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (confirm(`Remove "${a.name}" and any clips using it?`)) removeAsset(a.id);
+            }}
+          >
+            ✕
+          </button>
         </div>
       ))}
 

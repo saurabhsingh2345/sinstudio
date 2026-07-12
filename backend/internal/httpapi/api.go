@@ -56,6 +56,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/transcribe", s.transcribe)
 	mux.HandleFunc("POST /api/projects/{id}/export", s.export)
 	mux.HandleFunc("GET /api/projects/{id}/waveform", s.waveform)
+	mux.HandleFunc("GET /api/projects/{id}/frame", s.frame)
 
 	// Cross-product library + universal ingest ("Send to Studio").
 	mux.HandleFunc("GET /api/library", s.listLibrary)

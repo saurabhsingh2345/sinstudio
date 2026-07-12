@@ -57,6 +57,10 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ assetId }),
     }).then((r) => j<{ jobId: string }>(r)),
+  renderFrame: (projId: string, t: number, preset?: string) =>
+    fetch(`/api/projects/${projId}/frame?t=${t}${preset ? `&preset=${encodeURIComponent(preset)}` : ""}`).then((r) =>
+      j<{ url: string }>(r)
+    ),
   exportVideo: (projId: string, opts: ExportOptions = {}) =>
     fetch(`/api/projects/${projId}/export`, {
       method: "POST",

@@ -8,8 +8,22 @@ import { Transcript } from "./Transcript";
 import { ExportDialog } from "./ExportDialog";
 
 export function Editor({ projectId, onHome }: { projectId: string; onHome: () => void }) {
-  const { doc, saving, dirty, load, playing, setPlaying, splitAtPlayhead, deleteSelected, nudgePlayhead, undo, redo } =
-    useStudio();
+  const {
+    doc,
+    saving,
+    dirty,
+    load,
+    playing,
+    setPlaying,
+    splitAtPlayhead,
+    deleteSelected,
+    rippleDelete,
+    copySelected,
+    paste,
+    nudgePlayhead,
+    undo,
+    redo,
+  } = useStudio();
   const [showExport, setShowExport] = useState(false);
 
   useEffect(() => {
@@ -32,6 +46,16 @@ export function Editor({ projectId, onHome }: { projectId: string; onHome: () =>
         redo();
         return;
       }
+      if (meta && e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        copySelected();
+        return;
+      }
+      if (meta && e.key.toLowerCase() === "v") {
+        e.preventDefault();
+        paste();
+        return;
+      }
       switch (e.key) {
         case " ":
           e.preventDefault();
@@ -43,7 +67,7 @@ export function Editor({ projectId, onHome }: { projectId: string; onHome: () =>
           break;
         case "Delete":
         case "Backspace":
-          deleteSelected();
+          e.shiftKey ? rippleDelete() : deleteSelected();
           break;
         case "ArrowLeft":
           nudgePlayhead(e.shiftKey ? -1 : -1 / 30);

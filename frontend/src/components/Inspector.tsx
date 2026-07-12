@@ -124,7 +124,7 @@ export function Inspector() {
               Motion keyframes
               <span className="small"> · key X/Y at the playhead to animate position</span>
             </div>
-            {(["x", "y"] as const).map((prop) => (
+            {(["x", "y", "opacity"] as const).map((prop) => (
               <KeyRow
                 key={prop}
                 prop={prop}
@@ -209,18 +209,20 @@ function KeyRow({
   onUpdate,
   onRemove,
 }: {
-  prop: "x" | "y";
+  prop: "x" | "y" | "opacity";
   keys: Keyframe[];
   localPlayhead: number;
   onAdd: () => void;
   onUpdate: (i: number, v: number) => void;
   onRemove: (i: number) => void;
 }) {
+  const step = prop === "opacity" ? 0.05 : 5;
+  const label = prop === "opacity" ? "O" : prop.toUpperCase();
   return (
     <div className="kf-row">
       <div className="kf-label">
-        <b>{prop.toUpperCase()}</b>
-        <button className="ghost" onClick={onAdd} title={`Key ${prop.toUpperCase()} at playhead (${localPlayhead}s)`}>
+        <b title={prop}>{label}</b>
+        <button className="ghost" onClick={onAdd} title={`Key ${prop} at playhead (${localPlayhead}s)`}>
           ◆ key
         </button>
       </div>
@@ -233,8 +235,8 @@ function KeyRow({
               <span className="kf-t">{k.t.toFixed(2)}s</span>
               <input
                 type="number"
-                step={5}
-                value={+k.value.toFixed(1)}
+                step={step}
+                value={+k.value.toFixed(2)}
                 onChange={(e) => onUpdate(i, parseFloat(e.target.value) || 0)}
               />
               <button className="kf-x" onClick={() => onRemove(i)} title="Remove keyframe">
