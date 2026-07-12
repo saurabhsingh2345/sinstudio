@@ -1,0 +1,200 @@
+// Mirror of backend/internal/schema/schema.go — keep in sync.
+
+export type TrackKind = "background" | "video" | "overlay" | "audio" | "caption";
+
+export interface Transform {
+  x: number;
+  y: number;
+  scale: number;
+  opacity: number;
+}
+
+// Transition types: fade | dissolve | slide-left | slide-right | slide-top | slide-bottom
+export interface Transition {
+  type: string;
+  duration: number; // seconds
+}
+
+// Keyframe: a property's value at clip-local time t (seconds from clip start).
+export interface Keyframe {
+  t: number;
+  value: number;
+}
+
+// Title: a text-clip spec (clip has no asset when set).
+export interface Title {
+  text: string;
+  size: number; // px at 1080 reference
+  color: string; // hex
+  align?: "left" | "center" | "right";
+  posY: number; // 0..1
+  background?: string; // hex band, "" = none
+  bold?: boolean;
+}
+
+// Effects: per-clip color/blur adjustments. Identity = brightness 0, contrast 1,
+// saturation 1, hue 0, blur 0.
+export interface Effects {
+  brightness?: number; // -1..1
+  contrast?: number; // 0..2
+  saturation?: number; // 0..3
+  hue?: number; // degrees
+  blur?: number; // sigma px
+}
+
+export interface Clip {
+  id: string;
+  assetId: string;
+  start: number; // timeline position (s)
+  in: number; // source in (s)
+  out: number; // source out (s)
+  transform: Transform;
+  volume: number;
+  speed?: number; // playback rate (1 = normal)
+  fadeIn?: number; // seconds
+  fadeOut?: number; // seconds
+  transitionIn?: Transition;
+  transitionOut?: Transition;
+  keyframes?: Record<string, Keyframe[]>; // property ("x"|"y") -> control points
+  effects?: Effects;
+  title?: Title; // when set, this is a text clip (no asset)
+}
+
+export interface ExportOptions {
+  preset?: "" | "shorts" | "square" | "4k" | "portrait4k";
+  format?: "" | "mp4" | "webm" | "gif" | "mov";
+  from?: number;
+  to?: number;
+  fps?: number;
+}
+
+export interface LibrarySource {
+  id: string;
+  name: string;
+  dir: string;
+}
+
+export interface LibraryEntry {
+  id: string;
+  name: string;
+  source: string;
+  path: string;
+  ext: string;
+  size: number;
+  modTime: string;
+}
+
+export interface CaptionStyle {
+  font: string;
+  size: number;
+  color: string;
+  align: string;
+  posY: number;
+}
+
+export interface CaptionCue {
+  id: string;
+  start: number;
+  end: number;
+  text: string;
+  style: CaptionStyle;
+}
+
+export interface Track {
+  id: string;
+  kind: TrackKind;
+  name?: string;
+  clips?: Clip[];
+  cues?: CaptionCue[];
+  backgroundColor?: string;
+  muted?: boolean;
+  hidden?: boolean;
+  solo?: boolean;
+}
+
+export interface Asset {
+  id: string;
+  name: string;
+  kind: "video" | "audio" | "image";
+  path: string;
+  duration: number;
+  width: number;
+  height: number;
+  hasAlpha: boolean;
+  thumbnail?: string;
+  source: string;
+  createdAt: string;
+}
+
+export interface Canvas {
+  width: number;
+  height: number;
+  fps: number;
+}
+
+export interface Marker {
+  id: string;
+  t: number; // seconds
+  label?: string;
+  color?: string;
+}
+
+export interface EditDoc {
+  id: string;
+  name: string;
+  version: number;
+  canvas: Canvas;
+  tracks: Track[];
+  assets: Asset[];
+  markers?: Marker[];
+  updated?: string;
+}
+
+export interface ParamSpec {
+  flag: string;
+  label: string;
+  type: "string" | "bool" | "enum";
+  default?: string;
+  options?: string[];
+}
+
+export interface GeneratorStatus {
+  id: string;
+  name: string;
+  description: string;
+  inputKind: string;
+  outputExt: string;
+  params: ParamSpec[];
+  available: boolean;
+  buildHint?: string;
+}
+
+export type AppState = "stopped" | "running" | "exited";
+
+export interface AppStatus {
+  id: string;
+  name: string;
+  description?: string;
+  cwd: string;
+  command: string[];
+  url?: string;
+  state: AppState;
+  pid?: number;
+  uptime?: string;
+  healthy: boolean;
+  message?: string;
+}
+
+export interface JobEvent {
+  jobId: string;
+  kind: string;
+  type: "progress" | "log" | "done" | "error";
+  progress: number;
+  message?: string;
+  data?: any;
+  at: string;
+}
+
+export const mediaUrl = (rel?: string) => (rel ? `/media/${rel}` : "");
+export const newId = (p: string) =>
+  p + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);

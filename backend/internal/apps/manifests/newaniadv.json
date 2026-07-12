@@ -1,0 +1,8 @@
+{
+  "id": "newaniadv",
+  "name": "newaniAdv",
+  "description": "Narrated code/tutorial clip generator (Next.js dev server).",
+  "cwd": "../newaniAdv",
+  "command": ["npm", "run", "dev"],
+  "url": "http://localhost:3000"
+}

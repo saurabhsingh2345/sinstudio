@@ -1,0 +1,15 @@
+# media (projects, assets, renders) — user data, not source
+media/
+
+# frontend
+frontend/node_modules/
+frontend/dist/
+
+# go
+backend/studio
+backend/*.out
+go.work.sum
+
+# misc
+.DS_Store
+*.log

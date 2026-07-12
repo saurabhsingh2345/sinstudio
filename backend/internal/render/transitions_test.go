@@ -1,0 +1,210 @@
+package render
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"studio/internal/schema"
+)
+
+// TestCompileTransitionsRuns builds a two-clip timeline that exercises every
+// transition kind (slide on both axes + fade/dissolve) and confirms the
+// compiled filtergraph is one ffmpeg actually accepts and renders.
+func TestCompileTransitionsRuns(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+
+	// Two distinct 3s test sources.
+	clipA := filepath.Join(dir, "a.mp4")
+	clipB := filepath.Join(dir, "b.mp4")
+	makeTestClip(t, clipA, "red")
+	makeTestClip(t, clipB, "blue")
+
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 640, Height: 360, FPS: 24},
+		Tracks: []schema.Track{{
+			ID: "v", Kind: schema.TrackVideo,
+			Clips: []schema.Clip{
+				{
+					ID: "c1", AssetID: "a", Start: 0, In: 0, Out: 3,
+					Transform:     schema.Transform{Scale: 1, Opacity: 1},
+					TransitionIn:  &schema.Transition{Type: "slide-left", Duration: 0.5},
+					TransitionOut: &schema.Transition{Type: "dissolve", Duration: 0.5},
+				},
+				{
+					ID: "c2", AssetID: "b", Start: 2.5, In: 0, Out: 3,
+					Transform:     schema.Transform{Scale: 0.6, Opacity: 1},
+					TransitionIn:  &schema.Transition{Type: "fade", Duration: 0.5},
+					TransitionOut: &schema.Transition{Type: "slide-bottom", Duration: 0.5},
+				},
+			},
+		}},
+	}
+
+	resolve := func(id string) (string, bool) {
+		switch id {
+		case "a":
+			return clipA, true
+		case "b":
+			return clipB, true
+		}
+		return "", false
+	}
+
+	out := filepath.Join(dir, "out.mp4")
+	plan, err := Compile(doc, resolve, out, dir, Options{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cmd := exec.CommandContext(context.Background(), "ffmpeg", plan.Args...)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg failed: %v\nargs: %v\n%s", err, plan.Args, b)
+	}
+	fi, err := os.Stat(out)
+	if err != nil || fi.Size() == 0 {
+		t.Fatalf("no output produced: %v", err)
+	}
+}
+
+// TestSoloSuppressesTracks confirms that soloing one content track drops the
+// non-soloed track's input from the filtergraph while keeping the soloed one.
+func TestSoloSuppressesTracks(t *testing.T) {
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 640, Height: 360, FPS: 24},
+		Tracks: []schema.Track{
+			{ID: "v1", Kind: schema.TrackVideo, Clips: []schema.Clip{
+				{ID: "c1", AssetID: "a", Start: 0, In: 0, Out: 2, Transform: schema.Transform{Scale: 1, Opacity: 1}},
+			}},
+			{ID: "v2", Kind: schema.TrackVideo, Solo: true, Clips: []schema.Clip{
+				{ID: "c2", AssetID: "b", Start: 0, In: 0, Out: 2, Transform: schema.Transform{Scale: 1, Opacity: 1}},
+			}},
+		},
+	}
+	resolve := func(id string) (string, bool) {
+		return "/tmp/" + id + ".mp4", id == "a" || id == "b"
+	}
+	plan, err := Compile(doc, resolve, "/tmp/o.mp4", t.TempDir(), Options{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	joined := strings.Join(plan.Args, " ")
+	if !strings.Contains(joined, "/tmp/b.mp4") {
+		t.Errorf("soloed track b should be present in args")
+	}
+	if strings.Contains(joined, "/tmp/a.mp4") {
+		t.Errorf("non-soloed track a should be suppressed when a solo is active")
+	}
+}
+
+// TestKeyframeMotionRuns confirms a clip animated with x/y position keyframes
+// compiles to a filtergraph ffmpeg accepts and renders.
+func TestKeyframeMotionRuns(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "a.mp4")
+	makeTestClip(t, clip, "green")
+
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 640, Height: 360, FPS: 24},
+		Tracks: []schema.Track{{ID: "v", Kind: schema.TrackVideo, Clips: []schema.Clip{{
+			ID: "c1", AssetID: "a", Start: 0, In: 0, Out: 3,
+			Transform: schema.Transform{Scale: 0.5, Opacity: 1},
+			Keyframes: map[string][]schema.Keyframe{
+				"x": {{T: 0, Value: -200}, {T: 1.5, Value: 200}, {T: 3, Value: 0}},
+				"y": {{T: 0, Value: 0}, {T: 3, Value: 80}},
+			},
+		}}}},
+	}
+	resolve := func(id string) (string, bool) { return clip, id == "a" }
+	plan, err := Compile(doc, resolve, filepath.Join(dir, "out.mp4"), dir, Options{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg failed: %v\n%s", err, b)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "out.mp4")); err != nil || fi.Size() == 0 {
+		t.Fatalf("no output: %v", err)
+	}
+}
+
+// TestEffectsRuns confirms a clip with color/blur effects compiles to a
+// filtergraph ffmpeg accepts.
+func TestEffectsRuns(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "a.mp4")
+	makeTestClip(t, clip, "gray")
+
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 640, Height: 360, FPS: 24},
+		Tracks: []schema.Track{{ID: "v", Kind: schema.TrackVideo, Clips: []schema.Clip{{
+			ID: "c1", AssetID: "a", Start: 0, In: 0, Out: 2,
+			Transform: schema.Transform{Scale: 1, Opacity: 1},
+			Effects:   &schema.Effects{Brightness: 0.15, Contrast: 1.3, Saturation: 1.4, Hue: 30, Blur: 3},
+		}}}},
+	}
+	resolve := func(id string) (string, bool) { return clip, id == "a" }
+	plan, err := Compile(doc, resolve, filepath.Join(dir, "out.mp4"), dir, Options{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !strings.Contains(strings.Join(plan.Args, " "), "eq=brightness") {
+		t.Errorf("expected eq filter in args")
+	}
+	if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg failed: %v\n%s", err, b)
+	}
+}
+
+// TestTitleRuns confirms a text/title clip (no asset) renders to a PNG and
+// composites through the still-visual pipeline with a transition.
+func TestTitleRuns(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 640, Height: 360, FPS: 24},
+		Tracks: []schema.Track{
+			{ID: "bg", Kind: schema.TrackBackground, BackgroundColor: "#101020"},
+			{ID: "ov", Kind: schema.TrackOverlay, Clips: []schema.Clip{{
+				ID: "t1", Start: 0, In: 0, Out: 2,
+				Transform:    schema.Transform{Scale: 1, Opacity: 1},
+				TransitionIn: &schema.Transition{Type: "slide-bottom", Duration: 0.4},
+				Title:        &schema.Title{Text: "Title Test", Size: 72, Color: "#ffffff", Align: "center", PosY: 0.5},
+			}}},
+		},
+	}
+	resolve := func(id string) (string, bool) { return "", false }
+	plan, err := Compile(doc, resolve, filepath.Join(dir, "out.mp4"), dir, Options{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg failed: %v\n%s", err, b)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "out.mp4")); err != nil || fi.Size() == 0 {
+		t.Fatalf("no output: %v", err)
+	}
+}
+
+func makeTestClip(t *testing.T, path, color string) {
+	t.Helper()
+	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i",
+		"color=c="+color+":s=640x360:r=24:d=3", "-c:v", "libx264", "-pix_fmt", "yuv420p", path)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("make test clip: %v\n%s", err, b)
+	}
+}

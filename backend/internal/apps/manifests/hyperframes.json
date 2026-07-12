@@ -1,0 +1,8 @@
+{
+  "id": "hyperframes",
+  "name": "HyperFrames Studio",
+  "description": "HTML/GSAP composition studio (Vite dev server).",
+  "cwd": "../hyper/hyperframes",
+  "command": ["bun", "run", "studio"],
+  "url": "http://localhost:5190"
+}

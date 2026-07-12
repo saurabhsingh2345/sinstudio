@@ -1,0 +1,5 @@
+// Scopes Go tooling to the backend module so editors resolve intra-module
+// imports. Affects only the Go subtree; the sibling JS projects are untouched.
+go 1.26
+
+use ./backend
