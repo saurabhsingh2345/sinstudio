@@ -106,11 +106,26 @@ function activeVisuals(tracks: Track[], t: number) {
   return out;
 }
 
+// Audio-track clips audible at time t, honoring mute/hide/solo.
+function activeAudios(tracks: Track[], t: number, soloActive: boolean) {
+  const out: { track: Track; clip: Clip }[] = [];
+  for (const tr of tracks) {
+    if (tr.kind !== "audio" || tr.muted || tr.hidden) continue;
+    if (soloActive && !tr.solo) continue;
+    for (const c of tr.clips || []) {
+      const end = c.start + (c.out - c.in);
+      if (t >= c.start && t < end) out.push({ track: tr, clip: c });
+    }
+  }
+  return out;
+}
+
 export function Preview() {
   const { doc, playhead, playing, setPlayhead, setPlaying, addCue } = useStudio();
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
+  const audioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
   const [stage, setStage] = useState({ w: 640, h: 360 });
 
   const W = doc?.canvas.width || 1920;
@@ -154,13 +169,16 @@ export function Preview() {
     return () => cancelAnimationFrame(raf);
   }, [playing, total]);
 
+  const soloActive = !!doc?.tracks.some((t) => t.solo);
   const visuals = doc ? activeVisuals(doc.tracks, playhead) : [];
+  const audios = doc ? activeAudios(doc.tracks, playhead, soloActive) : [];
 
   // sync video elements to the playhead
   useEffect(() => {
-    for (const { clip } of visuals) {
+    for (const { track, clip } of visuals) {
       const v = videoRefs.current[clip.id];
       if (!v) continue;
+      v.muted = !!track.muted || (soloActive && !track.solo);
       const local = playhead - clip.start + clip.in;
       if (Math.abs(v.currentTime - local) > 0.25) {
         try {
@@ -170,7 +188,24 @@ export function Preview() {
       if (playing && v.paused) v.play().catch(() => {});
       if (!playing && !v.paused) v.pause();
     }
-  }, [playhead, playing, visuals.map((x) => x.clip.id).join(",")]);
+  }, [playhead, playing, soloActive, visuals.map((x) => x.clip.id).join(",")]);
+
+  // sync audio-track elements (music) to the playhead
+  useEffect(() => {
+    for (const { clip } of audios) {
+      const a = audioRefs.current[clip.id];
+      if (!a) continue;
+      a.volume = Math.max(0, Math.min(1, clip.volume || 1));
+      const local = playhead - clip.start + clip.in;
+      if (Math.abs(a.currentTime - local) > 0.25) {
+        try {
+          a.currentTime = local;
+        } catch {}
+      }
+      if (playing && a.paused) a.play().catch(() => {});
+      if (!playing && !a.paused) a.pause();
+    }
+  }, [playhead, playing, audios.map((x) => x.clip.id).join(",")]);
 
   // draw captions
   useEffect(() => {
@@ -204,7 +239,7 @@ export function Preview() {
       <div className="preview-wrap" ref={wrapRef}>
         <div className="preview-stage" style={{ width: stage.w, height: stage.h }}>
           <div className="bg" style={{ background: bg }} />
-          {visuals.map(({ clip }) => {
+          {visuals.map(({ track, clip }) => {
             const box = clipBox(clip, playhead, stage.w, stage.h, W, H);
             // Title clips have no asset — render styled text on the scaled layer.
             if (clip.title) {
@@ -255,13 +290,20 @@ export function Preview() {
                 key={clip.id}
                 ref={(el) => (videoRefs.current[clip.id] = el)}
                 src={mediaUrl(asset.path)}
-                muted={false}
+                muted={!!track.muted || (soloActive && !track.solo)}
                 playsInline
                 style={{ position: "absolute", ...style }}
               />
             );
           })}
           <canvas ref={canvasRef} className="caption" />
+          {audios.map(({ clip }) => {
+            const asset = doc!.assets.find((a) => a.id === clip.assetId);
+            if (!asset) return null;
+            return (
+              <audio key={clip.id} ref={(el) => (audioRefs.current[clip.id] = el)} src={mediaUrl(asset.path)} preload="auto" />
+            );
+          })}
         </div>
       </div>
 

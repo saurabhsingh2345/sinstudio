@@ -129,10 +129,16 @@ label { display: block; color: var(--dim); font-size: 11px; margin: 8px 0 3px; }
 .tl-clip.caption { background: linear-gradient(180deg,#6b4b8f,#553a73); border-color: #9a6bc4; }
 .tl-clip.title { background: linear-gradient(180deg,#8a6a2f,#6e5323); border-color: #c99a45; }
 .tl-clip .wave { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; opacity: .8; }
+.tl-clip.hasthumb { background-color: #1a2740; }
+.tl-clip.hasthumb::before { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(6,10,20,.15), rgba(6,10,20,.75)); pointer-events: none; }
+.tl-clip.hasthumb .clip-title { display: inline-block; background: rgba(0,0,0,.5); border-radius: 3px; }
 .tl-clip .clip-title { position: relative; font-size: 10px; padding: 3px 6px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .tl-clip .handle { position: absolute; top: 0; width: 7px; height: 100%; cursor: ew-resize; }
 .tl-clip .handle.l { left: 0; } .tl-clip .handle.r { right: 0; }
 .tl-clip .handle:hover { background: rgba(255,255,255,.25); }
+.tl-clip .kf-dot { position: absolute; bottom: 2px; width: 7px; height: 7px; margin-left: -3px; z-index: 4;
+  background: #ffd76b; border: 1px solid #7a5c12; transform: rotate(45deg); cursor: pointer; }
+.tl-clip .kf-dot:hover { background: #fff; }
 .tl-playhead { position: absolute; top: 0; width: 2px; background: var(--danger); z-index: 4; pointer-events: none; }
 
 /* asset panel */

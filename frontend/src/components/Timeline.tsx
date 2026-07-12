@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useStudio, projectDuration } from "../state";
 import { api } from "../api";
-import type { Clip, Track } from "../types";
+import { mediaUrl, type Clip, type EditDoc, type Track } from "../types";
 
 // Per-asset peak arrays, fetched once and shared across clips/zoom levels.
 const peakCache = new Map<string, Promise<number[]>>();
@@ -131,6 +131,17 @@ export function Timeline() {
           <button onClick={() => addTrack("audio")} title="Add an audio track">Audio</button>
         </span>
         <div style={{ flex: 1 }} />
+        <button
+          onClick={() => {
+            const el = scrollRef.current;
+            if (!el) return;
+            const avail = el.clientWidth - LABEL_W - 24;
+            setZoom(avail / Math.max(projectDuration(doc), 5));
+          }}
+          title="Zoom to fit the whole project"
+        >
+          ⤢ Fit
+        </button>
         <button onClick={() => setZoom(pxPerSec - 20)}>–</button>
         <span className="small">{pxPerSec}px/s</span>
         <button onClick={() => setZoom(pxPerSec + 20)}>+</button>
@@ -141,7 +152,7 @@ export function Timeline() {
           {/* ruler */}
           <div
             className="tl-ruler"
-            onPointerDown={(e) => setPlayhead(secAt(e.clientX))}
+            onPointerDown={(e) => setPlayhead(snapScalar(secAt(e.clientX), snapPoints(doc, new Set()), pxPerSec))}
           >
             {ticks.map((s) => (
               <div key={s} className="tl-tick" style={{ left: LABEL_W + s * pxPerSec }}>
@@ -282,15 +293,68 @@ function Lane({
 
 const snap = (s: number) => Math.round(s / SNAP) * SNAP;
 
+// Collect magnetic snap targets: 0, every other clip's edges, and markers.
+function snapPoints(doc: EditDoc, exclude: Set<string>): number[] {
+  const pts = [0];
+  for (const t of doc.tracks) {
+    for (const c of t.clips || []) {
+      if (exclude.has(c.id)) continue;
+      pts.push(c.start, c.start + (c.out - c.in));
+    }
+  }
+  for (const m of doc.markers || []) pts.push(m.t);
+  return pts;
+}
+
+// magneticStart snaps a dragged clip's start so that either edge lands on a snap
+// point within an 8px tolerance; falls back to the 0.1s grid otherwise.
+function magneticStart(rawStart: number, dur: number, pts: number[], pxPerSec: number): number {
+  const tol = 8 / pxPerSec;
+  let best: number | null = null;
+  let bestD = tol;
+  for (const p of pts) {
+    const ds = Math.abs(p - rawStart);
+    if (ds < bestD) {
+      bestD = ds;
+      best = p;
+    }
+    const de = Math.abs(p - (rawStart + dur));
+    if (de < bestD) {
+      bestD = de;
+      best = p - dur;
+    }
+  }
+  return Math.max(0, best != null ? best : snap(rawStart));
+}
+
+// snapScalar snaps a single time (e.g. the playhead) to the nearest point.
+function snapScalar(t: number, pts: number[], pxPerSec: number): number {
+  const tol = 8 / pxPerSec;
+  let best = t;
+  let bestD = tol;
+  for (const p of pts) {
+    const d = Math.abs(p - t);
+    if (d < bestD) {
+      bestD = d;
+      best = p;
+    }
+  }
+  return Math.max(0, best);
+}
+
 function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSec: number }) {
-  const { updateClip, select, toggleSelect, batchUpdateClips, selClips, doc } = useStudio();
+  const { updateClip, select, toggleSelect, batchUpdateClips, selClips, doc, setPlayhead } = useStudio();
   const selected = selClips.some((s) => s.clipId === clip.id);
+  const kfTimes = clip.keyframes
+    ? Array.from(new Set([...(clip.keyframes.x || []), ...(clip.keyframes.y || [])].map((k) => k.t))).sort((a, b) => a - b)
+    : [];
   const dur = clip.out - clip.in;
   const asset = doc?.assets.find((a) => a.id === clip.assetId);
   const kindClass = clip.title ? "title" : track.kind === "audio" ? "audio" : "";
   const showWave = (track.kind === "audio" || asset?.kind === "audio") && !!doc && !!asset && !clip.title;
   const clipW = Math.max(12, dur * pxPerSec);
   const label = clip.title ? `T ${clip.title.text}` : asset?.name || clip.assetId;
+  const thumb = !clip.title && asset?.thumbnail ? mediaUrl(asset.thumbnail) : "";
 
   // drag move / trim via window pointer listeners
   const startDrag = (mode: "move" | "l" | "r") => (e: React.PointerEvent) => {
@@ -310,10 +374,16 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
         const c = doc?.tracks.find((t) => t.id === s.trackId)?.clips?.find((cc) => cc.id === s.clipId);
         return { trackId: s.trackId, clipId: s.clipId, start: c?.start ?? 0 };
       });
+      // Snap the whole group by the dragged clip's snapped delta.
+      const draggedBase = clip.start;
+      const dragDur = clip.out - clip.in;
+      const pts = doc ? snapPoints(doc, new Set(selClips.map((s) => s.clipId))) : [0];
       const move = (ev: PointerEvent) => {
         const d = (ev.clientX - x0) / pxPerSec;
+        const snappedStart = magneticStart(draggedBase + d, dragDur, pts, pxPerSec);
+        const delta = snappedStart - draggedBase;
         batchUpdateClips(
-          bases.map((b) => ({ trackId: b.trackId, clipId: b.clipId, patch: { start: Math.max(0, snap(b.start + d)) } }))
+          bases.map((b) => ({ trackId: b.trackId, clipId: b.clipId, patch: { start: Math.max(0, b.start + delta) } }))
         );
       };
       const up = () => {
@@ -329,10 +399,12 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
     const x0 = e.clientX;
     const o = { start: clip.start, in: clip.in, out: clip.out };
     const maxOut = asset && asset.duration > 0 ? asset.duration : Infinity;
+    const pts = doc ? snapPoints(doc, new Set([clip.id])) : [0];
+    const moveDur = o.out - o.in;
     const move = (ev: PointerEvent) => {
       const d = (ev.clientX - x0) / pxPerSec;
       if (mode === "move") {
-        updateClip(track.id, clip.id, { start: Math.max(0, snap(o.start + d)) });
+        updateClip(track.id, clip.id, { start: magneticStart(o.start + d, moveDur, pts, pxPerSec) });
       } else if (mode === "l") {
         const nin = Math.min(Math.max(0, o.in + d), o.out - 0.05);
         updateClip(track.id, clip.id, { in: nin, start: Math.max(0, o.start + (nin - o.in)) });
@@ -351,8 +423,12 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
 
   return (
     <div
-      className={`tl-clip ${kindClass} ${selected ? "sel" : ""}`}
-      style={{ left: LABEL_W + clip.start * pxPerSec, width: clipW }}
+      className={`tl-clip ${kindClass} ${selected ? "sel" : ""} ${thumb ? "hasthumb" : ""}`}
+      style={{
+        left: LABEL_W + clip.start * pxPerSec,
+        width: clipW,
+        ...(thumb ? { backgroundImage: `url(${thumb})`, backgroundSize: "auto 100%", backgroundRepeat: "repeat-x" } : {}),
+      }}
       onPointerDown={startDrag("move")}
       title={asset?.name}
     >
@@ -369,6 +445,18 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
       )}
       <div className="handle l" onPointerDown={startDrag("l")} />
       <div className="clip-title">{label}</div>
+      {kfTimes.map((t) => (
+        <div
+          key={t}
+          className="kf-dot"
+          style={{ left: t * pxPerSec }}
+          title={`keyframe @ ${t.toFixed(2)}s — click to seek`}
+          onPointerDown={(e) => {
+            e.stopPropagation();
+            setPlayhead(clip.start + t);
+          }}
+        />
+      ))}
       <div className="handle r" onPointerDown={startDrag("r")} />
     </div>
   );
