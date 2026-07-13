@@ -202,3 +202,13 @@ export interface JobEvent {
 export const mediaUrl = (rel?: string) => (rel ? `/media/${rel}` : "");
 export const newId = (p: string) =>
   p + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+
+// clipPlayDur is the on-timeline length of a clip after speed scaling — mirrors
+// schema.Clip.PlayDur in Go. Use this anywhere a clip's timeline end is needed
+// (end = clip.start + clipPlayDur(clip)); trimming with speed != 1 makes the
+// timeline footprint differ from the raw source span (out - in).
+export const clipPlayDur = (c: Clip): number => {
+  const sp = c.speed && c.speed > 0 ? c.speed : 1;
+  const d = (c.out - c.in) / sp;
+  return d > 0 ? d : 0;
+};

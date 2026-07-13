@@ -101,32 +101,43 @@ func (m *Manager) List() []Job {
 	return out
 }
 
-// Progress reports fractional progress with a message.
+// Progress reports fractional progress with a message. Field writes are guarded
+// by the manager lock so List()'s snapshot reads never race with a worker.
 func (j *Job) Progress(p float64, msg string) {
+	j.m.mu.Lock()
 	j.Pct, j.Message = p, msg
+	j.m.mu.Unlock()
 	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventProgress, Progress: p, Message: msg})
 }
 
 // Log emits a log line without changing progress.
 func (j *Job) Log(msg string) {
-	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventLog, Progress: j.Pct, Message: msg})
+	j.m.mu.Lock()
+	pct := j.Pct
+	j.m.mu.Unlock()
+	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventLog, Progress: pct, Message: msg})
 }
 
 // Done marks the job complete and attaches an optional result payload.
 func (j *Job) Done(data any) {
+	j.m.mu.Lock()
 	j.Status, j.Pct = "done", 1
+	j.m.mu.Unlock()
 	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventDone, Progress: 1, Data: data})
 }
 
 // Fail marks the job errored.
 func (j *Job) Fail(err error) {
-	j.Status = "error"
 	msg := ""
 	if err != nil {
 		msg = err.Error()
 	}
+	j.m.mu.Lock()
+	j.Status = "error"
 	j.Message = msg
-	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventError, Progress: j.Pct, Message: msg})
+	pct := j.Pct
+	j.m.mu.Unlock()
+	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventError, Progress: pct, Message: msg})
 }
 
 // Encode is a helper for SSE writers to serialize an event as JSON.

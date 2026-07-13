@@ -167,7 +167,11 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 
 	// Drop audio contributions whose source has no audio stream (e.g. silent
 	// template clips) — referencing [N:a] on such an input aborts the whole render.
-	if len(audios) > 0 {
+	// If ffprobe isn't on PATH we can't tell, so fail open (keep all audio) rather
+	// than silently exporting a muted video.
+	if _, probeErr := exec.LookPath("ffprobe"); probeErr != nil {
+		// leave audios untouched
+	} else if len(audios) > 0 {
 		audible := map[string]bool{}
 		hasAud := func(p string) bool {
 			if v, ok := audible[p]; ok {
@@ -201,6 +205,25 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	}
 	if dur <= 0 {
 		dur = 1
+	}
+
+	// Validate/normalize the optional export range against the real duration so a
+	// bad From/To can't produce a negative -t (which FFmpeg rejects) or an empty clip.
+	if opts.From < 0 {
+		opts.From = 0
+	}
+	if opts.From >= dur {
+		return nil, fmt.Errorf("export range start %.3fs is at/after the timeline end %.3fs", opts.From, dur)
+	}
+	if opts.To > 0 && opts.To <= opts.From {
+		return nil, fmt.Errorf("export range end %.3fs must be after start %.3fs", opts.To, opts.From)
+	}
+	if opts.FrameAt < 0 || opts.FrameAt >= dur {
+		if opts.FrameAt >= dur {
+			opts.FrameAt = dur - 0.001 // clamp a past-the-end frame grab to the last frame
+		} else {
+			opts.FrameAt = 0
+		}
 	}
 
 	gif := opts.Format == "gif"

@@ -123,6 +123,11 @@ func (s *Store) CreateProject(name string) (*schema.EditDoc, error) {
 func (s *Store) GetProject(id string) (*schema.EditDoc, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.getProjectLocked(id)
+}
+
+// getProjectLocked reads a document; the caller must already hold s.mu.
+func (s *Store) getProjectLocked(id string) (*schema.EditDoc, error) {
 	data, err := os.ReadFile(s.timelinePath(id))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -141,6 +146,11 @@ func (s *Store) GetProject(id string) (*schema.EditDoc, error) {
 func (s *Store) SaveProject(doc *schema.EditDoc) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.saveProjectLocked(doc)
+}
+
+// saveProjectLocked writes a document; the caller must already hold s.mu.
+func (s *Store) saveProjectLocked(doc *schema.EditDoc) error {
 	if doc.Assets == nil {
 		doc.Assets = []schema.Asset{}
 	}
@@ -180,15 +190,19 @@ func (s *Store) ListProjects() ([]ProjectMeta, error) {
 	return out, nil
 }
 
-// AddAsset appends an asset to a project and persists it.
+// AddAsset appends an asset to a project and persists it. The read-modify-write
+// is done under a single lock so concurrent jobs (e.g. two generators finishing
+// together) can't lost-update each other and drop an asset.
 func (s *Store) AddAsset(id string, asset schema.Asset) (*schema.EditDoc, error) {
-	doc, err := s.GetProject(id)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, err := s.getProjectLocked(id)
 	if err != nil {
 		return nil, err
 	}
 	doc.Assets = append(doc.Assets, asset)
 	doc.Version++
-	if err := s.SaveProject(doc); err != nil {
+	if err := s.saveProjectLocked(doc); err != nil {
 		return nil, err
 	}
 	return doc, nil

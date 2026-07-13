@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useStudio, projectDuration } from "../state";
 import { api } from "../api";
-import { mediaUrl, type Clip, type EditDoc, type Track } from "../types";
+import { mediaUrl, clipPlayDur, type Clip, type EditDoc, type Track } from "../types";
 
 // Per-asset peak arrays, fetched once and shared across clips/zoom levels.
 const peakCache = new Map<string, Promise<number[]>>();
@@ -316,7 +316,7 @@ function snapPoints(doc: EditDoc, exclude: Set<string>): number[] {
   for (const t of doc.tracks) {
     for (const c of t.clips || []) {
       if (exclude.has(c.id)) continue;
-      pts.push(c.start, c.start + (c.out - c.in));
+      pts.push(c.start, c.start + clipPlayDur(c));
     }
   }
   for (const m of doc.markers || []) pts.push(m.t);
@@ -380,7 +380,8 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
         )
       ).sort((a, b) => a - b)
     : [];
-  const dur = clip.out - clip.in;
+  const sp = clip.speed && clip.speed > 0 ? clip.speed : 1;
+  const dur = clipPlayDur(clip); // on-timeline width (source span scaled by speed)
   const asset = doc?.assets.find((a) => a.id === clip.assetId);
   const kindClass = clip.title ? "title" : track.kind === "audio" ? "audio" : "";
   const showWave = (track.kind === "audio" || asset?.kind === "audio") && !!doc && !!asset && !clip.title;
@@ -408,7 +409,7 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
       });
       // Snap the whole group by the dragged clip's snapped delta.
       const draggedBase = clip.start;
-      const dragDur = clip.out - clip.in;
+      const dragDur = clipPlayDur(clip);
       const pts = doc ? snapPoints(doc, new Set(selClips.map((s) => s.clipId))) : [0];
       const move = (ev: PointerEvent) => {
         const d = (ev.clientX - x0) / pxPerSec;
@@ -434,7 +435,7 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
     const o = { start: clip.start, in: clip.in, out: clip.out };
     const maxOut = asset && asset.duration > 0 ? asset.duration : Infinity;
     const pts = doc ? snapPoints(doc, new Set([clip.id])) : [0];
-    const moveDur = o.out - o.in;
+    const moveDur = dur; // on-timeline footprint for snapping the trailing edge
     const move = (ev: PointerEvent) => {
       const d = (ev.clientX - x0) / pxPerSec;
       if (mode === "move") {
@@ -442,14 +443,16 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
         setSnapLine(r.snapAt);
         updateClip(track.id, clip.id, { start: r.start });
       } else if (mode === "l") {
-        const r = magneticScalar(o.start + d, pts, pxPerSec); // snap the leading edge
+        // Leading edge is a timeline position; the trim delta maps to source
+        // seconds by the clip's speed so the new start lands exactly on r.value.
+        const r = magneticScalar(o.start + d, pts, pxPerSec);
         setSnapLine(r.snapAt);
-        const nin = Math.min(Math.max(0, o.in + (r.value - o.start)), o.out - 0.05);
-        updateClip(track.id, clip.id, { in: nin, start: Math.max(0, o.start + (nin - o.in)) });
+        const nin = Math.min(Math.max(0, o.in + (r.value - o.start) * sp), o.out - 0.05);
+        updateClip(track.id, clip.id, { in: nin, start: Math.max(0, o.start + (nin - o.in) / sp) });
       } else {
-        const r = magneticScalar(o.start + (o.out - o.in) + d, pts, pxPerSec); // snap the trailing edge
+        const r = magneticScalar(o.start + moveDur + d, pts, pxPerSec); // snap the trailing edge
         setSnapLine(r.snapAt);
-        const nout = Math.min(Math.max(o.in + 0.05, o.in + (r.value - o.start)), maxOut);
+        const nout = Math.min(Math.max(o.in + 0.05, o.in + (r.value - o.start) * sp), maxOut);
         updateClip(track.id, clip.id, { out: nout });
       }
     };

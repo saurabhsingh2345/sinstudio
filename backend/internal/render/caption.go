@@ -72,7 +72,13 @@ func renderCaptionPNG(cue schema.CaptionCue, w, h int, outPath string) error {
 
 	lineH := int(size * 1.3)
 	blockH := lineH * len(lines)
-	startY := int(cue.Style.PosY*float64(h)) - blockH/2 + lineH*3/4
+	// Default unset PosY to a lower-third position (matching the editor default)
+	// so captions with a zero style don't burn at the very top and clip.
+	posY := cue.Style.PosY
+	if posY <= 0 {
+		posY = 0.85
+	}
+	startY := int(posY*float64(h)) - blockH/2 + lineH*3/4
 
 	fg := parseHexColor(cue.Style.Color, color.White)
 	outline := color.RGBA{0, 0, 0, 220}
