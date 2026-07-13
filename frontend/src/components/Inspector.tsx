@@ -20,6 +20,8 @@ export function Inspector() {
     removeKeyframe,
     updateEffect,
     resetEffects,
+    updateEQ,
+    resetEQ,
     updateTitle,
     applyTitleAnim,
     applyTitleReveal,
@@ -32,6 +34,8 @@ export function Inspector() {
   const clip = selClip
     ? doc.tracks.find((t) => t.id === selClip.trackId)?.clips?.find((c) => c.id === selClip.clipId)
     : null;
+  const clipAsset = clip ? doc.assets.find((a) => a.id === clip.assetId) : null;
+  const hasAudio = !!clipAsset && (clipAsset.kind === "audio" || clipAsset.kind === "video");
   const cue = selCue
     ? doc.tracks.find((t) => t.kind === "caption")?.cues?.find((c) => c.id === selCue)
     : null;
@@ -180,6 +184,24 @@ export function Inspector() {
             <Slider label="Saturation" v={clip.effects?.saturation ?? 1} min={0} max={3} step={0.02} def={1} on={(x) => updateEffect(selClip.trackId, clip.id, "saturation", x)} />
             <Slider label="Hue (°)" v={clip.effects?.hue ?? 0} min={-180} max={180} step={1} def={0} on={(x) => updateEffect(selClip.trackId, clip.id, "hue", x)} />
             <Slider label="Blur" v={clip.effects?.blur ?? 0} min={0} max={30} step={0.5} def={0} on={(x) => updateEffect(selClip.trackId, clip.id, "blur", x)} />
+
+            {hasAudio && (
+              <>
+                <div className="kf-head">
+                  Audio EQ
+                  <div className="spacer" />
+                  {clip.eq && (
+                    <button className="ghost" onClick={() => resetEQ(selClip.trackId, clip.id)} title="Flatten EQ">
+                      reset
+                    </button>
+                  )}
+                </div>
+                <Slider label="Low (dB)" v={clip.eq?.low ?? 0} min={-12} max={12} step={0.5} def={0} on={(x) => updateEQ(selClip.trackId, clip.id, "low", x)} />
+                <Slider label="Mid (dB)" v={clip.eq?.mid ?? 0} min={-12} max={12} step={0.5} def={0} on={(x) => updateEQ(selClip.trackId, clip.id, "mid", x)} />
+                <Slider label="High (dB)" v={clip.eq?.high ?? 0} min={-12} max={12} step={0.5} def={0} on={(x) => updateEQ(selClip.trackId, clip.id, "high", x)} />
+              </>
+            )}
+
             <button className="primary" style={{ marginTop: 10, background: "var(--danger)", borderColor: "var(--danger)" }} onClick={() => removeClip(selClip.trackId, clip.id)}>
               Delete clip
             </button>

@@ -3,6 +3,7 @@ import { useStudio, projectDuration } from "../state";
 import { mediaUrl, clipPlayDur, type Clip, type Track } from "../types";
 import { ease } from "../ease";
 import { revealedText } from "../titleAnim";
+import { peaksNow } from "../peaks";
 
 const DEF_TRANS = 0.5; // matches render's defTransDur
 
@@ -111,6 +112,42 @@ function activeVisuals(tracks: Track[], t: number) {
   }
   out.sort((a, b) => order[a.track.kind] - order[b.track.kind]);
   return out;
+}
+
+// audioLevel approximates the summed source level (0..1) of the audible audio
+// clips at time t, read from cached waveform peaks × per-clip volume. It's a
+// source-level meter (not the post-mix output) — enough to spot silence/clipping
+// while editing, and it works while scrubbing, not just during playback.
+function audioLevel(
+  projId: string,
+  assets: { id: string; duration: number }[],
+  audios: { clip: Clip }[],
+  t: number
+): number {
+  let sum = 0;
+  for (const { clip } of audios) {
+    const asset = assets.find((a) => a.id === clip.assetId);
+    if (!asset || !asset.duration) continue;
+    const peaks = peaksNow(projId, asset.id);
+    if (!peaks || !peaks.length) continue;
+    const sp = clip.speed && clip.speed > 0 ? clip.speed : 1;
+    const frac = (clip.in + (t - clip.start) * sp) / asset.duration;
+    if (frac < 0 || frac > 1) continue;
+    const idx = Math.min(peaks.length - 1, Math.max(0, Math.floor(frac * peaks.length)));
+    sum += peaks[idx] * (clip.volume ?? 1);
+  }
+  return Math.min(1, sum);
+}
+
+// LevelMeter is a small horizontal audio meter (green → amber → red).
+function LevelMeter({ level }: { level: number }) {
+  const pct = Math.round(level * 100);
+  const color = level > 0.9 ? "var(--danger)" : level > 0.7 ? "#f4b740" : "var(--accent2)";
+  return (
+    <div className="meter" title={`audio level ${pct}%`}>
+      <div style={{ width: `${pct}%`, background: color }} />
+    </div>
+  );
 }
 
 // Audio-track clips audible at time t, honoring mute/hide/solo.
@@ -325,6 +362,7 @@ export function Preview() {
         <span className="time">
           {playhead.toFixed(2)}s / {total.toFixed(2)}s
         </span>
+        {doc && <LevelMeter level={audioLevel(doc.id, doc.assets, audios, playhead)} />}
         <div style={{ flex: 1 }} />
         <button onClick={addCue}>+ Caption @ playhead</button>
       </div>

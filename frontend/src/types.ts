@@ -49,6 +49,13 @@ export interface Effects {
   blur?: number; // sigma px
 }
 
+// AudioEQ: 3-band equalizer gains in dB (roughly -12..+12; 0 = flat).
+export interface AudioEQ {
+  low?: number; // ≈100 Hz shelf
+  mid?: number; // ≈1 kHz peak
+  high?: number; // ≈8 kHz shelf
+}
+
 export interface Clip {
   id: string;
   assetId: string;
@@ -64,6 +71,7 @@ export interface Clip {
   transitionOut?: Transition;
   keyframes?: Record<string, Keyframe[]>; // property ("x"|"y"|"scale"|"opacity") -> control points
   effects?: Effects;
+  eq?: AudioEQ; // 3-band audio equalizer
   title?: Title; // when set, this is a text clip (no asset)
 }
 

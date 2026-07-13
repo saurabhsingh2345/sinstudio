@@ -122,7 +122,9 @@ requests don't thrash the machine. The **Renders** panel shows queued/rendering 
 (with cancel), a **retry** for failed ones, and a **history** of finished exports with
 re-download/delete.
 
-Per clip (inspector): **speed**, **fade in/out**, volume, transform, opacity.
+Per clip (inspector): **speed**, **fade in/out**, volume, transform, opacity,
+color **effects**, and a **3-band audio EQ** (low/mid/high). A live **audio level
+meter** in the transport shows the source level while playing or scrubbing.
 
 **Titles** (add a text clip): pick a font size/color/alignment/position, then an
 **animation preset** (Fade · Fade up · Pop · Slide · Zoom) that writes coherent
