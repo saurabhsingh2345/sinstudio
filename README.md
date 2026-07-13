@@ -47,6 +47,44 @@ cd ../backend && go run ./cmd/studio -addr :8787
 # open http://localhost:8787
 ```
 
+## Deploy
+
+**Docker (recommended).** The image bundles ffmpeg and serves the built UI:
+
+```bash
+STUDIO_TOKEN=change-me docker compose up --build
+# open http://localhost:8787  → enter the token
+```
+
+Media persists in the `studio-media` volume (mounted at `/data`). To build/run
+the image directly:
+
+```bash
+docker build -t studio .
+docker run -p 8787:8787 -e STUDIO_TOKEN=change-me -v studio-media:/data studio
+```
+
+**Configuration (environment variables):**
+
+| Var | Default | Effect |
+| --- | --- | --- |
+| `STUDIO_TOKEN` | *(unset)* | When set, the API and `/media` require a login. Browsers sign in once at the token screen (httpOnly session cookie); programmatic clients may send `Authorization: Bearer <token>`. **Unset = open**, intended for localhost only. |
+| `STUDIO_ALLOWED_ORIGINS` | *(unset)* | Comma-separated CORS allowlist (e.g. `https://studio.example.com`). Unset ⇒ only `localhost`/`127.0.0.1` origins are allowed; the server never advertises `*`. |
+
+> ⚠️ The app supervises local dev-servers and reads/writes media. **Never expose
+> it to the public internet without `STUDIO_TOKEN` set** (and TLS in front).
+
+The sibling generators (`newaniAdv`, `hyperframes`, `funkycode`) are **not** in the
+container; Generate/Library features that spawn them degrade gracefully (import,
+edit, and export still work fully). Mount the siblings and set `-root` if you want
+them.
+
+## CI
+
+`.github/workflows/ci.yml` runs on every push/PR: `go vet` + `go test -race` (with
+ffmpeg installed so render/export tests run), the frontend typecheck + build, and a
+Docker image build.
+
 ## Connectivity — Studio as the hub
 
 Studio pulls from every product three ways:

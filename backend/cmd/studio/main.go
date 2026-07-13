@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -62,14 +63,25 @@ func main() {
 		}
 	}
 
+	// Deployment config from the environment. STUDIO_TOKEN gates the API when set
+	// (unset = open, for localhost dev). STUDIO_ALLOWED_ORIGINS is a comma list of
+	// CORS origins (empty = localhost dev origins only).
+	auth := httpapi.NewAuth(os.Getenv("STUDIO_TOKEN"))
+	var origins []string
+	if v := strings.TrimSpace(os.Getenv("STUDIO_ALLOWED_ORIGINS")); v != "" {
+		origins = strings.Split(v, ",")
+	}
+
 	jobMgr := jobs.NewManager()
 	srv := &httpapi.Server{
-		Store:    st,
-		Jobs:     jobMgr,
-		Gens:     reg,
-		Lib:      lib,
-		Apps:     appMgr,
-		FrontDir: front,
+		Store:          st,
+		Jobs:           jobMgr,
+		Gens:           reg,
+		Lib:            lib,
+		Apps:           appMgr,
+		FrontDir:       front,
+		Auth:           auth,
+		AllowedOrigins: origins,
 	}
 
 	log.Printf("studio backend on %s", *addr)
@@ -83,6 +95,16 @@ func main() {
 	}
 	if front != "" {
 		log.Printf("  serving frontend from %s", front)
+	}
+	if auth.Enabled() {
+		log.Printf("  auth       ENABLED (STUDIO_TOKEN set)")
+	} else {
+		log.Printf("  auth       open (set STUDIO_TOKEN to require a login)")
+	}
+	if len(origins) > 0 {
+		log.Printf("  cors       allowlist=%v", origins)
+	} else {
+		log.Printf("  cors       localhost dev origins only")
 	}
 
 	// Graceful shutdown: on SIGINT/SIGTERM, stop accepting connections, cancel

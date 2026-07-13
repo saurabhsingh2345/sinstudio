@@ -8,7 +8,18 @@ import type {
   LibrarySource,
 } from "./types";
 
+// onUnauthorized is invoked whenever the API returns 401 so the app can show its
+// login gate. Registered by the auth store.
+let onUnauthorized: (() => void) | null = null;
+export function setUnauthorizedHandler(fn: () => void) {
+  onUnauthorized = fn;
+}
+
 async function j<T>(res: Response): Promise<T> {
+  if (res.status === 401) {
+    onUnauthorized?.();
+    throw new Error("authentication required");
+  }
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
   return res.json();
 }
@@ -86,6 +97,16 @@ export const api = {
     ),
   cancelJob: (id: string) =>
     fetch(`/api/jobs/${id}/cancel`, { method: "POST" }).then((r) => j<{ ok: boolean }>(r)),
+
+  // Auth: whether a token is required and whether this browser is already in.
+  authState: () => fetch("/api/auth").then((r) => j<{ required: boolean; authed: boolean }>(r)),
+  login: (token: string) =>
+    fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    }).then((r) => j<{ ok: boolean }>(r)),
+  logout: () => fetch("/api/logout", { method: "POST" }).then((r) => j<{ ok: boolean }>(r)),
 };
 
 // subscribeJobs opens the SSE stream and invokes cb for every job event.

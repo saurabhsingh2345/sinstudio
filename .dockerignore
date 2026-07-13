@@ -1,0 +1,11 @@
+**/node_modules
+frontend/dist
+backend/studio
+backend/*.out
+media
+.git
+.github
+**/.DS_Store
+*.log
+go.work
+go.work.sum

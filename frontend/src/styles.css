@@ -205,3 +205,24 @@ button.ghost { background: transparent; }
 .toast.error { border-color: var(--danger); color: #ffd7dc; }
 .toast.success { border-color: var(--accent2); color: #d7fff0; }
 .toast.info { border-color: var(--accent); }
+
+/* Auth gate — full-screen token login shown when STUDIO_TOKEN is set. */
+.auth-gate {
+  position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: var(--bg);
+}
+.auth-card {
+  width: 320px; padding: 28px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; display: flex; flex-direction: column; gap: 10px;
+}
+.auth-card h1 { margin: 0; font-size: 20px; }
+.auth-card p { margin: 0 0 6px; }
+.auth-card input {
+  padding: 10px 12px; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 6px; color: inherit; font-size: 14px;
+}
+.auth-card button {
+  padding: 10px 12px; background: var(--accent); border: 1px solid var(--accent);
+  color: #fff; border-radius: 6px; font-size: 14px; cursor: pointer;
+}
+.auth-card button:disabled { opacity: .5; cursor: default; }

@@ -1,0 +1,20 @@
+# Run Studio as a single container. Set STUDIO_TOKEN (and optionally
+# STUDIO_ALLOWED_ORIGINS) in a .env file or the environment before `up`.
+#
+#   STUDIO_TOKEN=change-me docker compose up --build
+#
+services:
+  studio:
+    build: .
+    image: studio:latest
+    ports:
+      - "8787:8787"
+    environment:
+      - STUDIO_TOKEN=${STUDIO_TOKEN:-}
+      - STUDIO_ALLOWED_ORIGINS=${STUDIO_ALLOWED_ORIGINS:-}
+    volumes:
+      - studio-media:/data
+    restart: unless-stopped
+
+volumes:
+  studio-media:

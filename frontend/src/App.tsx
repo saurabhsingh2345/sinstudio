@@ -3,6 +3,7 @@ import { ProjectList } from "./components/ProjectList";
 import { Editor } from "./components/Editor";
 import { JobsOverlay } from "./components/JobsOverlay";
 import { Toasts } from "./components/Toasts";
+import { AuthGate } from "./components/AuthGate";
 import { startJobStream } from "./jobs";
 
 export function App() {
@@ -28,7 +29,7 @@ export function App() {
   };
 
   return (
-    <>
+    <AuthGate>
       {projectId ? (
         <Editor projectId={projectId} onHome={home} />
       ) : (
@@ -36,6 +37,6 @@ export function App() {
       )}
       <JobsOverlay />
       <Toasts />
-    </>
+    </AuthGate>
   );
 }

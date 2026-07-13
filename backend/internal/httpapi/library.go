@@ -88,7 +88,8 @@ func (s *Server) libraryImport(w http.ResponseWriter, r *http.Request) {
 // clip here (multipart "file") and it lands in the global inbox, visible in the
 // library. Optionally ?projectId=... imports it straight into a project.
 func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
-	if err := r.ParseMultipartForm(1 << 30); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		httpErr(w, 400, err)
 		return
 	}

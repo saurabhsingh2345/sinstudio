@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"studio/internal/apps"
@@ -22,21 +23,33 @@ import (
 	"studio/internal/transcribe"
 )
 
+// maxUploadBytes caps a single multipart upload (import/ingest) so a client
+// can't fill the disk. 4 GiB covers long 4K clips with headroom.
+const maxUploadBytes = 4 << 30
+
 // Server bundles the backend dependencies.
 type Server struct {
-	Store    *store.Store
-	Jobs     *jobs.Manager
-	Gens     *generator.Registry
-	Lib      *library.Scanner
-	Apps     *apps.Manager
-	FrontDir string // optional built frontend to serve (SPA)
+	Store          *store.Store
+	Jobs           *jobs.Manager
+	Gens           *generator.Registry
+	Lib            *library.Scanner
+	Apps           *apps.Manager
+	FrontDir       string   // optional built frontend to serve (SPA)
+	Auth           *Auth    // optional shared-token gate (nil/empty = open)
+	AllowedOrigins []string // CORS allowlist ("" entry or empty = localhost dev only)
 }
 
 // Routes builds the HTTP handler.
 func (s *Server) Routes() http.Handler {
+	if s.Auth == nil {
+		s.Auth = NewAuth("")
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("POST /api/login", s.login)
+	mux.HandleFunc("POST /api/logout", s.logout)
+	mux.HandleFunc("GET /api/auth", s.authState)
 	mux.HandleFunc("GET /api/generators", s.listGenerators)
 
 	// Sibling-app supervisor: run/manage newaniAdv, funkycode, hyperframes.
@@ -75,7 +88,7 @@ func (s *Server) Routes() http.Handler {
 	// SPA fallback.
 	mux.HandleFunc("GET /", s.spa)
 
-	return withCORS(mux)
+	return s.withCORS(s.Auth.Middleware(mux))
 }
 
 // ---- basic handlers ----
@@ -144,7 +157,8 @@ func (s *Server) importAsset(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, err)
 		return
 	}
-	if err := r.ParseMultipartForm(1 << 30); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(32 << 20); err != nil {
 		httpErr(w, 400, err)
 		return
 	}
@@ -460,15 +474,42 @@ func httpErr(w http.ResponseWriter, code int, err error) {
 	writeJSON(w, code, map[string]any{"error": err.Error()})
 }
 
-func withCORS(h http.Handler) http.Handler {
+// withCORS reflects an Origin only if it's in the configured allowlist. With no
+// allowlist, it permits localhost/127.0.0.1 origins on any port (dev), so a
+// deployed instance never advertises "*" and only the origins you list can make
+// credentialed cross-origin calls.
+func (s *Server) withCORS(h http.Handler) http.Handler {
+	allowed := map[string]bool{}
+	for _, o := range s.AllowedOrigins {
+		if o = strings.TrimSpace(o); o != "" {
+			allowed[o] = true
+		}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		origin := r.Header.Get("Origin")
+		if origin != "" && (allowed[origin] || (len(allowed) == 0 && isLocalOrigin(origin))) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(204)
 			return
 		}
 		h.ServeHTTP(w, r)
 	})
+}
+
+// isLocalOrigin matches http(s)://localhost:* and 127.0.0.1:* for dev.
+func isLocalOrigin(origin string) bool {
+	host := origin
+	if i := strings.Index(host, "://"); i >= 0 {
+		host = host[i+3:]
+	}
+	if i := strings.Index(host, ":"); i >= 0 {
+		host = host[:i]
+	}
+	return host == "localhost" || host == "127.0.0.1"
 }
