@@ -26,6 +26,7 @@ type Event struct {
 	JobID    string  `json:"jobId"`
 	Kind     string  `json:"kind"`     // generate|transcribe|export|import
 	Type     string  `json:"type"`     // progress|log|done|error
+	Status   string  `json:"status"`   // queued|running|done|error|canceled
 	Progress float64 `json:"progress"` // 0..1
 	Message  string  `json:"message,omitempty"`
 	Data     any     `json:"data,omitempty"` // payload on done (e.g. the new asset)
@@ -92,6 +93,18 @@ func (m *Manager) broadcast(ev Event) {
 // canceled after that deadline, killing a hung subprocess; timeout <= 0 makes it
 // cancelable but unbounded.
 func (m *Manager) New(kind string, timeout time.Duration) *Job {
+	return m.new(kind, timeout, "running")
+}
+
+// NewQueued registers a job in the "queued" state (waiting for a worker slot).
+// Call Begin when it actually starts.
+func (m *Manager) NewQueued(kind string, timeout time.Duration) *Job {
+	j := m.new(kind, timeout, "queued")
+	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventProgress, Status: "queued", Message: "queued"})
+	return j
+}
+
+func (m *Manager) new(kind string, timeout time.Duration, status string) *Job {
 	var ctx context.Context
 	var cancel context.CancelFunc
 	if timeout > 0 {
@@ -99,11 +112,26 @@ func (m *Manager) New(kind string, timeout time.Duration) *Job {
 	} else {
 		ctx, cancel = context.WithCancel(context.Background())
 	}
-	j := &Job{ID: store.NewID("job_"), Kind: kind, Status: "running", m: m, ctx: ctx, cancel: cancel}
+	j := &Job{ID: store.NewID("job_"), Kind: kind, Status: status, m: m, ctx: ctx, cancel: cancel}
 	m.mu.Lock()
 	m.jobs[j.ID] = j
 	m.mu.Unlock()
 	return j
+}
+
+// Begin transitions a queued job to running and announces it.
+func (j *Job) Begin() {
+	j.m.mu.Lock()
+	j.Status = "running"
+	j.m.mu.Unlock()
+	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventProgress, Status: "running", Progress: 0, Message: "started"})
+}
+
+// status reads the job's current status under the manager lock.
+func (j *Job) status() string {
+	j.m.mu.Lock()
+	defer j.m.mu.Unlock()
+	return j.Status
 }
 
 // List returns a snapshot of all jobs.
@@ -157,16 +185,18 @@ func (m *Manager) CancelAll() {
 func (j *Job) Progress(p float64, msg string) {
 	j.m.mu.Lock()
 	j.Pct, j.Message = p, msg
+	st := j.Status
 	j.m.mu.Unlock()
-	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventProgress, Progress: p, Message: msg})
+	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventProgress, Status: st, Progress: p, Message: msg})
 }
 
 // Log emits a log line without changing progress.
 func (j *Job) Log(msg string) {
 	j.m.mu.Lock()
 	pct := j.Pct
+	st := j.Status
 	j.m.mu.Unlock()
-	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventLog, Progress: pct, Message: msg})
+	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventLog, Status: st, Progress: pct, Message: msg})
 }
 
 // Done marks the job complete and attaches an optional result payload.
@@ -177,7 +207,7 @@ func (j *Job) Done(data any) {
 	j.m.mu.Lock()
 	j.Status, j.Pct = "done", 1
 	j.m.mu.Unlock()
-	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventDone, Progress: 1, Data: data})
+	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventDone, Status: "done", Progress: 1, Data: data})
 }
 
 // Fail marks the job errored (or canceled/timed-out, distinguished from the
@@ -204,7 +234,7 @@ func (j *Job) Fail(err error) {
 	j.Message = msg
 	pct := j.Pct
 	j.m.mu.Unlock()
-	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventError, Progress: pct, Message: msg})
+	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventError, Status: status, Progress: pct, Message: msg})
 }
 
 // Encode is a helper for SSE writers to serialize an event as JSON.

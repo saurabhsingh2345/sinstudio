@@ -198,10 +198,18 @@ export interface JobEvent {
   jobId: string;
   kind: string;
   type: "progress" | "log" | "done" | "error";
+  status?: "queued" | "running" | "done" | "error" | "canceled";
   progress: number;
   message?: string;
   data?: any;
   at: string;
+}
+
+export interface RenderEntry {
+  name: string;
+  url: string;
+  size: number;
+  created: string;
 }
 
 export const mediaUrl = (rel?: string) => (rel ? `/media/${rel}` : "");

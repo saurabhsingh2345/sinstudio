@@ -6,6 +6,7 @@ import { Timeline } from "./Timeline";
 import { Inspector } from "./Inspector";
 import { Transcript } from "./Transcript";
 import { ExportDialog } from "./ExportDialog";
+import { RendersModal } from "./RendersModal";
 
 export function Editor({ projectId, onHome }: { projectId: string; onHome: () => void }) {
   const {
@@ -25,6 +26,7 @@ export function Editor({ projectId, onHome }: { projectId: string; onHome: () =>
     redo,
   } = useStudio();
   const [showExport, setShowExport] = useState(false);
+  const [showRenders, setShowRenders] = useState(false);
 
   useEffect(() => {
     load(projectId).catch(console.error);
@@ -101,6 +103,9 @@ export function Editor({ projectId, onHome }: { projectId: string; onHome: () =>
         <span className="status">
           {doc.canvas.width}×{doc.canvas.height} · {doc.canvas.fps}fps
         </span>
+        <button onClick={() => setShowRenders(true)} title="Render queue & history">
+          Renders
+        </button>
         <button className="primary" onClick={() => setShowExport(true)}>
           Export
         </button>
@@ -123,6 +128,7 @@ export function Editor({ projectId, onHome }: { projectId: string; onHome: () =>
       </div>
 
       {showExport && <ExportDialog projectId={projectId} onClose={() => setShowExport(false)} />}
+      {showRenders && <RendersModal projectId={projectId} onClose={() => setShowRenders(false)} />}
     </div>
   );
 }

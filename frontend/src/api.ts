@@ -6,6 +6,7 @@ import type {
   JobEvent,
   LibraryEntry,
   LibrarySource,
+  RenderEntry,
 } from "./types";
 
 // onUnauthorized is invoked whenever the API returns 401 so the app can show its
@@ -97,6 +98,16 @@ export const api = {
     ),
   cancelJob: (id: string) =>
     fetch(`/api/jobs/${id}/cancel`, { method: "POST" }).then((r) => j<{ ok: boolean }>(r)),
+  retryExport: (id: string) =>
+    fetch(`/api/jobs/${id}/retry`, { method: "POST" }).then((r) => j<{ jobId: string }>(r)),
+
+  // Render history (finished exports on disk for a project).
+  listRenders: (projId: string) =>
+    fetch(`/api/projects/${projId}/renders`).then((r) => j<{ renders: RenderEntry[] }>(r)),
+  deleteRender: (projId: string, name: string) =>
+    fetch(`/api/projects/${projId}/renders/${encodeURIComponent(name)}`, { method: "DELETE" }).then((r) =>
+      j<{ ok: boolean }>(r)
+    ),
 
   // Auth: whether a token is required and whether this browser is already in.
   authState: () => fetch("/api/auth").then((r) => j<{ required: boolean; authed: boolean }>(r)),

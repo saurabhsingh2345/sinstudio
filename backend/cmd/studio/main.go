@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -71,6 +72,12 @@ func main() {
 	if v := strings.TrimSpace(os.Getenv("STUDIO_ALLOWED_ORIGINS")); v != "" {
 		origins = strings.Split(v, ",")
 	}
+	exportWorkers := 2
+	if v := strings.TrimSpace(os.Getenv("STUDIO_EXPORT_WORKERS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			exportWorkers = n
+		}
+	}
 
 	jobMgr := jobs.NewManager()
 	srv := &httpapi.Server{
@@ -82,6 +89,7 @@ func main() {
 		FrontDir:       front,
 		Auth:           auth,
 		AllowedOrigins: origins,
+		ExportWorkers:  exportWorkers,
 	}
 
 	log.Printf("studio backend on %s", *addr)
