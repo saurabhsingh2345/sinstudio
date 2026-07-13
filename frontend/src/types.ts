@@ -16,9 +16,11 @@ export interface Transition {
 }
 
 // Keyframe: a property's value at clip-local time t (seconds from clip start).
+// ease names the curve for the segment from this keyframe to the next ("" = linear).
 export interface Keyframe {
   t: number;
   value: number;
+  ease?: string;
 }
 
 // Title: a text-clip spec (clip has no asset when set).
@@ -55,7 +57,7 @@ export interface Clip {
   fadeOut?: number; // seconds
   transitionIn?: Transition;
   transitionOut?: Transition;
-  keyframes?: Record<string, Keyframe[]>; // property ("x"|"y") -> control points
+  keyframes?: Record<string, Keyframe[]>; // property ("x"|"y"|"scale"|"opacity") -> control points
   effects?: Effects;
   title?: Title; // when set, this is a text clip (no asset)
 }
@@ -66,6 +68,7 @@ export interface ExportOptions {
   from?: number;
   to?: number;
   fps?: number;
+  loudnorm?: boolean; // EBU R128 loudness normalization on the final mix
 }
 
 export interface LibrarySource {
@@ -110,6 +113,7 @@ export interface Track {
   muted?: boolean;
   hidden?: boolean;
   solo?: boolean;
+  duck?: boolean; // audio lane: auto-duck under voice (music/bed)
 }
 
 export interface Asset {

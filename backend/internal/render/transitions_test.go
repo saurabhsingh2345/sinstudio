@@ -230,6 +230,145 @@ func TestOpacityKeyframesRun(t *testing.T) {
 	}
 }
 
+// TestScaleKeyframesRun confirms scale keyframes compile to a per-frame
+// scale=eval=frame animation (with dynamic overlay re-centering) that ffmpeg
+// accepts and renders — covering both grow and shrink.
+func TestScaleKeyframesRun(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "a.mp4")
+	makeTestClip(t, clip, "blue")
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 640, Height: 360, FPS: 24},
+		Tracks: []schema.Track{{ID: "v", Kind: schema.TrackVideo, Clips: []schema.Clip{{
+			ID: "c1", AssetID: "a", Start: 0, In: 0, Out: 3,
+			Transform: schema.Transform{Scale: 1, Opacity: 1},
+			// grow 0.4->1.2 then shrink back to 0.8
+			Keyframes: map[string][]schema.Keyframe{"scale": {{T: 0, Value: 0.4}, {T: 1.5, Value: 1.2}, {T: 3, Value: 0.8}}},
+		}}}},
+	}
+	resolve := func(id string) (string, bool) { return clip, id == "a" }
+	plan, err := Compile(doc, resolve, filepath.Join(dir, "out.mp4"), dir, Options{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	joined := strings.Join(plan.Args, " ")
+	if !strings.Contains(joined, "eval=frame") {
+		t.Errorf("expected an eval=frame scale filter for scale keyframes")
+	}
+	if !strings.Contains(joined, "(W-w)/2") {
+		t.Errorf("expected dynamic overlay re-centering for scale keyframes")
+	}
+	if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg failed: %v\n%s", err, b)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "out.mp4")); err != nil || fi.Size() == 0 {
+		t.Fatalf("no output: %v", err)
+	}
+}
+
+// TestKeyframeEasingRuns confirms eased keyframes (back overshoot on scale,
+// elastic on x) compile to the expected curve math and render.
+func TestKeyframeEasingRuns(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "a.mp4")
+	makeTestClip(t, clip, "orange")
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 640, Height: 360, FPS: 24},
+		Tracks: []schema.Track{{ID: "v", Kind: schema.TrackVideo, Clips: []schema.Clip{{
+			ID: "c1", AssetID: "a", Start: 0, In: 0, Out: 3,
+			Transform: schema.Transform{Scale: 1, Opacity: 1},
+			Keyframes: map[string][]schema.Keyframe{
+				"scale": {{T: 0, Value: 0.3, Ease: "easeOutBack"}, {T: 1.5, Value: 1.0}},
+				"x":     {{T: 0, Value: -200, Ease: "easeOutElastic"}, {T: 3, Value: 0}},
+			},
+		}}}},
+	}
+	resolve := func(id string) (string, bool) { return clip, id == "a" }
+	plan, err := Compile(doc, resolve, filepath.Join(dir, "out.mp4"), dir, Options{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	joined := strings.Join(plan.Args, " ")
+	if !strings.Contains(joined, "2.70158") { // easeOutBack overshoot constant
+		t.Errorf("expected easeOutBack curve math in scale expr")
+	}
+	if !strings.Contains(joined, "2.0943951") { // easeOutElastic 2π/3 constant
+		t.Errorf("expected easeOutElastic curve math in x expr")
+	}
+	if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg failed: %v\n%s", err, b)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "out.mp4")); err != nil || fi.Size() == 0 {
+		t.Fatalf("no output: %v", err)
+	}
+}
+
+// TestAudioDuckAndLoudnorm confirms a music track flagged Duck compiles to a
+// sidechaincompress against the voice, and Loudnorm adds an EBU R128 pass.
+func TestAudioDuckAndLoudnorm(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+	voice := filepath.Join(dir, "voice.mp4")
+	music := filepath.Join(dir, "music.mp4")
+	makeAudioClip(t, voice, "sine=frequency=300")
+	makeAudioClip(t, music, "sine=frequency=800")
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 320, Height: 180, FPS: 24},
+		Tracks: []schema.Track{
+			{ID: "bg", Kind: schema.TrackBackground, BackgroundColor: "#000000"},
+			{ID: "vo", Kind: schema.TrackAudio, Clips: []schema.Clip{{ID: "v1", AssetID: "voice", Start: 0, In: 0, Out: 2, Volume: 1}}},
+			{ID: "mu", Kind: schema.TrackAudio, Duck: true, Clips: []schema.Clip{{ID: "m1", AssetID: "music", Start: 0, In: 0, Out: 2, Volume: 1}}},
+		},
+	}
+	resolve := func(id string) (string, bool) {
+		switch id {
+		case "voice":
+			return voice, true
+		case "music":
+			return music, true
+		}
+		return "", false
+	}
+	plan, err := Compile(doc, resolve, filepath.Join(dir, "out.mp4"), dir, Options{Loudnorm: true})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	joined := strings.Join(plan.Args, " ")
+	if !strings.Contains(joined, "sidechaincompress") {
+		t.Errorf("expected sidechaincompress for a ducked music track")
+	}
+	if !strings.Contains(joined, "loudnorm=I=-16") {
+		t.Errorf("expected loudnorm pass when Loudnorm option set")
+	}
+	if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg failed: %v\n%s", err, b)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "out.mp4")); err != nil || fi.Size() == 0 {
+		t.Fatalf("no output: %v", err)
+	}
+}
+
+// makeAudioClip renders a short mp4 carrying a lavfi audio source (with a video
+// stream so it behaves like a normal clip through the pipeline).
+func makeAudioClip(t *testing.T, path, aExpr string) {
+	t.Helper()
+	cmd := exec.Command("ffmpeg", "-y",
+		"-f", "lavfi", "-i", "color=c=black:s=320x180:r=24:d=2",
+		"-f", "lavfi", "-i", aExpr+":d=2",
+		"-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", path)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("make audio clip: %v\n%s", err, b)
+	}
+}
+
 func makeTestClip(t *testing.T, path, color string) {
 	t.Helper()
 	cmd := exec.Command("ffmpeg", "-y", "-f", "lavfi", "-i",

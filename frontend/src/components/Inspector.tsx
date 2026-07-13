@@ -1,5 +1,6 @@
 import { useStudio } from "../state";
 import type { Keyframe, Transition } from "../types";
+import { EASINGS, EASE_LABEL } from "../ease";
 
 export function Inspector() {
   const {
@@ -14,6 +15,7 @@ export function Inspector() {
     playhead,
     addKeyframe,
     updateKeyframe,
+    setKeyframeEase,
     removeKeyframe,
     updateEffect,
     resetEffects,
@@ -122,9 +124,9 @@ export function Inspector() {
 
             <div className="kf-head">
               Motion keyframes
-              <span className="small"> · key X/Y at the playhead to animate position</span>
+              <span className="small"> · key X/Y/Scale/Opacity at the playhead to animate</span>
             </div>
-            {(["x", "y", "opacity"] as const).map((prop) => (
+            {(["x", "y", "scale", "opacity"] as const).map((prop) => (
               <KeyRow
                 key={prop}
                 prop={prop}
@@ -132,6 +134,7 @@ export function Inspector() {
                 localPlayhead={+(playhead - clip.start).toFixed(2)}
                 onAdd={() => addKeyframe(selClip.trackId, clip.id, prop)}
                 onUpdate={(i, v) => updateKeyframe(selClip.trackId, clip.id, prop, i, v)}
+                onSetEase={(i, e) => setKeyframeEase(selClip.trackId, clip.id, prop, i, e)}
                 onRemove={(i) => removeKeyframe(selClip.trackId, clip.id, prop, i)}
               />
             ))}
@@ -207,17 +210,19 @@ function KeyRow({
   localPlayhead,
   onAdd,
   onUpdate,
+  onSetEase,
   onRemove,
 }: {
-  prop: "x" | "y" | "opacity";
+  prop: "x" | "y" | "scale" | "opacity";
   keys: Keyframe[];
   localPlayhead: number;
   onAdd: () => void;
   onUpdate: (i: number, v: number) => void;
+  onSetEase: (i: number, ease: string) => void;
   onRemove: (i: number) => void;
 }) {
-  const step = prop === "opacity" ? 0.05 : 5;
-  const label = prop === "opacity" ? "O" : prop.toUpperCase();
+  const step = prop === "opacity" || prop === "scale" ? 0.05 : 5;
+  const label = prop === "opacity" ? "O" : prop === "scale" ? "S" : prop.toUpperCase();
   return (
     <div className="kf-row">
       <div className="kf-label">
@@ -239,6 +244,20 @@ function KeyRow({
                 value={+k.value.toFixed(2)}
                 onChange={(e) => onUpdate(i, parseFloat(e.target.value) || 0)}
               />
+              {i < keys.length - 1 && (
+                <select
+                  className="kf-ease"
+                  value={k.ease || "linear"}
+                  title="Easing curve into the next keyframe"
+                  onChange={(e) => onSetEase(i, e.target.value)}
+                >
+                  {EASINGS.map((e) => (
+                    <option key={e} value={e}>
+                      {EASE_LABEL[e]}
+                    </option>
+                  ))}
+                </select>
+              )}
               <button className="kf-x" onClick={() => onRemove(i)} title="Remove keyframe">
                 ✕
               </button>

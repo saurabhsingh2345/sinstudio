@@ -27,8 +27,9 @@ type Options struct {
 	Format string  `json:"format"` // "" (mp4) | mp4 | webm | gif | mov
 	From    float64 `json:"from"`    // range start seconds
 	To      float64 `json:"to"`      // range end seconds (0 = end)
-	FPS     int     `json:"fps"`     // override output fps (0 = doc fps)
-	FrameAt float64 `json:"frameAt"` // >0: render a single PNG frame at this time
+	FPS      int     `json:"fps"`      // override output fps (0 = doc fps)
+	FrameAt  float64 `json:"frameAt"`  // >0: render a single PNG frame at this time
+	Loudnorm bool    `json:"loudnorm"` // apply EBU R128 loudness normalization to the mix
 }
 
 // visual is a resolved visual clip ready for the filtergraph.
@@ -56,6 +57,7 @@ type audio struct {
 	volume          float64
 	speed           float64
 	fadeIn, fadeOut float64
+	duck            bool // true = a music/bed track that ducks under voice
 }
 
 // Plan is the compiled ffmpeg command plus side artifacts (srt path).
@@ -128,7 +130,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				bgColor = t.BackgroundColor
 			}
 			for _, c := range t.Clips {
-				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted)
+				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck)
 			}
 		case schema.TrackVideo, schema.TrackOverlay:
 			for _, c := range t.Clips {
@@ -138,7 +140,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 					}
 					continue
 				}
-				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted)
+				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck)
 			}
 		case schema.TrackAudio:
 			if t.Muted {
@@ -155,7 +157,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				}
 				audios = append(audios, audio{
 					path: p, in: c.In, out: c.Out, start: c.Start, volume: vol,
-					speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut,
+					speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut, duck: t.Duck,
 				})
 			}
 		case schema.TrackCaption:
@@ -224,17 +226,25 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			sp = 1
 		}
 		tr := resolveTransitions(v)
+		// Scale — animated (scale=eval=frame, re-evaluated per frame) when the clip
+		// has scale keyframes, else a one-time resize to the clip's base size.
+		scaleActive := len(v.keyframes["scale"]) > 0
+		scaleSeg := fmt.Sprintf("scale=%d:%d:flags=bicubic", v.sw, v.sh)
+		if scaleActive {
+			se := kfScaleExpr(v.start, v.keyframes["scale"])
+			scaleSeg = fmt.Sprintf("scale=w='max(2,%d*%s)':h='max(2,%d*%s)':eval=frame:flags=bicubic", w, se, h, se)
+		}
 		if v.still {
 			// Looped still (title PNG): bound to its span, PTS shifted to start.
 			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", v.path)
 			fmt.Fprintf(&fc,
-				"[%d:v]setpts=PTS-STARTPTS+%.3f/TB,scale=%d:%d:flags=bicubic,format=rgba",
-				inputIdx, v.start, v.sw, v.sh)
+				"[%d:v]setpts=PTS-STARTPTS+%.3f/TB,%s,format=rgba",
+				inputIdx, v.start, scaleSeg)
 		} else {
 			args = append(args, "-i", v.path)
 			fmt.Fprintf(&fc,
-				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB,scale=%d:%d:flags=bicubic,format=rgba",
-				inputIdx, v.in, v.out, sp, v.start, v.sw, v.sh)
+				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB,%s,format=rgba",
+				inputIdx, v.in, v.out, sp, v.start, scaleSeg)
 		}
 		// Opacity: animated alpha via geq when keyframed, else a constant multiplier.
 		if okf := v.keyframes["opacity"]; len(okf) > 0 {
@@ -255,14 +265,29 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		}
 		fmt.Fprintf(&fc, "%s;", lbl)
 		out := fmt.Sprintf("[b%d]", i)
-		// Position — keyframes (motion) win per axis, else a slide expression, else static.
-		xPos := axisPos(v.x, v.start, v.end, tr.xInOff, tr.xInDur, tr.xOutOff, tr.xOutDur)
-		yPos := axisPos(v.y, v.start, v.end, tr.yInOff, tr.yInDur, tr.yOutOff, tr.yOutDur)
-		if kf := v.keyframes["x"]; len(kf) > 0 {
-			xPos = kfExpr(v.cx, v.start, kf)
+		// Position — motion keyframes win per axis, else a slide expression, else
+		// static. When scale is animated the center must track the clip's live
+		// size, so use overlay's own w/h ("(W-w)/2") instead of the static center.
+		cxExpr, cyExpr := fmt.Sprintf("%d", v.cx), fmt.Sprintf("%d", v.cy)
+		if scaleActive {
+			cxExpr, cyExpr = "(W-w)/2", "(H-h)/2"
 		}
-		if kf := v.keyframes["y"]; len(kf) > 0 {
-			yPos = kfExpr(v.cy, v.start, kf)
+		var xPos, yPos string
+		switch {
+		case len(v.keyframes["x"]) > 0:
+			xPos = kfExpr(cxExpr, v.start, v.keyframes["x"])
+		case scaleActive:
+			xPos = axisPosDyn(cxExpr, v.x-v.cx, v.start, v.end, tr.xInOff, tr.xInDur, tr.xOutOff, tr.xOutDur)
+		default:
+			xPos = axisPos(v.x, v.start, v.end, tr.xInOff, tr.xInDur, tr.xOutOff, tr.xOutDur)
+		}
+		switch {
+		case len(v.keyframes["y"]) > 0:
+			yPos = kfExpr(cyExpr, v.start, v.keyframes["y"])
+		case scaleActive:
+			yPos = axisPosDyn(cyExpr, v.y-v.cy, v.start, v.end, tr.yInOff, tr.yInDur, tr.yOutOff, tr.yOutDur)
+		default:
+			yPos = axisPos(v.y, v.start, v.end, tr.yInOff, tr.yInDur, tr.yOutOff, tr.yOutDur)
 		}
 		fmt.Fprintf(&fc,
 			"%s%soverlay=x=%s:y=%s:enable='between(t,%.3f,%.3f)':eof_action=pass:format=auto%s;",
@@ -294,8 +319,12 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		}
 	}
 
-	// Audio graph: trim, speed (atempo), volume, fades, delay, then mix.
+	// Audio graph: trim, speed (atempo), volume, fades, delay, then mix. Sources
+	// split into "voice" (everything) and "duck" (music/bed tracks) so the bed
+	// can be sidechain-compressed under the voice.
 	audioLabels := []string{}
+	voiceLabels := []string{}
+	duckLabels := []string{}
 	if !gif {
 		for i, a := range audios {
 			args = append(args, "-i", a.path)
@@ -315,13 +344,37 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			}
 			fmt.Fprintf(&fc, ",adelay=%d|%d%s;", ms, ms, lbl)
 			audioLabels = append(audioLabels, lbl)
+			if a.duck {
+				duckLabels = append(duckLabels, lbl)
+			} else {
+				voiceLabels = append(voiceLabels, lbl)
+			}
 			inputIdx++
 		}
 	}
 	haveAudio := len(audioLabels) > 0
+	// mix folds a label set into one stream (a passthrough when it's a single
+	// label), emitting an amix into `out` only when there's more than one.
+	mix := func(labels []string, out string) string {
+		if len(labels) == 1 {
+			return labels[0]
+		}
+		fmt.Fprintf(&fc, "%samix=inputs=%d:normalize=0:dropout_transition=0%s;",
+			strings.Join(labels, ""), len(labels), out)
+		return out
+	}
 	if haveAudio {
-		fmt.Fprintf(&fc, "%samix=inputs=%d:normalize=0:dropout_transition=0[amix];",
-			strings.Join(audioLabels, ""), len(audioLabels))
+		if len(duckLabels) > 0 && len(voiceLabels) > 0 {
+			// Auto-duck: compress the music bed with the voice as the sidechain key.
+			vmix := mix(voiceLabels, "[vmix]")
+			fmt.Fprintf(&fc, "%sasplit=2[vout][vkey];", vmix)
+			dmix := mix(duckLabels, "[dmix]")
+			fmt.Fprintf(&fc, "%s[vkey]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=300[ducked];", dmix)
+			fmt.Fprintf(&fc, "[vout][ducked]amix=inputs=2:normalize=0:dropout_transition=0[amix];")
+		} else {
+			fmt.Fprintf(&fc, "%samix=inputs=%d:normalize=0:dropout_transition=0[amix];",
+				strings.Join(audioLabels, ""), len(audioLabels))
+		}
 	}
 
 	// ---- finalize: range trim, preset scale/pad, gif palette ----
@@ -332,7 +385,10 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	alab := "[amix]"
 
 	// Only produce a graph video label if we have clips/captions or need finalize.
-	hasVideoGraph := len(visuals) > 0 || strings.Contains(fc.String(), "[c") || rangeActive || presetActive || gif
+	// An audio-only project (music over a bare background) still builds a
+	// filtergraph, so the background must be routed through a passthrough too —
+	// otherwise the bare "[0:v]" input pad gets mapped as a filter label.
+	hasVideoGraph := len(visuals) > 0 || strings.Contains(fc.String(), "[c") || rangeActive || presetActive || gif || haveAudio
 	if vlab == "[0:v]" && hasVideoGraph {
 		// route the bare bg through a passthrough so we can attach finalize filters
 		fmt.Fprintf(&fc, "[0:v]null[vpass];")
@@ -346,6 +402,11 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			fmt.Fprintf(&fc, "%satrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS[ar];", alab, opts.From, rangeEnd(opts.To, dur))
 			alab = "[ar]"
 		}
+	}
+	// EBU R128 loudness normalization on the final mix (streaming target −16 LUFS).
+	if opts.Loudnorm && haveAudio && !gif {
+		fmt.Fprintf(&fc, "%sloudnorm=I=-16:TP=-1.5:LRA=11[aout];", alab)
+		alab = "[aout]"
 	}
 	if presetActive {
 		fmt.Fprintf(&fc,
@@ -417,7 +478,7 @@ func codecArgs(format string, withAudio bool) []string {
 	return a
 }
 
-func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted bool) {
+func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool) {
 	p, ok := resolve(c.AssetID)
 	if !ok {
 		return
@@ -462,7 +523,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		}
 		*audios = append(*audios, audio{
 			path: p, in: c.In, out: c.Out, start: c.Start, volume: vol,
-			speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut,
+			speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut, duck: duck,
 		})
 	}
 }
@@ -546,6 +607,27 @@ func axisPos(target int, S, E float64, inOff string, inDur float64, outOff strin
 	return "'" + expr + "'"
 }
 
+// axisPosDyn builds an overlay coordinate around a dynamic center expression
+// (e.g. "(W-w)/2", which re-centers as the clip's size animates) plus a constant
+// px offset, honoring slide transitions. Used when a clip has scale keyframes.
+func axisPosDyn(center string, off int, S, E float64, inOff string, inDur float64, outOff string, outDur float64) string {
+	target := fmt.Sprintf("(%s+%d)", center, off)
+	if inOff == "" && outOff == "" {
+		return "'" + target + "'"
+	}
+	expr := target
+	if outOff != "" && outDur > 0 { // exit: target -> edge over [E-dur, E]
+		st := E - outDur
+		ramp := fmt.Sprintf("(%s+((%s)-%s)*(t-%.3f)/%.3f)", target, outOff, target, st, outDur)
+		expr = fmt.Sprintf("if(gte(t,%.3f),%s,%s)", st, ramp, expr)
+	}
+	if inOff != "" && inDur > 0 { // entrance: edge -> target over [S, S+dur]
+		ramp := fmt.Sprintf("((%s)+(%s-(%s))*(t-%.3f)/%.3f)", inOff, target, inOff, S, inDur)
+		expr = fmt.Sprintf("if(lt(t,%.3f),%s,%s)", S+inDur, ramp, expr)
+	}
+	return "'" + expr + "'"
+}
+
 // effectFilters emits the eq/hue/gblur chain for a clip's effects (empty when
 // nil or all-identity). Leading comma so it appends to the clip's filter string.
 func effectFilters(e *schema.Effects) string {
@@ -574,14 +656,38 @@ func effectFilters(e *schema.Effects) string {
 	return b.String()
 }
 
-// kfExpr compiles animation keyframes into an overlay coordinate: base position
-// plus a piecewise-linear function of clip-local time (t-S), holding the first/
-// last value outside the keyed range. Values are canvas-px offsets from center.
-func kfExpr(base int, S float64, kfs []schema.Keyframe) string {
+// easeProgress wraps a normalized progress expression p (a string evaluating to
+// [0,1]) into an eased 0..1 expression per the named curve. The shapes mirror
+// newaniAdv/lib/motion.ts so preview, that engine, and this export agree.
+func easeProgress(ease, p string) string {
+	switch ease {
+	case "easeInCubic":
+		return fmt.Sprintf("pow(%s,3)", p)
+	case "easeOutCubic":
+		return fmt.Sprintf("(1-pow(1-(%s),3))", p)
+	case "easeInOut": // quintic smootherstep x^3*(x*(6x-15)+10)
+		return fmt.Sprintf("(pow(%s,3)*((%s)*((%s)*6-15)+10))", p, p, p)
+	case "easeOutBack": // one overshoot then settle (c3 = 2.70158)
+		return fmt.Sprintf("(1+2.70158*pow((%s)-1,3)+1.70158*pow((%s)-1,2))", p, p)
+	case "easeOutElastic": // decaying oscillation (c4 = 2π/3)
+		return fmt.Sprintf("(pow(2,-10*(%s))*sin(((%s)*10-0.75)*2.0943951)+1)", p, p)
+	case "springOut": // soft single-overshoot settle; pinned to 0 at p=0
+		return fmt.Sprintf("if(lte(%s,0),0,(1+pow(2,-9*(%s))*sin(((%s)*8-0.75)*1.8479957)*0.9))", p, p, p)
+	default: // linear
+		return "(" + p + ")"
+	}
+}
+
+// kfExpr compiles animation keyframes into an overlay coordinate: a base
+// position (a plain integer center, or a dynamic "(W-w)/2" expression when the
+// clip's size animates) plus a piecewise-linear function of clip-local time
+// (t-S), holding the first/last value outside the keyed range. Values are
+// canvas-px offsets from center.
+func kfExpr(base string, S float64, kfs []schema.Keyframe) string {
 	pts := append([]schema.Keyframe(nil), kfs...)
 	sort.SliceStable(pts, func(i, j int) bool { return pts[i].T < pts[j].T })
 	if len(pts) == 1 {
-		return fmt.Sprintf("%d", base+int(math.Round(pts[0].Value)))
+		return fmt.Sprintf("'(%s+%.3f)'", base, pts[0].Value)
 	}
 	local := fmt.Sprintf("(t-%.3f)", S)
 	// Innermost fallback: hold the last value.
@@ -592,12 +698,39 @@ func kfExpr(base int, S float64, kfs []schema.Keyframe) string {
 		if dt < 1e-3 {
 			dt = 1e-3
 		}
-		seg := fmt.Sprintf("(%.3f+(%.3f)*(%s-%.3f)/%.3f)", a.Value, b.Value-a.Value, local, a.T, dt)
+		p := easeProgress(a.Ease, fmt.Sprintf("(%s-%.3f)/%.3f", local, a.T, dt))
+		seg := fmt.Sprintf("(%.3f+(%.3f)*%s)", a.Value, b.Value-a.Value, p)
 		expr = fmt.Sprintf("if(lt(%s,%.3f),%s,%s)", local, b.T, seg, expr)
 	}
 	// Before the first key: hold the first value.
 	expr = fmt.Sprintf("if(lt(%s,%.3f),%.3f,%s)", local, pts[0].T, pts[0].Value, expr)
-	return fmt.Sprintf("'(%d+%s)'", base, expr)
+	return fmt.Sprintf("'(%s+%s)'", base, expr)
+}
+
+// kfScaleExpr compiles scale keyframes into a bare multiplier expression of
+// timeline time t (piecewise-linear, held outside the keyed range), for a
+// scale filter in eval=frame mode. A keyframe Value is an absolute scale
+// multiplier (1 = canvas-fit), overriding the clip's static Transform.Scale.
+func kfScaleExpr(S float64, kfs []schema.Keyframe) string {
+	pts := append([]schema.Keyframe(nil), kfs...)
+	sort.SliceStable(pts, func(i, j int) bool { return pts[i].T < pts[j].T })
+	if len(pts) == 1 {
+		return fmt.Sprintf("(%.4f)", math.Max(0, pts[0].Value))
+	}
+	local := fmt.Sprintf("(t-%.3f)", S)
+	expr := fmt.Sprintf("%.4f", pts[len(pts)-1].Value)
+	for i := len(pts) - 2; i >= 0; i-- {
+		a, b := pts[i], pts[i+1]
+		dt := b.T - a.T
+		if dt < 1e-3 {
+			dt = 1e-3
+		}
+		p := easeProgress(a.Ease, fmt.Sprintf("(%s-%.3f)/%.3f", local, a.T, dt))
+		seg := fmt.Sprintf("(%.4f+(%.4f)*%s)", a.Value, b.Value-a.Value, p)
+		expr = fmt.Sprintf("if(lt(%s,%.3f),%s,%s)", local, b.T, seg, expr)
+	}
+	expr = fmt.Sprintf("if(lt(%s,%.3f),%.4f,%s)", local, pts[0].T, pts[0].Value, expr)
+	return "(" + expr + ")"
 }
 
 // addTitleClip renders a text clip to a PNG and appends it as a still visual so
@@ -648,7 +781,8 @@ func kfOpacityExpr(S float64, kfs []schema.Keyframe) string {
 		if dt < 1e-3 {
 			dt = 1e-3
 		}
-		seg := fmt.Sprintf("(%.4f+(%.4f)*(%s-%.3f)/%.3f)", a.Value, b.Value-a.Value, local, a.T, dt)
+		p := easeProgress(a.Ease, fmt.Sprintf("(%s-%.3f)/%.3f", local, a.T, dt))
+		seg := fmt.Sprintf("(%.4f+(%.4f)*%s)", a.Value, b.Value-a.Value, p)
 		expr = fmt.Sprintf("if(lt(%s,%.3f),%s,%s)", local, b.T, seg, expr)
 	}
 	return fmt.Sprintf("if(lt(%s,%.3f),%.4f,%s)", local, pts[0].T, pts[0].Value, expr)

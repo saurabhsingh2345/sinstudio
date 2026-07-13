@@ -28,6 +28,7 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
   const [useRange, setUseRange] = useState(false);
   const [from, setFrom] = useState(0);
   const [to, setTo] = useState(+total.toFixed(2));
+  const [loudnorm, setLoudnorm] = useState(true);
   const [busy, setBusy] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [frameUrl, setFrameUrl] = useState<string>("");
@@ -50,7 +51,7 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
   const run = async () => {
     setBusy(true);
     try {
-      const opts: ExportOptions = { preset, format };
+      const opts: ExportOptions = { preset, format, loudnorm };
       if (useRange) {
         opts.from = from;
         opts.to = to;
@@ -100,6 +101,16 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
             onChange={(e) => setUseRange(e.target.checked)}
           />
           Export a time range only
+        </label>
+
+        <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8 }}>
+          <input
+            type="checkbox"
+            style={{ width: "auto" }}
+            checked={loudnorm}
+            onChange={(e) => setLoudnorm(e.target.checked)}
+          />
+          Normalize loudness (EBU R128, −16 LUFS)
         </label>
         {useRange && (
           <div className="row">

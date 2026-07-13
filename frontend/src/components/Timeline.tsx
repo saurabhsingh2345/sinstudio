@@ -272,6 +272,15 @@ function Lane({
             >
               H
             </button>
+            {track.kind === "audio" && (
+              <button
+                className={track.duck ? "on duck" : ""}
+                onClick={() => toggleTrackFlag(track.id, "duck")}
+                title="Duck: auto-lower this music/bed under the voice"
+              >
+                D
+              </button>
+            )}
             {reorderable && (
               <>
                 <button onClick={() => moveTrack(track.id, -1)} title="Move up">
@@ -367,7 +376,7 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
   const kfTimes = clip.keyframes
     ? Array.from(
         new Set(
-          [...(clip.keyframes.x || []), ...(clip.keyframes.y || []), ...(clip.keyframes.opacity || [])].map((k) => k.t)
+          [...(clip.keyframes.x || []), ...(clip.keyframes.y || []), ...(clip.keyframes.scale || []), ...(clip.keyframes.opacity || [])].map((k) => k.t)
         )
       ).sort((a, b) => a - b)
     : [];

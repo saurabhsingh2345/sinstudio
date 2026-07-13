@@ -92,6 +92,7 @@ label { display: block; color: var(--dim); font-size: 11px; margin: 8px 0 3px; }
 .lane-label .lane-ctl button:hover { color: #fff; }
 .lane-label .lane-ctl button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
 .lane-label .lane-ctl button.on.solo { background: #e0b341; border-color: #e0b341; color: #1a1400; }
+.lane-label .lane-ctl button.on.duck { background: #3fb6a8; border-color: #3fb6a8; color: #04211d; }
 .lane-label .lane-ctl button.rm:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
 .tl-addtrack { display: inline-flex; align-items: center; gap: 4px; }
 .tl-addtrack button { font-size: 10px; padding: 3px 7px; }
@@ -115,6 +116,7 @@ label { display: block; color: var(--dim); font-size: 11px; margin: 8px 0 3px; }
 .kf-chip { display: inline-flex; align-items: center; gap: 3px; background: var(--panel2); border: 1px solid var(--line); border-radius: 5px; padding: 1px 3px 1px 6px; }
 .kf-chip .kf-t { font-size: 9px; color: var(--dim); }
 .kf-chip input { width: 46px; font-size: 10px; padding: 1px 3px; }
+.kf-chip .kf-ease { font-size: 9px; padding: 0 2px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; color: var(--dim); max-width: 66px; }
 .kf-chip .kf-x { font-size: 9px; padding: 1px 4px; background: transparent; border: none; color: var(--dim); }
 .kf-chip .kf-x:hover { color: var(--danger); }
 

@@ -1,15 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStudio, projectDuration } from "../state";
 import { mediaUrl, type Clip, type Track } from "../types";
+import { ease } from "../ease";
 
 const DEF_TRANS = 0.5; // matches render's defTransDur
 
 const clamp01 = (u: number) => Math.max(0, Math.min(1, u));
 const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
 
-// Interpolate a keyframed property at clip-local time (piecewise-linear, held
-// outside the keyed range). Mirrors render.kfExpr.
-function kfValue(keys: { t: number; value: number }[], localT: number): number {
+// Interpolate a keyframed property at clip-local time (piecewise, eased per the
+// left keyframe's curve, held outside the keyed range). Mirrors render.kfExpr.
+function kfValue(keys: { t: number; value: number; ease?: string }[], localT: number): number {
   const s = [...keys].sort((a, b) => a.t - b.t);
   if (localT <= s[0].t) return s[0].value;
   const last = s[s.length - 1];
@@ -18,7 +19,8 @@ function kfValue(keys: { t: number; value: number }[], localT: number): number {
     if (localT < s[i + 1].t) {
       const a = s[i];
       const b = s[i + 1];
-      return lerp(a.value, b.value, (localT - a.t) / Math.max(1e-3, b.t - a.t));
+      const p = (localT - a.t) / Math.max(1e-3, b.t - a.t);
+      return lerp(a.value, b.value, ease(a.ease, p));
     }
   }
   return last.value;
@@ -31,11 +33,15 @@ function clipBox(clip: Clip, t: number, stageW: number, stageH: number, W: numbe
   const start = clip.start;
   const end = start + dur;
   const localT = t - start;
-  const vw = stageW * (clip.transform.scale || 1);
-  const vh = stageH * (clip.transform.scale || 1);
+
+  // size — scale keyframes animate it (overriding the static transform.scale);
+  // centering below derives from vw/vh so the clip scales about its center.
+  const kf = clip.keyframes || {};
+  const scaleMul = kf.scale?.length ? Math.max(0, kfValue(kf.scale, localT)) : clip.transform.scale || 1;
+  const vw = stageW * scaleMul;
+  const vh = stageH * scaleMul;
 
   // base position (canvas-px offset from center) — keyframes win per axis.
-  const kf = clip.keyframes || {};
   const offX = kf.x?.length ? kfValue(kf.x, localT) : clip.transform.x;
   const offY = kf.y?.length ? kfValue(kf.y, localT) : clip.transform.y;
   let left = (stageW - vw) / 2 + (offX / W) * stageW;

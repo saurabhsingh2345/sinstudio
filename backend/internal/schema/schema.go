@@ -35,9 +35,10 @@ type Clip struct {
 	FadeOut       float64     `json:"fadeOut,omitempty"` // seconds of fade-out
 	TransitionIn  *Transition `json:"transitionIn,omitempty"`
 	TransitionOut *Transition `json:"transitionOut,omitempty"`
-	// Keyframes animate a property over the clip's life. Keyed by property name
-	// ("x","y" in v1 — position offset in canvas px). Points are clip-local
-	// seconds (from Start) so they survive moving/splitting the clip.
+	// Keyframes animate a property over the clip's life. Keyed by property name:
+	// "x"/"y" (position offset in canvas px), "scale" (multiplier, 1 = canvas-fit),
+	// "opacity" (0..1). Points are clip-local seconds (from Start) so they survive
+	// moving/splitting the clip.
 	Keyframes map[string][]Keyframe `json:"keyframes,omitempty"`
 	Effects   *Effects              `json:"effects,omitempty"`
 	// Title makes this a text clip (no asset). It is rendered to a full-canvas
@@ -68,9 +69,13 @@ type Effects struct {
 }
 
 // Keyframe is one animation control point: Value at clip-local time T (seconds).
+// Ease names the interpolation curve for the segment FROM this keyframe to the
+// next one ("" = linear); one of linear|easeInOut|easeInCubic|easeOutCubic|
+// easeOutBack|easeOutElastic|springOut (see render.easeProgress).
 type Keyframe struct {
 	T     float64 `json:"t"`
 	Value float64 `json:"value"`
+	Ease  string  `json:"ease,omitempty"`
 }
 
 // Transition is an entrance/exit effect on a clip.
@@ -135,6 +140,9 @@ type Track struct {
 	Muted           bool         `json:"muted,omitempty"`
 	Hidden          bool         `json:"hidden,omitempty"`
 	Solo            bool         `json:"solo,omitempty"`
+	// Duck marks an audio track as a music/bed lane: its level is automatically
+	// compressed (sidechained) under the voice — every non-ducked audio source.
+	Duck bool `json:"duck,omitempty"`
 }
 
 // Asset is an imported or generated media file registered to a project.

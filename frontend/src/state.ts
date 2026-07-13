@@ -47,10 +47,11 @@ interface StudioState {
   addTrack: (kind: "video" | "overlay" | "audio") => void;
   removeTrack: (trackId: string) => void;
   moveTrack: (trackId: string, dir: -1 | 1) => void;
-  toggleTrackFlag: (trackId: string, flag: "muted" | "hidden" | "solo") => void;
+  toggleTrackFlag: (trackId: string, flag: "muted" | "hidden" | "solo" | "duck") => void;
 
-  addKeyframe: (trackId: string, clipId: string, prop: "x" | "y" | "opacity") => void;
+  addKeyframe: (trackId: string, clipId: string, prop: "x" | "y" | "scale" | "opacity") => void;
   updateKeyframe: (trackId: string, clipId: string, prop: string, index: number, value: number) => void;
+  setKeyframeEase: (trackId: string, clipId: string, prop: string, index: number, ease: string) => void;
   removeKeyframe: (trackId: string, clipId: string, prop: string, index: number) => void;
   updateEffect: (trackId: string, clipId: string, key: keyof NonNullable<Clip["effects"]>, value: number) => void;
   resetEffects: (trackId: string, clipId: string) => void;
@@ -368,8 +369,10 @@ export const useStudio = create<StudioState>((set, get) => ({
       const kf = (c.keyframes ||= {});
       const list = (kf[prop] ||= []);
       const existing = list.findIndex((k) => Math.abs(k.t - tLocal) < 0.02);
-      if (existing >= 0) list[existing] = { t: tLocal, value };
-      else list.push({ t: tLocal, value });
+      // New keys default to a smooth curve so motion reads designed, not robotic;
+      // opacity fades stay linear. Overwriting a key keeps its chosen ease.
+      if (existing >= 0) list[existing] = { ...list[existing], t: tLocal, value };
+      else list.push({ t: tLocal, value, ease: prop === "opacity" ? "linear" : "easeInOut" });
       list.sort((a, b) => a.t - b.t);
     }),
 
@@ -378,6 +381,13 @@ export const useStudio = create<StudioState>((set, get) => ({
       const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
       const k = c?.keyframes?.[prop]?.[index];
       if (k) k.value = value;
+    }),
+
+  setKeyframeEase: (trackId, clipId, prop, index, ease) =>
+    get().mutate((d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      const k = c?.keyframes?.[prop]?.[index];
+      if (k) k.ease = ease;
     }),
 
   removeKeyframe: (trackId, clipId, prop, index) =>
