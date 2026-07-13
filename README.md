@@ -123,8 +123,10 @@ requests don't thrash the machine. The **Renders** panel shows queued/rendering 
 re-download/delete.
 
 Per clip (inspector): **speed**, **fade in/out**, volume, transform, opacity,
-color **effects**, and a **3-band audio EQ** (low/mid/high). A live **audio level
-meter** in the transport shows the source level while playing or scrubbing.
+color **effects**, a **3-band audio EQ** (low/mid/high), and a **color LUT**
+(upload a `.cube`, applied on export via `lut3d`). A live **audio level meter** and
+a toggleable **luma histogram scope** in the transport help judge sound and grade
+while playing or scrubbing.
 
 **Titles** (add a text clip): pick a font size/color/alignment/position, then an
 **animation preset** (Fade · Fade up · Pop · Slide · Zoom) that writes coherent

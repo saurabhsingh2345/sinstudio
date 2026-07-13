@@ -72,6 +72,7 @@ export interface Clip {
   keyframes?: Record<string, Keyframe[]>; // property ("x"|"y"|"scale"|"opacity") -> control points
   effects?: Effects;
   eq?: AudioEQ; // 3-band audio equalizer
+  lut?: string; // .cube color LUT filename (in the project's luts dir)
   title?: Title; // when set, this is a text clip (no asset)
 }
 

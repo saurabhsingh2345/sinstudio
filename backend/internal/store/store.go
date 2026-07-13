@@ -79,6 +79,12 @@ func (s *Store) RendersDir(id string) (string, error) {
 	return dir, os.MkdirAll(dir, 0o755)
 }
 
+// LutsDir returns the color-LUT (.cube) directory for a project.
+func (s *Store) LutsDir(id string) (string, error) {
+	dir := filepath.Join(s.projectDir(id), "luts")
+	return dir, os.MkdirAll(dir, 0o755)
+}
+
 // Rel returns a path relative to the media root (for serving over /media/).
 func (s *Store) Rel(abs string) string {
 	if r, err := filepath.Rel(s.root, abs); err == nil {

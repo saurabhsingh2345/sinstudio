@@ -139,6 +139,45 @@ function audioLevel(
   return Math.min(1, sum);
 }
 
+const SCOPE_W = 240;
+const SCOPE_H = 96;
+
+// drawHistogram samples a video frame into an offscreen canvas and draws a luma
+// histogram (a basic video scope) — a grading aid to spot crushed blacks/blown
+// highlights. Samples the topmost active video; silently no-ops if the frame
+// isn't ready or the canvas is cross-origin tainted.
+function drawHistogram(canvas: HTMLCanvasElement, video: HTMLVideoElement, off: HTMLCanvasElement) {
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.clearRect(0, 0, SCOPE_W, SCOPE_H);
+  ctx.fillStyle = "rgba(0,0,0,.55)";
+  ctx.fillRect(0, 0, SCOPE_W, SCOPE_H);
+  if (video.readyState < 2 || !video.videoWidth) return;
+  const ow = 160, oh = 90;
+  off.width = ow;
+  off.height = oh;
+  const octx = off.getContext("2d", { willReadFrequently: true });
+  if (!octx) return;
+  let data: Uint8ClampedArray;
+  try {
+    octx.drawImage(video, 0, 0, ow, oh);
+    data = octx.getImageData(0, 0, ow, oh).data;
+  } catch {
+    return; // tainted or not decodable yet
+  }
+  const bins = new Float32Array(256);
+  for (let i = 0; i < data.length; i += 4) {
+    bins[(0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]) | 0]++;
+  }
+  let max = 1;
+  for (const b of bins) if (b > max) max = b;
+  ctx.fillStyle = "#9fe3c0";
+  for (let x = 0; x < 256; x++) {
+    const bh = (bins[x] / max) * (SCOPE_H - 2);
+    ctx.fillRect((x / 256) * SCOPE_W, SCOPE_H - bh, SCOPE_W / 256 + 0.5, bh);
+  }
+}
+
 // LevelMeter is a small horizontal audio meter (green → amber → red).
 function LevelMeter({ level }: { level: number }) {
   const pct = Math.round(level * 100);
@@ -170,7 +209,10 @@ export function Preview() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const audioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
+  const scopeRef = useRef<HTMLCanvasElement>(null);
+  const scopeOff = useRef<HTMLCanvasElement | null>(null);
   const [stage, setStage] = useState({ w: 640, h: 360 });
+  const [showScope, setShowScope] = useState(false);
 
   const W = doc?.canvas.width || 1920;
   const H = doc?.canvas.height || 1080;
@@ -216,6 +258,25 @@ export function Preview() {
   const soloActive = !!doc?.tracks.some((t) => t.solo);
   const visuals = doc ? activeVisuals(doc.tracks, playhead) : [];
   const audios = doc ? activeAudios(doc.tracks, playhead, soloActive) : [];
+  const visualsKey = visuals.map((x) => x.clip.id).join(",");
+
+  // Update the histogram scope from the topmost active video, when shown.
+  useEffect(() => {
+    if (!showScope) return;
+    const cv = scopeRef.current;
+    if (!cv) return;
+    const off = scopeOff.current || (scopeOff.current = document.createElement("canvas"));
+    let src: HTMLVideoElement | null = null;
+    for (let i = visuals.length - 1; i >= 0; i--) {
+      const el = videoRefs.current[visuals[i].clip.id];
+      if (el) {
+        src = el;
+        break;
+      }
+    }
+    if (src) drawHistogram(cv, src, off);
+    else cv.getContext("2d")?.clearRect(0, 0, SCOPE_W, SCOPE_H);
+  }, [playhead, showScope, visualsKey]);
 
   // sync video elements to the playhead
   useEffect(() => {
@@ -346,6 +407,7 @@ export function Preview() {
             );
           })}
           <canvas ref={canvasRef} className="caption" />
+          {showScope && <canvas ref={scopeRef} className="scope" width={SCOPE_W} height={SCOPE_H} />}
           {audios.map(({ clip }) => {
             const asset = doc!.assets.find((a) => a.id === clip.assetId);
             if (!asset) return null;
@@ -363,6 +425,9 @@ export function Preview() {
           {playhead.toFixed(2)}s / {total.toFixed(2)}s
         </span>
         {doc && <LevelMeter level={audioLevel(doc.id, doc.assets, audios, playhead)} />}
+        <button className={showScope ? "active" : ""} onClick={() => setShowScope((s) => !s)} title="Luma histogram scope">
+          Scope
+        </button>
         <div style={{ flex: 1 }} />
         <button onClick={addCue}>+ Caption @ playhead</button>
       </div>
