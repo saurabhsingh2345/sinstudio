@@ -8,6 +8,10 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    # Build the backend module directly (GOWORK=off) — the repo's go.work is for
+    # local editor tooling and shouldn't drive CI resolution.
+    env:
+      GOWORK: "off"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
