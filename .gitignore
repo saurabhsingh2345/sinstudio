@@ -1,5 +1,7 @@
-# media (projects, assets, renders) — user data, not source
-media/
+# media (projects, assets, renders) — user data, not source.
+# Anchored to the repo root so it does NOT match the Go package
+# backend/internal/media/.
+/media/
 
 # frontend
 frontend/node_modules/
