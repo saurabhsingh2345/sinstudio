@@ -58,6 +58,7 @@ type audio struct {
 	speed           float64
 	fadeIn, fadeOut float64
 	duck            bool // true = a music/bed track that ducks under voice
+	eq              *schema.AudioEQ
 }
 
 // Plan is the compiled ffmpeg command plus side artifacts (srt path).
@@ -158,6 +159,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				audios = append(audios, audio{
 					path: p, in: c.In, out: c.Out, start: c.Start, volume: vol,
 					speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut, duck: t.Duck,
+					eq: c.EQ,
 				})
 			}
 		case schema.TrackCaption:
@@ -359,6 +361,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				fmt.Fprintf(&fc, ",atempo=%.4f", t)
 			}
 			fmt.Fprintf(&fc, ",volume=%.3f", a.volume)
+			fc.WriteString(eqFilters(a.eq))
 			if a.fadeIn > 0 {
 				fmt.Fprintf(&fc, ",afade=t=in:st=0:d=%.3f", a.fadeIn)
 			}
@@ -649,6 +652,27 @@ func axisPosDyn(center string, off int, S, E float64, inOff string, inDur float6
 		expr = fmt.Sprintf("if(lt(t,%.3f),%s,%s)", S+inDur, ramp, expr)
 	}
 	return "'" + expr + "'"
+}
+
+// eqFilters emits the ffmpeg audio-EQ chain (bass/equalizer/treble) for a clip's
+// 3-band EQ (empty when nil or flat). Leading comma so it appends to the clip's
+// audio filter string. Gains are clamped to ±24 dB for safety.
+func eqFilters(eq *schema.AudioEQ) string {
+	if eq == nil {
+		return ""
+	}
+	clamp := func(g float64) float64 { return math.Max(-24, math.Min(24, g)) }
+	var b strings.Builder
+	if eq.Low != 0 {
+		fmt.Fprintf(&b, ",bass=g=%.2f:f=100", clamp(eq.Low))
+	}
+	if eq.Mid != 0 {
+		fmt.Fprintf(&b, ",equalizer=f=1000:t=q:w=1:g=%.2f", clamp(eq.Mid))
+	}
+	if eq.High != 0 {
+		fmt.Fprintf(&b, ",treble=g=%.2f:f=8000", clamp(eq.High))
+	}
+	return b.String()
 }
 
 // effectFilters emits the eq/hue/gblur chain for a clip's effects (empty when

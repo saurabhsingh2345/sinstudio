@@ -1,20 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useStudio, projectDuration } from "../state";
-import { api } from "../api";
+import { getPeaks } from "../peaks";
 import { mediaUrl, clipPlayDur, type Clip, type EditDoc, type Track } from "../types";
-
-// Per-asset peak arrays, fetched once and shared across clips/zoom levels.
-const peakCache = new Map<string, Promise<number[]>>();
-function getPeaks(projId: string, assetId: string): Promise<number[]> {
-  const k = `${projId}:${assetId}`;
-  if (!peakCache.has(k)) {
-    peakCache.set(
-      k,
-      api.waveform(projId, assetId).then((r) => r.peaks).catch(() => [])
-    );
-  }
-  return peakCache.get(k)!;
-}
 
 // Waveform draws an asset's peaks for the clip's trimmed span, normalized so the
 // loudest visible peak fills the lane. Redraws on trim/zoom.

@@ -3,6 +3,7 @@ import { api } from "./api";
 import type { Asset, CaptionCue, Clip, EditDoc, Track, TitleAnim, TitleReveal } from "./types";
 import { newId, clipPlayDur } from "./types";
 import { buildTitleAnim } from "./titleAnim";
+import { clearPeaks } from "./peaks";
 
 interface StudioState {
   doc: EditDoc | null;
@@ -61,6 +62,8 @@ interface StudioState {
   removeKeyframe: (trackId: string, clipId: string, prop: string, index: number) => void;
   updateEffect: (trackId: string, clipId: string, key: keyof NonNullable<Clip["effects"]>, value: number) => void;
   resetEffects: (trackId: string, clipId: string) => void;
+  updateEQ: (trackId: string, clipId: string, band: "low" | "mid" | "high", value: number) => void;
+  resetEQ: (trackId: string, clipId: string) => void;
   addTitle: () => void;
   updateTitle: (trackId: string, clipId: string, patch: Partial<NonNullable<Clip["title"]>>) => void;
   applyTitleAnim: (trackId: string, clipId: string, preset: TitleAnim) => void;
@@ -102,6 +105,7 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   load: async (id) => {
     const doc = await api.getProject(id);
+    clearPeaks(); // drop cached waveforms from any previously-open project
     set({ doc, dirty: false, past: [], future: [], selClip: null, selClips: [], selCue: null, playhead: 0 });
   },
 
@@ -456,6 +460,22 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().mutate((d) => {
       const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
       if (c) delete c.effects;
+    }),
+
+  updateEQ: (trackId, clipId, band, value) =>
+    get().mutate((d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      if (!c) return;
+      const eq = { ...(c.eq || {}), [band]: value };
+      // Drop the whole EQ once every band is back to flat, to keep the doc clean.
+      if (!eq.low && !eq.mid && !eq.high) delete c.eq;
+      else c.eq = eq;
+    }),
+
+  resetEQ: (trackId, clipId) =>
+    get().mutate((d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      if (c) delete c.eq;
     }),
 
   // addTitle drops a 3s text clip on the first overlay track at the playhead and

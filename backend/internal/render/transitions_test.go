@@ -459,6 +459,44 @@ func TestTitleRevealSteps(t *testing.T) {
 	}
 }
 
+// TestAudioEQRuns confirms a clip's 3-band EQ compiles to bass/equalizer/treble
+// filters that ffmpeg accepts and renders.
+func TestAudioEQRuns(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+	voice := filepath.Join(dir, "voice.mp4")
+	makeAudioClip(t, voice, "sine=frequency=440")
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 320, Height: 180, FPS: 24},
+		Tracks: []schema.Track{
+			{ID: "bg", Kind: schema.TrackBackground, BackgroundColor: "#000000"},
+			{ID: "au", Kind: schema.TrackAudio, Clips: []schema.Clip{{
+				ID: "a1", AssetID: "voice", Start: 0, In: 0, Out: 2, Volume: 1,
+				EQ: &schema.AudioEQ{Low: 4, Mid: -3, High: 6},
+			}}},
+		},
+	}
+	resolve := func(id string) (string, bool) { return voice, id == "voice" }
+	plan, err := Compile(doc, resolve, filepath.Join(dir, "out.mp4"), dir, Options{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	joined := strings.Join(plan.Args, " ")
+	for _, want := range []string{"bass=g=4", "equalizer=f=1000", "treble=g=6"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expected %q in filtergraph", want)
+		}
+	}
+	if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg failed: %v\n%s", err, b)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "out.mp4")); err != nil || fi.Size() == 0 {
+		t.Fatalf("no output: %v", err)
+	}
+}
+
 // makeAudioClip renders a short mp4 carrying a lavfi audio source (with a video
 // stream so it behaves like a normal clip through the pipeline).
 func makeAudioClip(t *testing.T, path, aExpr string) {

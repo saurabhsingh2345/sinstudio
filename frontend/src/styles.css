@@ -240,3 +240,10 @@ button.ghost { background: transparent; }
 }
 .render-row a.btn:hover, .render-row button:hover { border-color: var(--accent); }
 .renders-group { margin-bottom: 6px; }
+
+/* Audio level meter in the transport bar */
+.meter {
+  width: 90px; height: 8px; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 4px; overflow: hidden; flex: 0 0 auto;
+}
+.meter > div { height: 100%; transition: width 60ms linear, background 120ms linear; }

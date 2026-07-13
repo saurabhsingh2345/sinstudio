@@ -41,6 +41,8 @@ type Clip struct {
 	// moving/splitting the clip.
 	Keyframes map[string][]Keyframe `json:"keyframes,omitempty"`
 	Effects   *Effects              `json:"effects,omitempty"`
+	// EQ is an optional 3-band equalizer on this clip's audio.
+	EQ *AudioEQ `json:"eq,omitempty"`
 	// Title makes this a text clip (no asset). It is rendered to a full-canvas
 	// PNG and composited like any visual, so transforms/transitions/keyframes/
 	// effects/fades all apply. Duration comes from In/Out like any clip.
@@ -74,6 +76,14 @@ type Effects struct {
 	Saturation float64 `json:"saturation,omitempty"` // 0..3 (1 = none)
 	Hue        float64 `json:"hue,omitempty"`        // degrees (0 = none)
 	Blur       float64 `json:"blur,omitempty"`       // gaussian sigma px (0 = none)
+}
+
+// AudioEQ is a simple 3-band equalizer applied to a clip's audio. Gains are in
+// decibels, roughly -12..+12 (0 = flat). Compiled to ffmpeg bass/equalizer/treble.
+type AudioEQ struct {
+	Low  float64 `json:"low,omitempty"`  // low-shelf gain, dB (≈100 Hz)
+	Mid  float64 `json:"mid,omitempty"`  // mid peak gain, dB (≈1 kHz)
+	High float64 `json:"high,omitempty"` // high-shelf gain, dB (≈8 kHz)
 }
 
 // Keyframe is one animation control point: Value at clip-local time T (seconds).
