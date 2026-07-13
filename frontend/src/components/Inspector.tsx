@@ -2,6 +2,7 @@ import { useStudio } from "../state";
 import type { Keyframe, Transition, TitleAnim, TitleReveal } from "../types";
 import { EASINGS, EASE_LABEL } from "../ease";
 import { TITLE_ANIMS } from "../titleAnim";
+import { LUTControl } from "./LUTControl";
 
 export function Inspector() {
   const {
@@ -36,6 +37,7 @@ export function Inspector() {
     : null;
   const clipAsset = clip ? doc.assets.find((a) => a.id === clip.assetId) : null;
   const hasAudio = !!clipAsset && (clipAsset.kind === "audio" || clipAsset.kind === "video");
+  const hasVideo = !!clipAsset && (clipAsset.kind === "video" || clipAsset.kind === "image");
   const cue = selCue
     ? doc.tracks.find((t) => t.kind === "caption")?.cues?.find((c) => c.id === selCue)
     : null;
@@ -184,6 +186,14 @@ export function Inspector() {
             <Slider label="Saturation" v={clip.effects?.saturation ?? 1} min={0} max={3} step={0.02} def={1} on={(x) => updateEffect(selClip.trackId, clip.id, "saturation", x)} />
             <Slider label="Hue (°)" v={clip.effects?.hue ?? 0} min={-180} max={180} step={1} def={0} on={(x) => updateEffect(selClip.trackId, clip.id, "hue", x)} />
             <Slider label="Blur" v={clip.effects?.blur ?? 0} min={0} max={30} step={0.5} def={0} on={(x) => updateEffect(selClip.trackId, clip.id, "blur", x)} />
+
+            {hasVideo && (
+              <LUTControl
+                projId={doc.id}
+                value={clip.lut}
+                onChange={(name) => updateClip(selClip.trackId, clip.id, { lut: name || undefined })}
+              />
+            )}
 
             {hasAudio && (
               <>

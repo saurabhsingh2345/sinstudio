@@ -247,3 +247,11 @@ button.ghost { background: transparent; }
   border-radius: 4px; overflow: hidden; flex: 0 0 auto;
 }
 .meter > div { height: 100%; transition: width 60ms linear, background 120ms linear; }
+
+/* Video scope (luma histogram) overlaid on the preview */
+.preview-stage .scope {
+  position: absolute; right: 8px; bottom: 8px; width: 240px; height: 96px;
+  border: 1px solid var(--line); border-radius: 6px; pointer-events: none;
+  background: rgba(0,0,0,.4);
+}
+.transport button.active { border-color: var(--accent); color: var(--accent); }

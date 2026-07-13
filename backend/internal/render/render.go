@@ -30,6 +30,9 @@ type Options struct {
 	FPS      int     `json:"fps"`      // override output fps (0 = doc fps)
 	FrameAt  float64 `json:"frameAt"`  // >0: render a single PNG frame at this time
 	Loudnorm bool    `json:"loudnorm"` // apply EBU R128 loudness normalization to the mix
+	// LUTDir is the directory holding a project's .cube LUT files (set server-side,
+	// never from the client). A clip's LUT name is resolved under it.
+	LUTDir string `json:"-"`
 }
 
 // visual is a resolved visual clip ready for the filtergraph.
@@ -46,7 +49,8 @@ type visual struct {
 	cx, cy            int                          // centered base position (no offset) for keyframes
 	keyframes         map[string][]schema.Keyframe // property -> control points (clip-local t)
 	effects           *schema.Effects
-	still             bool // input is a looped still image (title), not a trimmed video
+	lut               string // absolute path to a .cube LUT, or "" for none
+	still             bool   // input is a looped still image (title), not a trimmed video
 }
 
 // audio is a resolved audio contribution.
@@ -131,7 +135,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				bgColor = t.BackgroundColor
 			}
 			for _, c := range t.Clips {
-				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck)
+				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir)
 			}
 		case schema.TrackVideo, schema.TrackOverlay:
 			for _, c := range t.Clips {
@@ -141,7 +145,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 					}
 					continue
 				}
-				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck)
+				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck, opts.LUTDir)
 			}
 		case schema.TrackAudio:
 			if t.Muted {
@@ -279,8 +283,11 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		} else {
 			fmt.Fprintf(&fc, ",colorchannelmixer=aa=%.3f", v.opacity)
 		}
-		// Per-clip color/blur effects.
+		// Per-clip color/blur effects, then an optional 3D LUT (color grade).
 		fc.WriteString(effectFilters(v.effects))
+		if v.lut != "" {
+			fmt.Fprintf(&fc, ",lut3d=file=%s", escapeFilterPath(v.lut))
+		}
 		// Alpha fade in/out — driven by fade/dissolve transitions or explicit fades.
 		if tr.alphaIn > 0 {
 			fmt.Fprintf(&fc, ",fade=t=in:st=%.3f:d=%.3f:alpha=1", v.start, tr.alphaIn)
@@ -504,10 +511,14 @@ func codecArgs(format string, withAudio bool) []string {
 	return a
 }
 
-func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool) {
+func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool, lutDir string) {
 	p, ok := resolve(c.AssetID)
 	if !ok {
 		return
+	}
+	lut := ""
+	if c.LUT != "" && lutDir != "" {
+		lut = filepath.Join(lutDir, filepath.Base(c.LUT)) // base-sanitized: no path escape
 	}
 	span := playSpan(c.In, c.Out, c.Speed)
 	if span <= 0 {
@@ -540,7 +551,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		x: x, y: y, sw: sw, sh: sh, opacity: op,
 		speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
-		cx: cx, cy: cy, keyframes: c.Keyframes, effects: c.Effects,
+		cx: cx, cy: cy, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
 	})
 	if !muted && !isBG {
 		vol := c.Volume
@@ -652,6 +663,14 @@ func axisPosDyn(center string, off int, S, E float64, inOff string, inDur float6
 		expr = fmt.Sprintf("if(lt(t,%.3f),%s,%s)", S+inDur, ramp, expr)
 	}
 	return "'" + expr + "'"
+}
+
+// escapeFilterPath wraps a file path for use as an ffmpeg filter option value
+// (e.g. lut3d=file=...), single-quoting it so spaces/colons are literal and
+// escaping backslashes and quotes per the filtergraph escaping rules.
+func escapeFilterPath(p string) string {
+	r := strings.NewReplacer(`\`, `\\`, `'`, `\'`)
+	return "'" + r.Replace(p) + "'"
 }
 
 // eqFilters emits the ffmpeg audio-EQ chain (bass/equalizer/treble) for a clip's

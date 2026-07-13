@@ -44,7 +44,8 @@ func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
 		_ = os.Remove(old)
 	}
 	out := filepath.Join(renders, "frame-"+store.NewID("")+".png")
-	opts := render.Options{FrameAt: t, Preset: r.URL.Query().Get("preset")}
+	lutDir, _ := s.Store.LutsDir(doc.ID)
+	opts := render.Options{FrameAt: t, Preset: r.URL.Query().Get("preset"), LUTDir: lutDir}
 	plan, err := render.Compile(doc, resolve, out, renders, opts)
 	if err != nil {
 		httpErr(w, 400, err)

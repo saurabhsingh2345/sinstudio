@@ -92,6 +92,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/projects/{id}/frame", s.frame)
 	mux.HandleFunc("GET /api/projects/{id}/renders", s.listRenders)
 	mux.HandleFunc("DELETE /api/projects/{id}/renders/{name}", s.deleteRender)
+	mux.HandleFunc("GET /api/projects/{id}/luts", s.listLUTs)
+	mux.HandleFunc("POST /api/projects/{id}/luts", s.uploadLUT)
+	mux.HandleFunc("DELETE /api/projects/{id}/luts/{name}", s.deleteLUT)
 
 	// Cross-product library + universal ingest ("Send to Studio").
 	mux.HandleFunc("GET /api/library", s.listLibrary)

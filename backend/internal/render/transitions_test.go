@@ -459,6 +459,50 @@ func TestTitleRevealSteps(t *testing.T) {
 	}
 }
 
+// TestLUTRuns confirms a clip's .cube LUT compiles to an lut3d filter that
+// ffmpeg accepts and renders.
+func TestLUTRuns(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+	clip := filepath.Join(dir, "a.mp4")
+	makeTestClip(t, clip, "teal")
+
+	// A minimal 2×2×2 identity LUT.
+	lutDir := filepath.Join(dir, "luts")
+	if err := os.MkdirAll(lutDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cube := "LUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n"
+	if err := os.WriteFile(filepath.Join(lutDir, "id.cube"), []byte(cube), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 320, Height: 180, FPS: 24},
+		Tracks: []schema.Track{{ID: "v", Kind: schema.TrackVideo, Clips: []schema.Clip{{
+			ID: "c1", AssetID: "a", Start: 0, In: 0, Out: 2,
+			Transform: schema.Transform{Scale: 1, Opacity: 1},
+			LUT:       "id.cube",
+		}}}},
+	}
+	resolve := func(id string) (string, bool) { return clip, id == "a" }
+	plan, err := Compile(doc, resolve, filepath.Join(dir, "out.mp4"), dir, Options{LUTDir: lutDir})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	if !strings.Contains(strings.Join(plan.Args, " "), "lut3d=file=") {
+		t.Errorf("expected lut3d filter in args")
+	}
+	if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+		t.Fatalf("ffmpeg failed: %v\n%s", err, b)
+	}
+	if fi, err := os.Stat(filepath.Join(dir, "out.mp4")); err != nil || fi.Size() == 0 {
+		t.Fatalf("no output: %v", err)
+	}
+}
+
 // TestAudioEQRuns confirms a clip's 3-band EQ compiles to bass/equalizer/treble
 // filters that ffmpeg accepts and renders.
 func TestAudioEQRuns(t *testing.T) {

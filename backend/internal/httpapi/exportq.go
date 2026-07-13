@@ -63,6 +63,9 @@ func (q *exportQueue) Enqueue(projID string, doc *schema.EditDoc, opts render.Op
 	if ext == "" {
 		ext = "mp4"
 	}
+	if opts.LUTDir == "" {
+		opts.LUTDir, _ = q.srv.Store.LutsDir(projID)
+	}
 	outPath := filepath.Join(renders, "export-"+store.NewID("")+"."+ext)
 	plan, err := render.Compile(doc, resolve, outPath, renders, opts)
 	if err != nil {

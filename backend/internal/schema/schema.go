@@ -43,6 +43,9 @@ type Clip struct {
 	Effects   *Effects              `json:"effects,omitempty"`
 	// EQ is an optional 3-band equalizer on this clip's audio.
 	EQ *AudioEQ `json:"eq,omitempty"`
+	// LUT names a .cube color lookup table (in the project's luts dir) applied to
+	// this clip's video. Empty = none.
+	LUT string `json:"lut,omitempty"`
 	// Title makes this a text clip (no asset). It is rendered to a full-canvas
 	// PNG and composited like any visual, so transforms/transitions/keyframes/
 	// effects/fades all apply. Duration comes from In/Out like any clip.

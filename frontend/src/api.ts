@@ -109,6 +109,19 @@ export const api = {
       j<{ ok: boolean }>(r)
     ),
 
+  // Color LUTs (.cube files) per project.
+  listLUTs: (projId: string) =>
+    fetch(`/api/projects/${projId}/luts`).then((r) => j<{ luts: string[] }>(r)),
+  uploadLUT: (projId: string, file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return fetch(`/api/projects/${projId}/luts`, { method: "POST", body: fd }).then((r) => j<{ name: string }>(r));
+  },
+  deleteLUT: (projId: string, name: string) =>
+    fetch(`/api/projects/${projId}/luts/${encodeURIComponent(name)}`, { method: "DELETE" }).then((r) =>
+      j<{ ok: boolean }>(r)
+    ),
+
   // Auth: whether a token is required and whether this browser is already in.
   authState: () => fetch("/api/auth").then((r) => j<{ required: boolean; authed: boolean }>(r)),
   login: (token: string) =>
