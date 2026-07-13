@@ -5,6 +5,7 @@
 package jobs
 
 import (
+	"context"
 	"encoding/json"
 	"sync"
 	"time"
@@ -35,11 +36,17 @@ type Event struct {
 type Job struct {
 	ID      string  `json:"id"`
 	Kind    string  `json:"kind"`
-	Status  string  `json:"status"` // running|done|error
+	Status  string  `json:"status"` // running|done|error|canceled
 	Pct     float64 `json:"progress"`
 	Message string  `json:"message"`
 	m       *Manager
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
+
+// Context returns the job's context. Worker subprocesses should run under it so
+// the job can be canceled (by the client or on shutdown) or time out.
+func (j *Job) Context() context.Context { return j.ctx }
 
 // Manager tracks jobs and broadcasts events to SSE subscribers.
 type Manager struct {
@@ -81,9 +88,18 @@ func (m *Manager) broadcast(ev Event) {
 	}
 }
 
-// New creates and registers a running job.
-func (m *Manager) New(kind string) *Job {
-	j := &Job{ID: store.NewID("job_"), Kind: kind, Status: "running", m: m}
+// New creates and registers a running job. If timeout > 0 the job's context is
+// canceled after that deadline, killing a hung subprocess; timeout <= 0 makes it
+// cancelable but unbounded.
+func (m *Manager) New(kind string, timeout time.Duration) *Job {
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), timeout)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
+	j := &Job{ID: store.NewID("job_"), Kind: kind, Status: "running", m: m, ctx: ctx, cancel: cancel}
 	m.mu.Lock()
 	m.jobs[j.ID] = j
 	m.mu.Unlock()
@@ -99,6 +115,41 @@ func (m *Manager) List() []Job {
 		out = append(out, *j)
 	}
 	return out
+}
+
+// Get returns a snapshot of one job so a reconnecting client can recover its
+// state even if it missed the terminal SSE event.
+func (m *Manager) Get(id string) (Job, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	j, ok := m.jobs[id]
+	if !ok {
+		return Job{}, false
+	}
+	return *j, true
+}
+
+// Cancel requests cancellation of a running job (kills its subprocess). Returns
+// false if the id is unknown.
+func (m *Manager) Cancel(id string) bool {
+	m.mu.Lock()
+	j, ok := m.jobs[id]
+	m.mu.Unlock()
+	if !ok {
+		return false
+	}
+	j.cancel()
+	return true
+}
+
+// CancelAll cancels every job — used on graceful shutdown so no subprocess is
+// orphaned.
+func (m *Manager) CancelAll() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, j := range m.jobs {
+		j.cancel()
+	}
 }
 
 // Progress reports fractional progress with a message. Field writes are guarded
@@ -120,20 +171,36 @@ func (j *Job) Log(msg string) {
 
 // Done marks the job complete and attaches an optional result payload.
 func (j *Job) Done(data any) {
+	if j.cancel != nil {
+		j.cancel() // release context resources
+	}
 	j.m.mu.Lock()
 	j.Status, j.Pct = "done", 1
 	j.m.mu.Unlock()
 	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventDone, Progress: 1, Data: data})
 }
 
-// Fail marks the job errored.
+// Fail marks the job errored (or canceled/timed-out, distinguished from the
+// job context so the UI can label it correctly).
 func (j *Job) Fail(err error) {
 	msg := ""
 	if err != nil {
 		msg = err.Error()
 	}
+	status := "error"
+	if j.ctx != nil {
+		switch j.ctx.Err() {
+		case context.Canceled:
+			status, msg = "canceled", "canceled"
+		case context.DeadlineExceeded:
+			status, msg = "error", "timed out"
+		}
+	}
+	if j.cancel != nil {
+		j.cancel()
+	}
 	j.m.mu.Lock()
-	j.Status = "error"
+	j.Status = status
 	j.Message = msg
 	pct := j.Pct
 	j.m.mu.Unlock()
