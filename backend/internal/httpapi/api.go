@@ -64,6 +64,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/ingest", s.ingest)
 
 	mux.HandleFunc("GET /api/events", s.events)
+	mux.HandleFunc("GET /api/jobs", s.listJobs)
+	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
+	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
 
 	// Media files (assets, thumbs, renders).
 	mux.Handle("GET /media/", http.StripPrefix("/media/",
@@ -236,13 +239,13 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := s.Jobs.New("generate")
+	job := s.Jobs.New("generate", 15*time.Minute)
 	dir, _ := s.Store.AssetsDir(projID)
 	assetID := store.NewID("asset_")
 	out := filepath.Join(dir, assetID+"."+adapter.OutputExt)
 
 	go func() {
-		ctx := context.Background()
+		ctx := job.Context()
 		job.Progress(0.05, "starting "+adapter.Name)
 		if err := s.Gens.Generate(ctx, job, body.GeneratorID, body.Input, body.Params, out); err != nil {
 			job.Fail(err)
@@ -291,11 +294,16 @@ func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := s.Jobs.New("transcribe")
+	job := s.Jobs.New("transcribe", 30*time.Minute)
 	go func() {
-		ctx := context.Background()
+		ctx := job.Context()
 		job.Progress(0.1, "extracting audio")
-		work, _ := s.Store.ThumbsDir(projID) // reuse a scratch dir
+		work, err := os.MkdirTemp("", "studio-transcribe-*") // isolated scratch (avoids clobbering concurrent jobs)
+		if err != nil {
+			job.Fail(err)
+			return
+		}
+		defer os.RemoveAll(work)
 		cues, err := transcribe.Transcribe(ctx, s.Store.Abs(srcRel), work)
 		if err != nil {
 			job.Fail(err)
@@ -340,9 +348,9 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := s.Jobs.New("export")
+	job := s.Jobs.New("export", 30*time.Minute)
 	go func() {
-		ctx := context.Background()
+		ctx := job.Context()
 		job.Progress(0.02, "rendering")
 		if err := render.Run(ctx, job, plan); err != nil {
 			job.Fail(err)
@@ -360,6 +368,32 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 		job.Done(map[string]any{"asset": asset, "url": "/media/" + s.Store.Rel(outPath)})
 	}()
 	writeJSON(w, 202, map[string]any{"jobId": job.ID})
+}
+
+// ---- jobs ----
+
+func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, s.Jobs.List())
+}
+
+// getJob lets a client that missed a terminal SSE event recover the job's final
+// state (done/error/canceled) by polling.
+func (s *Server) getJob(w http.ResponseWriter, r *http.Request) {
+	job, ok := s.Jobs.Get(r.PathValue("id"))
+	if !ok {
+		httpErr(w, 404, fmt.Errorf("unknown job"))
+		return
+	}
+	writeJSON(w, 200, job)
+}
+
+// cancelJob aborts a running job and kills its subprocess.
+func (s *Server) cancelJob(w http.ResponseWriter, r *http.Request) {
+	if !s.Jobs.Cancel(r.PathValue("id")) {
+		httpErr(w, 404, fmt.Errorf("unknown job"))
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // ---- SSE ----

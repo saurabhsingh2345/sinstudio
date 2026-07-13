@@ -22,6 +22,11 @@ interface StudioState {
   load: (id: string) => Promise<void>;
   save: () => Promise<void>;
   mutate: (fn: (d: EditDoc) => void) => void;
+  // beginTransient/commitTransient coalesce a burst of mutations (a drag/trim)
+  // into a single undo entry: between them, mutate() updates the doc without
+  // pushing history; commit records one snapshot for the whole gesture.
+  beginTransient: () => void;
+  commitTransient: () => void;
   undo: () => void;
   redo: () => void;
 
@@ -74,6 +79,9 @@ interface StudioState {
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 let clipboard: { trackId: string; clip: Clip }[] = [];
+// Non-null while a transient gesture (drag/trim) is open: the pre-gesture doc
+// snapshot that will be pushed to history once on commit.
+let txnSnapshot: EditDoc | null = null;
 
 export const useStudio = create<StudioState>((set, get) => ({
   doc: null,
@@ -119,16 +127,38 @@ export const useStudio = create<StudioState>((set, get) => ({
   },
 
   // mutate applies fn to a cloned doc, bumps version, records history, autosaves.
+  // During a transient gesture, history is not touched (beginTransient captured
+  // the one snapshot; commitTransient will push it).
   mutate: (fn) => {
     const cur = get().doc;
     if (!cur) return;
-    const snapshot: EditDoc = structuredClone(cur);
     const doc: EditDoc = structuredClone(cur);
     fn(doc);
     doc.version = (doc.version || 0) + 1;
-    set((s) => ({ doc, dirty: true, past: [...s.past, snapshot].slice(-60), future: [] }));
+    if (txnSnapshot) {
+      set({ doc, dirty: true, future: [] });
+    } else {
+      const snapshot: EditDoc = structuredClone(cur);
+      set((s) => ({ doc, dirty: true, past: [...s.past, snapshot].slice(-60), future: [] }));
+    }
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => get().save(), 600);
+  },
+
+  beginTransient: () => {
+    if (txnSnapshot) return; // already open
+    const d = get().doc;
+    if (d) txnSnapshot = structuredClone(d);
+  },
+
+  commitTransient: () => {
+    const snap = txnSnapshot;
+    txnSnapshot = null;
+    if (!snap) return;
+    // Only record history if the gesture actually changed something.
+    if (get().doc && get().doc!.version !== snap.version) {
+      set((s) => ({ past: [...s.past, snap].slice(-60), future: [] }));
+    }
   },
 
   undo: () => {

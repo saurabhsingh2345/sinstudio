@@ -3,11 +3,15 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
+	"time"
 
 	"studio/internal/apps"
 	"studio/internal/generator"
@@ -58,9 +62,10 @@ func main() {
 		}
 	}
 
+	jobMgr := jobs.NewManager()
 	srv := &httpapi.Server{
 		Store:    st,
-		Jobs:     jobs.NewManager(),
+		Jobs:     jobMgr,
 		Gens:     reg,
 		Lib:      lib,
 		Apps:     appMgr,
@@ -80,7 +85,25 @@ func main() {
 		log.Printf("  serving frontend from %s", front)
 	}
 
-	if err := http.ListenAndServe(*addr, srv.Routes()); err != nil {
-		log.Fatal(err)
+	// Graceful shutdown: on SIGINT/SIGTERM, stop accepting connections, cancel
+	// in-flight jobs, and stop every supervised sibling app so nothing is orphaned.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	httpSrv := &http.Server{Addr: *addr, Handler: srv.Routes()}
+	go func() {
+		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal(err)
+		}
+	}()
+
+	<-ctx.Done()
+	log.Printf("shutting down…")
+	jobMgr.CancelAll()
+	appMgr.StopAll()
+	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := httpSrv.Shutdown(shutCtx); err != nil {
+		log.Printf("shutdown: %v", err)
 	}
 }

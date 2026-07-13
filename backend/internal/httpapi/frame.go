@@ -2,11 +2,13 @@ package httpapi
 
 import (
 	"net/http"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 
 	"studio/internal/render"
+	"studio/internal/store"
 )
 
 // frame renders a single PNG frame of the composited timeline at ?t= (seconds),
@@ -35,7 +37,13 @@ func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err)
 		return
 	}
-	out := filepath.Join(renders, "frame.png")
+	// Unique per request so fast scrubbing can't race two ffmpeg writes onto one
+	// file (which would serve a half-written / wrong frame). Prune older previews
+	// first so this directory doesn't grow without bound.
+	for _, old := range prevFrames(renders) {
+		_ = os.Remove(old)
+	}
+	out := filepath.Join(renders, "frame-"+store.NewID("")+".png")
 	opts := render.Options{FrameAt: t, Preset: r.URL.Query().Get("preset")}
 	plan, err := render.Compile(doc, resolve, out, renders, opts)
 	if err != nil {
@@ -46,8 +54,13 @@ func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, &ffmpegError{string(b)})
 		return
 	}
-	// Cache-bust so the browser re-fetches after each render.
-	writeJSON(w, 200, map[string]any{"url": "/media/" + s.Store.Rel(out) + "?t=" + strconv.FormatFloat(t, 'f', 3, 64)})
+	writeJSON(w, 200, map[string]any{"url": "/media/" + s.Store.Rel(out)})
+}
+
+// prevFrames lists previously-rendered preview frames in a project's renders dir.
+func prevFrames(dir string) []string {
+	m, _ := filepath.Glob(filepath.Join(dir, "frame-*.png"))
+	return m
 }
 
 type ffmpegError struct{ msg string }

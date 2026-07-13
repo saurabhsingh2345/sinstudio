@@ -77,6 +77,15 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ path, name }),
     }).then((r) => j<{ asset: any; version: number }>(r)),
+
+  // Job control/recovery (used when an SSE terminal event is missed, and to
+  // cancel a stuck/long job).
+  getJob: (id: string) =>
+    fetch(`/api/jobs/${id}`).then((r) =>
+      j<{ id: string; kind: string; status: string; progress: number; message: string }>(r)
+    ),
+  cancelJob: (id: string) =>
+    fetch(`/api/jobs/${id}/cancel`, { method: "POST" }).then((r) => j<{ ok: boolean }>(r)),
 };
 
 // subscribeJobs opens the SSE stream and invokes cb for every job event.

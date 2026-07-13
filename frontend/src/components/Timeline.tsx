@@ -371,7 +371,8 @@ function magneticScalar(t: number, pts: number[], pxPerSec: number): { value: nu
 }
 
 function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSec: number }) {
-  const { updateClip, select, toggleSelect, batchUpdateClips, selClips, doc, setPlayhead, setSnapLine } = useStudio();
+  const { updateClip, select, toggleSelect, batchUpdateClips, selClips, doc, setPlayhead, setSnapLine, beginTransient, commitTransient } =
+    useStudio();
   const selected = selClips.some((s) => s.clipId === clip.id);
   const kfTimes = clip.keyframes
     ? Array.from(
@@ -411,6 +412,7 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
       const draggedBase = clip.start;
       const dragDur = clipPlayDur(clip);
       const pts = doc ? snapPoints(doc, new Set(selClips.map((s) => s.clipId))) : [0];
+      beginTransient();
       const move = (ev: PointerEvent) => {
         const d = (ev.clientX - x0) / pxPerSec;
         const r = magneticStart(draggedBase + d, dragDur, pts, pxPerSec);
@@ -422,6 +424,7 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
       };
       const up = () => {
         setSnapLine(null);
+        commitTransient();
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
       };
@@ -436,6 +439,7 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
     const maxOut = asset && asset.duration > 0 ? asset.duration : Infinity;
     const pts = doc ? snapPoints(doc, new Set([clip.id])) : [0];
     const moveDur = dur; // on-timeline footprint for snapping the trailing edge
+    beginTransient();
     const move = (ev: PointerEvent) => {
       const d = (ev.clientX - x0) / pxPerSec;
       if (mode === "move") {
@@ -458,6 +462,7 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
     };
     const up = () => {
       setSnapLine(null);
+      commitTransient();
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };
@@ -519,18 +524,20 @@ function CaptionChip({
   text: string;
   pxPerSec: number;
 }) {
-  const { selectCue, selCue, updateCue } = useStudio();
+  const { selectCue, selCue, updateCue, beginTransient, commitTransient } = useStudio();
   const startDrag = (e: React.PointerEvent) => {
     e.stopPropagation();
     selectCue(id);
     const x0 = e.clientX;
     const o = { start, end };
+    beginTransient();
     const move = (ev: PointerEvent) => {
       const d = (ev.clientX - x0) / pxPerSec;
       const ns = Math.max(0, snap(o.start + d));
       updateCue(id, { start: ns, end: ns + (o.end - o.start) });
     };
     const up = () => {
+      commitTransient();
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
     };
