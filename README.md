@@ -118,6 +118,13 @@ The export dialog (and `POST /api/projects/{id}/export`) accepts:
 
 Per clip (inspector): **speed**, **fade in/out**, volume, transform, opacity.
 
+**Titles** (add a text clip): pick a font size/color/alignment/position, then an
+**animation preset** (Fade · Fade up · Pop · Slide · Zoom) that writes coherent
+entrance/exit motion, or a **text reveal** (Typewriter · Word by word) that builds
+the text on progressively. Presets are plain keyframes/transitions, so they animate
+identically in the live preview and the FFmpeg export; the reveal composites a
+sequence of prefix PNGs server-side.
+
 ## Usability — shortcuts
 
 `Space` play/pause · `S` split at playhead · `Delete` remove selection ·

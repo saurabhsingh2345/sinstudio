@@ -56,6 +56,14 @@ type Title struct {
 	PosY       float64 `json:"posY"`                 // 0..1 base vertical anchor
 	Background string  `json:"background,omitempty"` // optional hex band behind the text
 	Bold       bool    `json:"bold,omitempty"`
+	// Anim names the entrance/exit animation preset the editor applied (fade,
+	// fadeUp, pop, slide, zoom). It's a UI hint only — the actual motion lives in
+	// the clip's Keyframes/Transitions, which the renderer already honors.
+	Anim string `json:"anim,omitempty"`
+	// Reveal turns on a per-word/character text build-on ("typewriter" | "word").
+	// Unlike Anim, this can't be expressed as transform keyframes on a single
+	// still, so the renderer composites a sequence of prefix PNGs (see addTitleClip).
+	Reveal string `json:"reveal,omitempty"`
 }
 
 // Effects are per-clip color/blur adjustments (compiled to ffmpeg eq/hue/gblur).

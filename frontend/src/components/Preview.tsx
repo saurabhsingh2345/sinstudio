@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStudio, projectDuration } from "../state";
 import { mediaUrl, clipPlayDur, type Clip, type Track } from "../types";
 import { ease } from "../ease";
+import { revealedText } from "../titleAnim";
 
 const DEF_TRANS = 0.5; // matches render's defTransDur
 
@@ -275,9 +276,10 @@ export function Preview() {
                       lineHeight: 1.2,
                       background: t.background || "transparent",
                       textShadow: "0 2px 6px rgba(0,0,0,.9), 0 0 2px rgba(0,0,0,.9)",
+                      whiteSpace: "pre-wrap",
                     }}
                   >
-                    {t.text}
+                    {revealedText(t.text, t.reveal, playhead - clip.start, clipPlayDur(clip))}
                   </div>
                 </div>
               );

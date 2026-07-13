@@ -758,14 +758,15 @@ func kfScaleExpr(S float64, kfs []schema.Keyframe) string {
 
 // addTitleClip renders a text clip to a PNG and appends it as a still visual so
 // it flows through the same transform/transition/keyframe/effect/fade pipeline.
+//
+// When Title.Reveal is set, the text builds on progressively: a sequence of
+// prefix PNGs is composited, each shown for its slice of the reveal window (the
+// full text then holds to the end). A reveal can't be expressed as transform
+// keyframes on one still, so it bypasses the keyframe/transition path.
 func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int) error {
 	span := c.Out - c.In
 	if span <= 0 {
 		span = 3
-	}
-	png := filepath.Join(srtDir, fmt.Sprintf("title-%d.png", idx))
-	if err := renderTitlePNG(*c.Title, w, h, png); err != nil {
-		return err
 	}
 	scale := c.Transform.Scale
 	if scale == 0 {
@@ -777,15 +778,109 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 	}
 	sw, sh := int(float64(w)*scale), int(float64(h)*scale)
 	cx, cy := (w-sw)/2, (h-sh)/2
-	*visuals = append(*visuals, visual{
-		path: png, start: c.Start, end: c.Start + span,
-		x: cx + int(c.Transform.X), y: cy + int(c.Transform.Y), sw: sw, sh: sh, opacity: op,
-		fadeIn: c.FadeIn, fadeOut: c.FadeOut,
-		transIn: c.TransitionIn, transOut: c.TransitionOut,
-		cx: cx, cy: cy, keyframes: c.Keyframes, effects: c.Effects,
-		still: true,
-	})
+	x, y := cx+int(c.Transform.X), cy+int(c.Transform.Y)
+
+	reveal := strings.TrimSpace(c.Title.Reveal)
+	if reveal == "" {
+		png := filepath.Join(srtDir, fmt.Sprintf("title-%d.png", idx))
+		if err := renderTitlePNG(*c.Title, w, h, png); err != nil {
+			return err
+		}
+		*visuals = append(*visuals, visual{
+			path: png, start: c.Start, end: c.Start + span,
+			x: x, y: y, sw: sw, sh: sh, opacity: op,
+			fadeIn: c.FadeIn, fadeOut: c.FadeOut,
+			transIn: c.TransitionIn, transOut: c.TransitionOut,
+			cx: cx, cy: cy, keyframes: c.Keyframes, effects: c.Effects,
+			still: true,
+		})
+		return nil
+	}
+
+	// Progressive text reveal. Build over ~70% of the clip; the last (full) step
+	// holds until the end.
+	bounds := titleRevealSteps(c.Title.Text, reveal)
+	n := len(bounds)
+	rd := span * 0.7
+	if rd < 0.4 {
+		rd = math.Min(span, 0.4)
+	}
+	stepDur := rd / float64(n)
+	for k, revealChars := range bounds {
+		png := filepath.Join(srtDir, fmt.Sprintf("title-%d-%d.png", idx, k))
+		if err := renderTitleCore(*c.Title, w, h, png, revealChars); err != nil {
+			return err
+		}
+		start := c.Start + float64(k)*stepDur
+		end := c.Start + float64(k+1)*stepDur
+		fadeIn, fadeOut := 0.0, 0.0
+		if k == 0 {
+			fadeIn = c.FadeIn
+		}
+		if k == n-1 {
+			end = c.Start + span // full text holds to the end
+			fadeOut = c.FadeOut
+		}
+		*visuals = append(*visuals, visual{
+			path: png, start: start, end: end,
+			x: x, y: y, sw: sw, sh: sh, opacity: op,
+			fadeIn: fadeIn, fadeOut: fadeOut,
+			cx: cx, cy: cy, effects: c.Effects,
+			still: true,
+		})
+	}
 	return nil
+}
+
+// titleRevealSteps returns the cumulative character counts to reveal at each
+// step (last element is -1 = "show all"), for either a per-character
+// ("typewriter") or per-word build-on. Steps are capped so long text doesn't
+// explode the filtergraph.
+func titleRevealSteps(text, mode string) []int {
+	runes := []rune(text)
+	total := len(runes)
+	if total == 0 {
+		return []int{-1}
+	}
+	const maxSteps = 48
+	var bounds []int
+	if mode == "word" {
+		inWord := false
+		for i, r := range runes {
+			space := r == ' ' || r == '\n' || r == '\t'
+			if !space {
+				inWord = true
+			} else if inWord {
+				bounds = append(bounds, i)
+				inWord = false
+			}
+		}
+		if inWord {
+			bounds = append(bounds, total)
+		}
+	} else { // typewriter
+		step := 1
+		if total > maxSteps {
+			step = int(math.Ceil(float64(total) / float64(maxSteps)))
+		}
+		for i := step; i < total; i += step {
+			bounds = append(bounds, i)
+		}
+		bounds = append(bounds, total)
+	}
+	if len(bounds) == 0 {
+		bounds = []int{total}
+	}
+	// Subsample if we overshot the cap.
+	if len(bounds) > maxSteps {
+		sub := make([]int, 0, maxSteps)
+		for i := 0; i < maxSteps; i++ {
+			sub = append(sub, bounds[i*len(bounds)/maxSteps])
+		}
+		bounds = sub
+	}
+	bounds[len(bounds)-1] = -1 // final step always shows the complete text
+	return bounds
 }
 
 // kfOpacityExpr builds a bare piecewise-linear 0..1 expression of geq time T
