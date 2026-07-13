@@ -21,9 +21,16 @@ export function Transcript({ projectId }: { projectId: string }) {
     try {
       const { jobId } = await api.transcribe(projectId, id);
       const data = await awaitJob(jobId);
-      const merged = [...cues, ...(data.cues as CaptionCue[])].sort((a, b) => a.start - b.start);
+      const newCues = (data?.cues as CaptionCue[] | undefined) ?? null;
+      if (!newCues) {
+        // Completion recovered via poll — the cue payload only rides the SSE
+        // "done" event, so it's unavailable here. Ask the user to retry.
+        toast.error("Transcription finished but the result was lost (connection blip) — try again.");
+        return;
+      }
+      const merged = [...cues, ...newCues].sort((a, b) => a.start - b.start);
       setCues(merged);
-      toast.success(`Added ${(data.cues as CaptionCue[]).length} caption cues`);
+      toast.success(`Added ${newCues.length} caption cues`);
     } catch (e) {
       toast.error("Transcription failed: " + (e as Error).message + " (set WHISPER_BIN / WHISPER_MODEL)");
     } finally {

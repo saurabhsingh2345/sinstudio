@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 import { awaitJob } from "../jobs";
+import { useStudio } from "../state";
 import type { Asset, GeneratorStatus } from "../types";
 
 // Working default inputs per generator input kind.
@@ -105,7 +106,14 @@ export function GenerateModal({
     try {
       const { jobId } = await api.generate(projectId, current.id, input, params);
       const data = await awaitJob(jobId);
-      onDone(data.asset as Asset);
+      if (data?.asset) {
+        onDone(data.asset as Asset);
+      } else {
+        // Terminal SSE event was missed (resolved via poll). The generator already
+        // registered the asset server-side, so reload the project to pick it up.
+        await useStudio.getState().load(projectId);
+        onClose();
+      }
     } catch (e) {
       setErr((e as Error).message);
       setBusy(false);
