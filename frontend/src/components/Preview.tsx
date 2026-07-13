@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useStudio, projectDuration } from "../state";
-import { mediaUrl, type Clip, type Track } from "../types";
+import { mediaUrl, clipPlayDur, type Clip, type Track } from "../types";
 import { ease } from "../ease";
 
 const DEF_TRANS = 0.5; // matches render's defTransDur
@@ -29,7 +29,7 @@ function kfValue(keys: { t: number; value: number; ease?: string }[], localT: nu
 // clipBox computes a clip's on-stage rectangle + opacity at time t, folding in
 // keyframes and transitions so the preview matches the exported render.
 function clipBox(clip: Clip, t: number, stageW: number, stageH: number, W: number, H: number) {
-  const dur = clip.out - clip.in;
+  const dur = clipPlayDur(clip);
   const start = clip.start;
   const end = start + dur;
   const localT = t - start;
@@ -104,7 +104,7 @@ function activeVisuals(tracks: Track[], t: number) {
   for (const tr of tracks) {
     if (tr.hidden || !(tr.kind in order)) continue;
     for (const c of tr.clips || []) {
-      const end = c.start + (c.out - c.in);
+      const end = c.start + clipPlayDur(c);
       if (t >= c.start && t < end) out.push({ track: tr, clip: c });
     }
   }
@@ -119,7 +119,7 @@ function activeAudios(tracks: Track[], t: number, soloActive: boolean) {
     if (tr.kind !== "audio" || tr.muted || tr.hidden) continue;
     if (soloActive && !tr.solo) continue;
     for (const c of tr.clips || []) {
-      const end = c.start + (c.out - c.in);
+      const end = c.start + clipPlayDur(c);
       if (t >= c.start && t < end) out.push({ track: tr, clip: c });
     }
   }
@@ -185,7 +185,9 @@ export function Preview() {
       const v = videoRefs.current[clip.id];
       if (!v) continue;
       v.muted = !!track.muted || (soloActive && !track.solo);
-      const local = playhead - clip.start + clip.in;
+      const sp = clip.speed && clip.speed > 0 ? clip.speed : 1;
+      if (v.playbackRate !== sp) v.playbackRate = sp;
+      const local = clip.in + (playhead - clip.start) * sp;
       if (Math.abs(v.currentTime - local) > 0.25) {
         try {
           v.currentTime = local;
@@ -202,7 +204,9 @@ export function Preview() {
       const a = audioRefs.current[clip.id];
       if (!a) continue;
       a.volume = Math.max(0, Math.min(1, clip.volume || 1));
-      const local = playhead - clip.start + clip.in;
+      const sp = clip.speed && clip.speed > 0 ? clip.speed : 1;
+      if (a.playbackRate !== sp) a.playbackRate = sp;
+      const local = clip.in + (playhead - clip.start) * sp;
       if (Math.abs(a.currentTime - local) > 0.25) {
         try {
           a.currentTime = local;

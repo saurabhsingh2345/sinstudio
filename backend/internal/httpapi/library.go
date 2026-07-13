@@ -13,6 +13,26 @@ import (
 	"studio/internal/store"
 )
 
+// sanitizeToken reduces a caller-supplied label (e.g. the ingest "source") to a
+// safe filename fragment: only [A-Za-z0-9._-], capped in length. This prevents a
+// crafted value like "../../etc" from escaping the target directory once it is
+// joined into a path.
+func sanitizeToken(s string) string {
+	out := make([]rune, 0, len(s))
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '_', r == '-':
+			out = append(out, r)
+		default:
+			out = append(out, '-')
+		}
+		if len(out) >= 40 {
+			break
+		}
+	}
+	return string(out)
+}
+
 // listLibrary returns clips discovered across all sibling products + the inbox.
 func (s *Server) listLibrary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
@@ -84,7 +104,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err)
 		return
 	}
-	src := r.FormValue("source")
+	src := sanitizeToken(r.FormValue("source"))
 	if src == "" {
 		src = "external"
 	}

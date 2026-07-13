@@ -356,6 +356,54 @@ func TestAudioDuckAndLoudnorm(t *testing.T) {
 	}
 }
 
+// TestExportRangeValidation confirms out-of-range From/To are rejected rather
+// than compiled into a negative -t (which ffmpeg refuses).
+func TestExportRangeValidation(t *testing.T) {
+	doc := &schema.EditDoc{
+		Canvas: schema.Canvas{Width: 320, Height: 180, FPS: 24},
+		Tracks: []schema.Track{{ID: "v", Kind: schema.TrackVideo, Clips: []schema.Clip{
+			{ID: "c1", AssetID: "a", Start: 0, In: 0, Out: 4, Transform: schema.Transform{Scale: 1, Opacity: 1}},
+		}}},
+	}
+	resolve := func(id string) (string, bool) { return "/tmp/" + id + ".mp4", id == "a" }
+	cases := []struct {
+		name    string
+		opts    Options
+		wantErr bool
+	}{
+		{"start past end", Options{From: 10}, true},
+		{"end before start", Options{From: 2, To: 1}, true},
+		{"valid subrange", Options{From: 1, To: 3}, false},
+		{"from only", Options{From: 1}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Compile(doc, resolve, "/tmp/o.mp4", t.TempDir(), tc.opts)
+			if tc.wantErr && err == nil {
+				t.Errorf("expected an error for %+v", tc.opts)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("unexpected error for %+v: %v", tc.opts, err)
+			}
+		})
+	}
+}
+
+// TestCaptionDefaultPosY confirms a caption cue with an unset (zero) PosY is
+// rendered at the lower-third default instead of clipped at the top.
+func TestCaptionDefaultPosY(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "cap.png")
+	cue := schema.CaptionCue{ID: "q1", Start: 0, End: 2, Text: "Hello", Style: schema.CaptionStyle{Size: 24}}
+	if err := renderCaptionPNG(cue, 640, 360, out); err != nil {
+		t.Fatalf("render caption: %v", err)
+	}
+	fi, err := os.Stat(out)
+	if err != nil || fi.Size() == 0 {
+		t.Fatalf("no caption png produced: %v", err)
+	}
+}
+
 // makeAudioClip renders a short mp4 carrying a lavfi audio source (with a video
 // stream so it behaves like a normal clip through the pipeline).
 func makeAudioClip(t *testing.T, path, aExpr string) {

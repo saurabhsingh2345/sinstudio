@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { api } from "./api";
 import type { Asset, CaptionCue, Clip, EditDoc, Track } from "./types";
-import { newId } from "./types";
+import { newId, clipPlayDur } from "./types";
 
 interface StudioState {
   doc: EditDoc | null;
@@ -100,7 +100,18 @@ export const useStudio = create<StudioState>((set, get) => ({
     set({ saving: true });
     try {
       const { version } = await api.saveProject(doc);
-      set({ saving: false, dirty: false, doc: { ...doc, version } });
+      // Merge the server version into the CURRENT doc, not the pre-await snapshot:
+      // edits made during the in-flight save must not be clobbered. Only clear the
+      // dirty flag if nothing changed while we were saving.
+      set((s) => {
+        if (!s.doc) return { saving: false };
+        const unchanged = s.doc === doc;
+        return {
+          saving: false,
+          dirty: unchanged ? false : s.dirty,
+          doc: { ...s.doc, version: Math.max(s.doc.version || 0, version) },
+        };
+      });
     } catch (e) {
       set({ saving: false });
       console.error("save failed", e);
@@ -124,7 +135,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     const { past, doc } = get();
     if (!past.length || !doc) return;
     const prev = past[past.length - 1];
-    set((s) => ({ doc: prev, past: s.past.slice(0, -1), future: [doc, ...s.future].slice(0, 60), dirty: true }));
+    const sel = pruneSelection(prev, get());
+    set((s) => ({ doc: prev, past: s.past.slice(0, -1), future: [doc, ...s.future].slice(0, 60), dirty: true, ...sel }));
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => get().save(), 600);
   },
@@ -133,7 +145,8 @@ export const useStudio = create<StudioState>((set, get) => ({
     const { future, doc } = get();
     if (!future.length || !doc) return;
     const next = future[0];
-    set((s) => ({ doc: next, future: s.future.slice(1), past: [...s.past, doc].slice(-60), dirty: true }));
+    const sel = pruneSelection(next, get());
+    set((s) => ({ doc: next, future: s.future.slice(1), past: [...s.past, doc].slice(-60), dirty: true, ...sel }));
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => get().save(), 600);
   },
@@ -237,7 +250,7 @@ export const useStudio = create<StudioState>((set, get) => ({
         for (const c of t.clips) {
           const shift = dead
             .filter((x) => x.start < c.start)
-            .reduce((s, x) => s + (x.out - x.in), 0);
+            .reduce((s, x) => s + clipPlayDur(x), 0);
           c.start = Math.max(0, c.start - shift);
         }
       }
@@ -493,12 +506,31 @@ export const useStudio = create<StudioState>((set, get) => ({
   setSnapLine: (t) => set({ snapLine: t }),
 }));
 
+// pruneSelection drops selection entries pointing at clips/cues that no longer
+// exist in the target doc (e.g. after an undo/redo that removed them), so the
+// Inspector never references a stale id.
+function pruneSelection(
+  doc: EditDoc,
+  cur: { selClip: StudioState["selClip"]; selClips: StudioState["selClips"]; selCue: string | null },
+): Partial<StudioState> {
+  const clipIds = new Set<string>();
+  const cueIds = new Set<string>();
+  for (const t of doc.tracks) {
+    for (const c of t.clips || []) clipIds.add(c.id);
+    for (const q of t.cues || []) cueIds.add(q.id);
+  }
+  const selClips = cur.selClips.filter((s) => clipIds.has(s.clipId));
+  const selClip = cur.selClip && clipIds.has(cur.selClip.clipId) ? cur.selClip : selClips[0] ?? null;
+  const selCue = cur.selCue && cueIds.has(cur.selCue) ? cur.selCue : null;
+  return { selClips, selClip, selCue };
+}
+
 // Duration of the whole project = furthest clip/cue end.
 export function projectDuration(doc: EditDoc | null): number {
   if (!doc) return 0;
   let end = 0;
   for (const t of doc.tracks) {
-    for (const c of t.clips || []) end = Math.max(end, c.start + (c.out - c.in));
+    for (const c of t.clips || []) end = Math.max(end, c.start + clipPlayDur(c));
     for (const q of t.cues || []) end = Math.max(end, q.end);
   }
   return end;
