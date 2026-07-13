@@ -112,6 +112,14 @@ func renderCaptionPNG(cue schema.CaptionCue, w, h int, outPath string) error {
 // aligned text (with an outline, optional background band) at style.PosY. The
 // clip's transform/transitions/keyframes then animate this layer.
 func renderTitlePNG(t schema.Title, w, h int, outPath string) error {
+	return renderTitleCore(t, w, h, outPath, -1)
+}
+
+// renderTitleCore renders a title, showing only the first revealChars characters
+// of the (wrapped) text when revealChars >= 0. Layout is always computed from the
+// FULL text, so a partial reveal never reflows — characters appear in place, as
+// in a typewriter. revealChars < 0 shows everything.
+func renderTitleCore(t schema.Title, w, h int, outPath string, revealChars int) error {
 	size := float64(t.Size)
 	if size <= 0 {
 		size = 64
@@ -136,7 +144,8 @@ func renderTitlePNG(t schema.Title, w, h int, outPath string) error {
 	}
 	startY := int(posY*float64(h)) - blockH/2 + lineH*3/4
 
-	// optional background band behind the text block
+	// optional background band behind the text block (drawn at full extent even
+	// during a reveal, so the band doesn't grow as text appears)
 	if bg := strings.TrimSpace(t.Background); bg != "" {
 		band := parseHexColor(bg, color.Black)
 		pad := int(size * 0.35)
@@ -152,7 +161,22 @@ func renderTitlePNG(t schema.Title, w, h int, outPath string) error {
 		off = maxInt(2, int(size/8))
 	}
 
+	remaining := revealChars // characters left to draw across all lines (-1 = all)
 	for i, line := range lines {
+		draw := line
+		if revealChars >= 0 {
+			runes := []rune(line)
+			n := remaining
+			if n > len(runes) {
+				n = len(runes)
+			}
+			if n < 0 {
+				n = 0
+			}
+			draw = string(runes[:n])
+			remaining -= len([]rune(line)) + 1 // +1 for the wrapped line break
+		}
+		// Center/align using the FULL line width so the revealed prefix stays put.
 		tw := textWidth(face, line)
 		var x int
 		switch t.Align {
@@ -164,15 +188,18 @@ func renderTitlePNG(t schema.Title, w, h int, outPath string) error {
 			x = (w - tw) / 2
 		}
 		y := startY + i*lineH
+		if draw == "" {
+			continue
+		}
 		for dx := -off; dx <= off; dx++ {
 			for dy := -off; dy <= off; dy++ {
 				if dx == 0 && dy == 0 {
 					continue
 				}
-				drawString(img, face, line, x+dx, y+dy, outline)
+				drawString(img, face, draw, x+dx, y+dy, outline)
 			}
 		}
-		drawString(img, face, line, x, y, fg)
+		drawString(img, face, draw, x, y, fg)
 	}
 
 	f, err := os.Create(outPath)

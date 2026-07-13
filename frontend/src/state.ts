@@ -1,7 +1,8 @@
 import { create } from "zustand";
 import { api } from "./api";
-import type { Asset, CaptionCue, Clip, EditDoc, Track } from "./types";
+import type { Asset, CaptionCue, Clip, EditDoc, Track, TitleAnim, TitleReveal } from "./types";
 import { newId, clipPlayDur } from "./types";
+import { buildTitleAnim } from "./titleAnim";
 
 interface StudioState {
   doc: EditDoc | null;
@@ -62,6 +63,8 @@ interface StudioState {
   resetEffects: (trackId: string, clipId: string) => void;
   addTitle: () => void;
   updateTitle: (trackId: string, clipId: string, patch: Partial<NonNullable<Clip["title"]>>) => void;
+  applyTitleAnim: (trackId: string, clipId: string, preset: TitleAnim) => void;
+  applyTitleReveal: (trackId: string, clipId: string, reveal: TitleReveal) => void;
 
   addMarker: () => void;
   removeMarker: (id: string) => void;
@@ -483,6 +486,36 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().mutate((d) => {
       const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
       if (c?.title) Object.assign(c.title, patch);
+    }),
+
+  // applyTitleAnim writes an animation preset's keyframes/transitions onto a
+  // title clip (replacing any prior motion), scaled to the clip's play duration.
+  applyTitleAnim: (trackId, clipId, preset) =>
+    get().mutate((d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      if (!c?.title) return;
+      const { keyframes, transitionIn, transitionOut } = buildTitleAnim(preset, clipPlayDur(c));
+      c.keyframes = Object.keys(keyframes).length ? keyframes : undefined;
+      c.transitionIn = transitionIn;
+      c.transitionOut = transitionOut;
+      c.title.anim = preset;
+      if (preset !== "none") c.title.reveal = ""; // reveal & transform presets are mutually exclusive
+    }),
+
+  // applyTitleReveal toggles a text build-on. It's mutually exclusive with the
+  // transform presets (the renderer ignores keyframes during a reveal), so
+  // enabling one clears the other's motion to keep preview and export in sync.
+  applyTitleReveal: (trackId, clipId, reveal) =>
+    get().mutate((d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      if (!c?.title) return;
+      c.title.reveal = reveal;
+      if (reveal) {
+        c.keyframes = undefined;
+        c.transitionIn = undefined;
+        c.transitionOut = undefined;
+        c.title.anim = "none";
+      }
     }),
 
   addMarker: () => {

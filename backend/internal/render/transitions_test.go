@@ -404,6 +404,61 @@ func TestCaptionDefaultPosY(t *testing.T) {
 	}
 }
 
+// TestTitleRevealRuns confirms a typewriter/word text reveal composites multiple
+// prefix PNGs into a filtergraph ffmpeg accepts and renders.
+func TestTitleRevealRuns(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	for _, mode := range []string{"typewriter", "word"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			doc := &schema.EditDoc{
+				Canvas: schema.Canvas{Width: 640, Height: 360, FPS: 24},
+				Tracks: []schema.Track{
+					{ID: "bg", Kind: schema.TrackBackground, BackgroundColor: "#101020"},
+					{ID: "ov", Kind: schema.TrackOverlay, Clips: []schema.Clip{{
+						ID: "t1", Start: 0, In: 0, Out: 3,
+						Transform: schema.Transform{Scale: 1, Opacity: 1},
+						FadeIn:    0.3, FadeOut: 0.3,
+						Title:     &schema.Title{Text: "Hello brave new world", Size: 64, Color: "#ffffff", Align: "center", PosY: 0.5, Reveal: mode},
+					}}},
+				},
+			}
+			resolve := func(id string) (string, bool) { return "", false }
+			plan, err := Compile(doc, resolve, filepath.Join(dir, "out.mp4"), dir, Options{})
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+				t.Fatalf("ffmpeg failed: %v\n%s", err, b)
+			}
+			if fi, err := os.Stat(filepath.Join(dir, "out.mp4")); err != nil || fi.Size() == 0 {
+				t.Fatalf("no output: %v", err)
+			}
+		})
+	}
+}
+
+// TestTitleRevealSteps checks the reveal-step boundaries: last step is the
+// full-text sentinel and word mode yields one step per word.
+func TestTitleRevealSteps(t *testing.T) {
+	tw := titleRevealSteps("abcdef", "typewriter")
+	if tw[len(tw)-1] != -1 {
+		t.Errorf("typewriter last step should be -1 (full), got %v", tw)
+	}
+	wd := titleRevealSteps("one two three", "word")
+	if len(wd) != 3 {
+		t.Errorf("word mode should give 3 steps for 3 words, got %v", wd)
+	}
+	if wd[len(wd)-1] != -1 {
+		t.Errorf("word last step should be -1 (full), got %v", wd)
+	}
+	if got := titleRevealSteps("", "typewriter"); len(got) != 1 || got[0] != -1 {
+		t.Errorf("empty text should give [-1], got %v", got)
+	}
+}
+
 // makeAudioClip renders a short mp4 carrying a lavfi audio source (with a video
 // stream so it behaves like a normal clip through the pipeline).
 func makeAudioClip(t *testing.T, path, aExpr string) {

@@ -1,6 +1,7 @@
 import { useStudio } from "../state";
-import type { Keyframe, Transition } from "../types";
+import type { Keyframe, Transition, TitleAnim, TitleReveal } from "../types";
 import { EASINGS, EASE_LABEL } from "../ease";
+import { TITLE_ANIMS } from "../titleAnim";
 
 export function Inspector() {
   const {
@@ -20,6 +21,8 @@ export function Inspector() {
     updateEffect,
     resetEffects,
     updateTitle,
+    applyTitleAnim,
+    applyTitleReveal,
     selClips,
     deleteSelected,
   } = useStudio();
@@ -96,6 +99,30 @@ export function Inspector() {
                   )}
                 </div>
                 <Num label="Duration (s)" v={clip.out} step={0.5} on={(x) => updateClip(selClip.trackId, clip.id, { out: Math.max(0.2, x) })} />
+                <div className="row">
+                  <div className="field">
+                    <label>Animation</label>
+                    <select
+                      value={clip.title.anim ?? "none"}
+                      onChange={(e) => applyTitleAnim(selClip.trackId, clip.id, e.target.value as TitleAnim)}
+                    >
+                      {TITLE_ANIMS.map((a) => (
+                        <option key={a.id} value={a.id}>{a.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="field">
+                    <label>Text reveal</label>
+                    <select
+                      value={clip.title.reveal ?? ""}
+                      onChange={(e) => applyTitleReveal(selClip.trackId, clip.id, e.target.value as TitleReveal)}
+                    >
+                      <option value="">None</option>
+                      <option value="typewriter">Typewriter</option>
+                      <option value="word">Word by word</option>
+                    </select>
+                  </div>
+                </div>
               </>
             ) : (
               <>

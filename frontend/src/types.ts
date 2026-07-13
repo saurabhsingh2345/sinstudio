@@ -24,6 +24,9 @@ export interface Keyframe {
 }
 
 // Title: a text-clip spec (clip has no asset when set).
+export type TitleAnim = "none" | "fade" | "fadeUp" | "pop" | "slide" | "zoom";
+export type TitleReveal = "" | "typewriter" | "word";
+
 export interface Title {
   text: string;
   size: number; // px at 1080 reference
@@ -32,6 +35,8 @@ export interface Title {
   posY: number; // 0..1
   background?: string; // hex band, "" = none
   bold?: boolean;
+  anim?: TitleAnim; // entrance/exit preset (motion lives in keyframes/transitions)
+  reveal?: TitleReveal; // per-word/character text build-on (renderer-composited)
 }
 
 // Effects: per-clip color/blur adjustments. Identity = brightness 0, contrast 1,
