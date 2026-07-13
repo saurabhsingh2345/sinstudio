@@ -6,7 +6,7 @@ export interface JobState {
   id: string;
   kind: string;
   progress: number;
-  status: "running" | "done" | "error" | "canceled";
+  status: "queued" | "running" | "done" | "error" | "canceled";
   message: string;
   log: string[];
 }
@@ -15,6 +15,7 @@ interface JobsStore {
   jobs: Record<string, JobState>;
   dismiss: (id: string) => void;
   cancel: (id: string) => void;
+  retry: (id: string) => void;
 }
 
 export const useJobs = create<JobsStore>((set) => ({
@@ -28,6 +29,9 @@ export const useJobs = create<JobsStore>((set) => ({
   cancel: (id) => {
     api.cancelJob(id).catch(() => {});
   },
+  retry: (id) => {
+    api.retryExport(id).catch(() => {});
+  },
 }));
 
 const waiters = new Map<string, { resolve: (d: any) => void; reject: (e: Error) => void }>();
@@ -39,8 +43,10 @@ function apply(ev: JobEvent) {
     const next: JobState = { ...prev, kind: ev.kind, progress: ev.progress };
     if (ev.type === "log" && ev.message) next.log = [...prev.log, ev.message].slice(-200);
     if (ev.message) next.message = ev.message;
-    if (ev.type === "done") next.status = "done";
-    if (ev.type === "error") next.status = ev.message === "canceled" ? "canceled" : "error";
+    // Prefer the authoritative status the backend now sends; fall back to type.
+    if (ev.status) next.status = ev.status as JobState["status"];
+    else if (ev.type === "done") next.status = "done";
+    else if (ev.type === "error") next.status = ev.message === "canceled" ? "canceled" : "error";
     return { jobs: { ...s.jobs, [ev.jobId]: next } };
   });
 

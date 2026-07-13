@@ -70,6 +70,7 @@ docker run -p 8787:8787 -e STUDIO_TOKEN=change-me -v studio-media:/data studio
 | --- | --- | --- |
 | `STUDIO_TOKEN` | *(unset)* | When set, the API and `/media` require a login. Browsers sign in once at the token screen (httpOnly session cookie); programmatic clients may send `Authorization: Bearer <token>`. **Unset = open**, intended for localhost only. |
 | `STUDIO_ALLOWED_ORIGINS` | *(unset)* | Comma-separated CORS allowlist (e.g. `https://studio.example.com`). Unset ⇒ only `localhost`/`127.0.0.1` origins are allowed; the server never advertises `*`. |
+| `STUDIO_EXPORT_WORKERS` | `2` | How many exports render concurrently. Exports beyond this queue up (each is a full FFmpeg process). |
 
 > ⚠️ The app supervises local dev-servers and reads/writes media. **Never expose
 > it to the public internet without `STUDIO_TOKEN` set** (and TLS in front).
@@ -115,6 +116,11 @@ The export dialog (and `POST /api/projects/{id}/export`) accepts:
 - **preset:** `""` (timeline size) · `shorts` (1080×1920) · `square` (1080×1080) · `4k` (3840×2160)
 - **format:** `mp4` (H.264) · `webm` (VP9) · `gif` · `mov` (ProRes)
 - **from / to:** export a time range only
+
+Exports run through a **bounded queue** (`STUDIO_EXPORT_WORKERS`, default 2) so many
+requests don't thrash the machine. The **Renders** panel shows queued/rendering jobs
+(with cancel), a **retry** for failed ones, and a **history** of finished exports with
+re-download/delete.
 
 Per clip (inspector): **speed**, **fade in/out**, volume, transform, opacity.
 

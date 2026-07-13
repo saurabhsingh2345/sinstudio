@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"studio/internal/apps"
@@ -27,6 +28,9 @@ import (
 // can't fill the disk. 4 GiB covers long 4K clips with headroom.
 const maxUploadBytes = 4 << 30
 
+// exportTimeout bounds a single export render.
+const exportTimeout = 30 * time.Minute
+
 // Server bundles the backend dependencies.
 type Server struct {
 	Store          *store.Store
@@ -37,6 +41,22 @@ type Server struct {
 	FrontDir       string   // optional built frontend to serve (SPA)
 	Auth           *Auth    // optional shared-token gate (nil/empty = open)
 	AllowedOrigins []string // CORS allowlist ("" entry or empty = localhost dev only)
+	ExportWorkers  int      // export queue concurrency (default 2)
+
+	exports     *exportQueue
+	exportsOnce sync.Once
+}
+
+// exportQueueRef lazily builds the bounded export queue on first use.
+func (s *Server) exportQueue() *exportQueue {
+	s.exportsOnce.Do(func() {
+		w := s.ExportWorkers
+		if w < 1 {
+			w = 2
+		}
+		s.exports = newExportQueue(s, w)
+	})
+	return s.exports
 }
 
 // Routes builds the HTTP handler.
@@ -70,6 +90,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/export", s.export)
 	mux.HandleFunc("GET /api/projects/{id}/waveform", s.waveform)
 	mux.HandleFunc("GET /api/projects/{id}/frame", s.frame)
+	mux.HandleFunc("GET /api/projects/{id}/renders", s.listRenders)
+	mux.HandleFunc("DELETE /api/projects/{id}/renders/{name}", s.deleteRender)
 
 	// Cross-product library + universal ingest ("Send to Studio").
 	mux.HandleFunc("GET /api/library", s.listLibrary)
@@ -80,6 +102,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
+	mux.HandleFunc("POST /api/jobs/{id}/retry", s.retryExport)
 
 	// Media files (assets, thumbs, renders).
 	mux.Handle("GET /media/", http.StripPrefix("/media/",
@@ -340,48 +363,23 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	var opts render.Options
 	_ = json.NewDecoder(r.Body).Decode(&opts) // body optional
 
-	resolve := func(assetID string) (string, bool) {
-		for _, a := range doc.Assets {
-			if a.ID == assetID {
-				return s.Store.Abs(a.Path), true
-			}
-		}
-		return "", false
-	}
-	renders, _ := s.Store.RendersDir(projID)
-	ext := opts.Format
-	if ext == "" {
-		ext = "mp4"
-	}
-	outName := "export-" + store.NewID("") + "." + ext
-	outPath := filepath.Join(renders, outName)
-
-	plan, err := render.Compile(doc, resolve, outPath, renders, opts)
+	// Route through the bounded export queue (compiles now, fails fast on bad opts).
+	jobID, err := s.exportQueue().Enqueue(projID, doc, opts)
 	if err != nil {
 		httpErr(w, 400, err)
 		return
 	}
+	writeJSON(w, 202, map[string]any{"jobId": jobID})
+}
 
-	job := s.Jobs.New("export", 30*time.Minute)
-	go func() {
-		ctx := job.Context()
-		job.Progress(0.02, "rendering")
-		if err := render.Run(ctx, job, plan); err != nil {
-			job.Fail(err)
-			return
-		}
-		asset, err := s.registerAsset(ctx, projID, store.NewID("asset_"), outPath, "Export "+outName, "export")
-		if err != nil {
-			job.Fail(err)
-			return
-		}
-		if _, err := s.Store.AddAsset(projID, *asset); err != nil {
-			job.Fail(err)
-			return
-		}
-		job.Done(map[string]any{"asset": asset, "url": "/media/" + s.Store.Rel(outPath)})
-	}()
-	writeJSON(w, 202, map[string]any{"jobId": job.ID})
+// retryExport re-runs a previously-submitted export as a fresh queued job.
+func (s *Server) retryExport(w http.ResponseWriter, r *http.Request) {
+	jobID, err := s.exportQueue().Retry(r.PathValue("id"))
+	if err != nil {
+		httpErr(w, 404, err)
+		return
+	}
+	writeJSON(w, 202, map[string]any{"jobId": jobID})
 }
 
 // ---- jobs ----

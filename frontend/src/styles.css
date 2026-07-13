@@ -226,3 +226,17 @@ button.ghost { background: transparent; }
   color: #fff; border-radius: 6px; font-size: 14px; cursor: pointer;
 }
 .auth-card button:disabled { opacity: .5; cursor: default; }
+
+/* Render queue / history modal rows */
+.render-row { display: flex; align-items: center; gap: 8px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.render-row.err .badge.err { color: var(--danger); border-color: var(--danger); }
+.render-row .badge {
+  flex: 0 0 auto; font-size: 11px; padding: 2px 8px; border: 1px solid var(--line);
+  border-radius: 999px; color: var(--dim); white-space: nowrap;
+}
+.render-row a.btn, .render-row button {
+  flex: 0 0 auto; font-size: 12px; padding: 5px 10px; border: 1px solid var(--line);
+  border-radius: 6px; color: inherit; background: var(--panel2); cursor: pointer; text-decoration: none;
+}
+.render-row a.btn:hover, .render-row button:hover { border-color: var(--accent); }
+.renders-group { margin-bottom: 6px; }
