@@ -22,9 +22,14 @@ const SOURCES: Record<string, string[]> = {
   funkycode: ["funkycode"],
 };
 
-// Whether an app produces spoken narration. Only newaniAdv has TTS; the others
-// render silent motion — surfaced so "no voice" is never a surprise.
-const VOICE: Record<string, boolean> = { newaniadv: true, hyperframes: false, funkycode: false };
+// What audio each app produces, so it's never a surprise. newaniAdv narrates
+// (Kokoro TTS); FunkyCode records synth sound effects (typing/keys) from its app
+// UI; HyperFrames is silent motion unless the composition adds media.
+const AUDIO: Record<string, { tag: string; has: boolean }> = {
+  newaniadv: { tag: "narrated · TTS voice", has: true },
+  funkycode: { tag: "sound fx · typing/keys", has: true },
+  hyperframes: { tag: "silent · motion only", has: false },
+};
 
 // Default timeline lane for an imported asset (mirrors AssetPanel.laneFor).
 const laneFor = (a: Asset) =>
@@ -50,7 +55,7 @@ export function PluginsPanel({ projectId }: { projectId: string }) {
         .then((list) => alive && setApps(Object.fromEntries(list.map((a) => [a.id, a]))))
         .catch(() => {});
     tick();
-    const t = setInterval(tick, 2500);
+    const t = setInterval(tick, 5000);
     return () => {
       alive = false;
       clearInterval(t);
@@ -115,9 +120,9 @@ export function PluginsPanel({ projectId }: { projectId: string }) {
                     {booting && <span className="plugin-live booting">booting…</span>}
                   </span>
                   <span className="plugin-desc">{g.description}</span>
-                  <span className={"plugin-voice " + (VOICE[g.id] ? "on" : "")}>
-                    <Icon name={VOICE[g.id] ? "audio" : "eyeOff"} />
-                    {VOICE[g.id] ? "narrated (TTS voice)" : "silent — no voiceover"}
+                  <span className={"plugin-voice " + (AUDIO[g.id]?.has ? "on" : "")}>
+                    <Icon name={AUDIO[g.id]?.has ? "audio" : "eyeOff"} />
+                    {AUDIO[g.id]?.tag || "audio varies"}
                   </span>
                 </span>
                 <Icon name={isOpen ? "up" : "down"} />

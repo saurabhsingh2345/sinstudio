@@ -20,7 +20,11 @@ export function AppStudio({
   onImport: (e: LibraryEntry, toTimeline: boolean) => Promise<unknown>;
 }) {
   const [clips, setClips] = useState<LibraryEntry[]>([]);
-  const [healthy, setHealthy] = useState(app.state === "running" && app.healthy);
+  // everHealthy latches true the first time the app answers its health probe.
+  // The iframe mounts once on that transition and is never remounted — otherwise
+  // transient probe flaps (the Next dev server pauses while compiling) would
+  // remount it and trigger an endless Fast-Refresh full-reload loop.
+  const [everHealthy, setEverHealthy] = useState(app.state === "running" && app.healthy);
   const [autoImport, setAutoImport] = useState(false);
   const [importing, setImporting] = useState("");
   const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
@@ -28,6 +32,12 @@ export function AppStudio({
   const known = useRef<Set<string>>(new Set());
   const autoRef = useRef(autoImport);
   autoRef.current = autoImport;
+
+  // Sources holding freshly created/downloaded clips — treated as "this app's"
+  // output while its studio is open (apps often download to the browser, which
+  // lands in the watched Downloads folder rather than the app's own dir).
+  const isFresh = (src: string) =>
+    src === "downloads" || src === "inbox" || src.startsWith("watch") || sources.includes(src);
 
   const doImport = async (e: LibraryEntry) => {
     setImporting(e.id);
@@ -47,22 +57,26 @@ export function AppStudio({
     const scan = async () => {
       try {
         const d = await api.library();
-        const mine = d.entries
-          .filter((e) => sources.includes(e.source))
-          .sort((a, b) => (a.modTime < b.modTime ? 1 : -1));
+        const all = d.entries.filter((e) => isFresh(e.source));
+        // The app's own output dir (server-written clips) always shows; clips
+        // from the watched Downloads/inbox folders only show once they're NEW
+        // (created after opening) so pre-existing downloads don't clutter.
         if (baseline.current === null) {
-          baseline.current = new Set(mine.map((e) => e.id));
-          known.current = new Set(mine.map((e) => e.id));
+          baseline.current = new Set(all.map((e) => e.id));
+          known.current = new Set(all.map((e) => e.id));
         } else {
-          for (const e of mine) {
+          for (const e of all) {
             if (!known.current.has(e.id)) {
               known.current.add(e.id);
-              toast.success(`New clip from ${app.name}: ${e.name}`);
+              toast.success(`New clip: ${e.name}`);
               if (autoRef.current) void doImport(e);
             }
           }
         }
-        if (alive) setClips(mine.slice(0, 20));
+        const shown = all
+          .filter((e) => sources.includes(e.source) || !baseline.current!.has(e.id))
+          .sort((a, b) => (a.modTime < b.modTime ? 1 : -1));
+        if (alive) setClips(shown.slice(0, 20));
       } catch {
         /* ignore */
       }
@@ -75,30 +89,31 @@ export function AppStudio({
     };
   }, []);
 
-  // Poll this app's health so we can show a boot state and load the frame once up.
+  // Poll health only until the app first answers, then stop (and never remount).
   useEffect(() => {
+    if (everHealthy) return;
     let alive = true;
     const t = setInterval(() => {
       api
         .apps()
         .then((list) => {
           const a = list.find((x) => x.id === app.id);
-          if (alive && a) setHealthy(a.state === "running" && a.healthy);
+          if (alive && a && a.state === "running" && a.healthy) setEverHealthy(true);
         })
         .catch(() => {});
-    }, 2000);
+    }, 1500);
     return () => {
       alive = false;
       clearInterval(t);
     };
-  }, []);
+  }, [everHealthy]);
 
   return (
     <div className="appstudio-bg" onClick={onClose}>
       <div className="appstudio" onClick={(e) => e.stopPropagation()}>
         <div className="appstudio-h">
           <b>{app.name}</b>
-          <span className={"plugin-live" + (healthy ? "" : " booting")}>{healthy ? "live" : "booting…"}</span>
+          <span className={"plugin-live" + (everHealthy ? "" : " booting")}>{everHealthy ? "live" : "booting…"}</span>
           <span className="small" style={{ marginLeft: 4 }}>{app.url}</span>
           <div className="spacer" />
           <label className="plugin-check" title="Import every new clip this app produces, automatically">
@@ -115,7 +130,7 @@ export function AppStudio({
 
         <div className="appstudio-body">
           <div className="appstudio-frame">
-            {healthy ? (
+            {everHealthy ? (
               <iframe src={app.url} title={app.name} />
             ) : (
               <div className="appstudio-boot">
