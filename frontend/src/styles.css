@@ -174,7 +174,7 @@ label { display: block; color: var(--dim); font-size: 10.5px; font-weight: 500; 
 
 .topbar {
   height: 52px; flex: 0 0 52px; display: flex; align-items: center; gap: 10px;
-  padding: 0 12px; border-bottom: 1px solid var(--line);
+  padding: 0 14px; border-bottom: 1px solid var(--line);
   background: linear-gradient(180deg, var(--panel), #101219);
   box-shadow: var(--sh-1); z-index: 5;
 }
@@ -194,11 +194,14 @@ label { display: block; color: var(--dim); font-size: 10.5px; font-weight: 500; 
 .status-pill.saving { color: var(--accent-hi); } .status-pill.saving .dot { background: var(--accent-hi); animation: pulse 1s var(--ease) infinite; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
-.editor { flex: 1; display: grid; grid-template-columns: 272px 1fr 312px; min-height: 0; }
-.col { min-height: 0; overflow: auto; background: var(--panel); }
-.col:first-child { border-right: 1px solid var(--line); }
-.col:last-child { border-left: 1px solid var(--line); }
-.center { display: flex; flex-direction: column; min-height: 0; background: var(--bg-2); }
+/* floating panels: three rounded cards over the near-black canvas (matches the
+   approved mockup — panels float, gutters reveal the ambient background). */
+.editor { flex: 1; display: grid; grid-template-columns: 272px 1fr 312px;
+  gap: 12px; padding: 12px; min-height: 0; background: transparent; }
+.col { min-height: 0; overflow: auto; background: var(--panel);
+  border: 1px solid var(--line); border-radius: var(--r-3); box-shadow: var(--sh-2); }
+.center { display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-3); box-shadow: var(--sh-2); }
 
 .panel-h {
   padding: 11px 13px; font-weight: 650; font-size: 12.5px; letter-spacing: 0.01em;
@@ -263,8 +266,8 @@ label { display: block; color: var(--dim); font-size: 10.5px; font-weight: 500; 
   background: linear-gradient(90deg, var(--panel-2), rgba(26, 29, 38, 0.96)); border-right: 1px solid var(--line-2); box-sizing: border-box; }
 .lane-label .lane-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; font-weight: 550; }
 .lane-label .lane-ctl { display: flex; gap: 3px; align-items: center; }
-.lane-label .lane-ctl button { font-size: 9px; font-weight: 700; line-height: 1; padding: 0; min-width: 17px; height: 17px;
-  border-radius: 4px; background: var(--panel); color: var(--dim); border: 1px solid var(--line); }
+.lane-label .lane-ctl button { font-size: 9.5px; font-weight: 700; line-height: 1; padding: 0; min-width: 18px; height: 18px;
+  border-radius: 5px; background: var(--panel); color: var(--text-2); border: 1px solid var(--line-2); }
 .lane-label .lane-ctl button:hover { color: #fff; border-color: var(--line-2); }
 .lane-label .lane-ctl button svg { width: 11px; height: 11px; }
 .lane-label .lane-ctl button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
