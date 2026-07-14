@@ -4,6 +4,7 @@ import { mediaUrl, clipPlayDur, type Clip, type Track } from "../types";
 import { ease } from "../ease";
 import { revealedText } from "../titleAnim";
 import { peaksNow } from "../peaks";
+import { Icon } from "./Icon";
 
 const DEF_TRANS = 0.5; // matches render's defTransDur
 
@@ -419,17 +420,28 @@ export function Preview() {
       </div>
 
       <div className="transport">
-        <button onClick={() => setPlaying(!playing)}>{playing ? "❚❚ Pause" : "▶ Play"}</button>
-        <button onClick={() => setPlayhead(0)}>⏮ Start</button>
-        <span className="time">
-          {playhead.toFixed(2)}s / {total.toFixed(2)}s
-        </span>
+        <div className="transport-main">
+          <button className="icon-btn" onClick={() => setPlayhead(0)} title="Jump to start">
+            <Icon name="start" />
+          </button>
+          <button className="icon-btn play" onClick={() => setPlaying(!playing)} title={playing ? "Pause (space)" : "Play (space)"}>
+            <Icon name={playing ? "pause" : "play"} />
+          </button>
+          <button className="icon-btn" onClick={() => setPlayhead(total)} title="Jump to end">
+            <Icon name="end" />
+          </button>
+          <span className="time">
+            <b>{playhead.toFixed(2)}s</b> / {total.toFixed(2)}s
+          </span>
+        </div>
         {doc && <LevelMeter level={audioLevel(doc.id, doc.assets, audios, playhead)} />}
-        <button className={showScope ? "active" : ""} onClick={() => setShowScope((s) => !s)} title="Luma histogram scope">
-          Scope
+        <button className={"chip-btn" + (showScope ? " active" : "")} onClick={() => setShowScope((s) => !s)} title="Luma histogram scope">
+          <Icon name="scope" /> Scope
         </button>
-        <div style={{ flex: 1 }} />
-        <button onClick={addCue}>+ Caption @ playhead</button>
+        <div className="spacer" />
+        <button className="chip-btn" onClick={addCue} title="Add a caption cue at the playhead">
+          <Icon name="caption" /> Caption
+        </button>
       </div>
     </>
   );

@@ -7,6 +7,7 @@ import { Inspector } from "./Inspector";
 import { Transcript } from "./Transcript";
 import { ExportDialog } from "./ExportDialog";
 import { RendersModal } from "./RendersModal";
+import { Icon } from "./Icon";
 
 export function Editor({ projectId, onHome }: { projectId: string; onHome: () => void }) {
   const {
@@ -88,26 +89,34 @@ export function Editor({ projectId, onHome }: { projectId: string; onHome: () =>
   return (
     <div className="app">
       <div className="topbar">
-        <button onClick={onHome}>← Projects</button>
-        <span className="title">{doc.name}</span>
-        <span className="status">
-          {saving ? "saving…" : dirty ? "unsaved" : "saved"} · v{doc.version}
+        <button className="ghost icon-btn" onClick={onHome} title="Back to projects">
+          <Icon name="back" />
+        </button>
+        <div className="brand">
+          <span className="brand-mark" />
+          <span className="title">{doc.name}</span>
+        </div>
+        <span className={"status-pill " + (saving ? "saving" : dirty ? "dirty" : "saved")}>
+          <i className="dot" />
+          {saving ? "Saving…" : dirty ? "Unsaved" : "Saved"} · v{doc.version}
         </span>
         <div className="spacer" />
-        <button onClick={undo} title="Undo (⌘Z)">
-          ↶
-        </button>
-        <button onClick={redo} title="Redo (⌘⇧Z)">
-          ↷
-        </button>
-        <span className="status">
+        <div className="seg">
+          <button className="icon-btn" onClick={undo} title="Undo (⌘Z)">
+            <Icon name="undo" />
+          </button>
+          <button className="icon-btn" onClick={redo} title="Redo (⌘⇧Z)">
+            <Icon name="redo" />
+          </button>
+        </div>
+        <span className="chip">
           {doc.canvas.width}×{doc.canvas.height} · {doc.canvas.fps}fps
         </span>
-        <button onClick={() => setShowRenders(true)} title="Render queue & history">
-          Renders
+        <button className="ghost" onClick={() => setShowRenders(true)} title="Render queue & history">
+          <Icon name="renders" /> Renders
         </button>
         <button className="primary" onClick={() => setShowExport(true)}>
-          Export
+          <Icon name="export" /> Export
         </button>
       </div>
 

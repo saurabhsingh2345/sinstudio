@@ -18,8 +18,14 @@ export function ProjectList({ onOpen }: { onOpen: (id: string) => void }) {
 
   return (
     <div className="projects">
-      <h1>Studio</h1>
-      <p className="muted">
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        <span
+          className="brand-mark"
+          style={{ width: 34, height: 34, borderRadius: 10 }}
+        />
+        <h1 style={{ margin: 0 }}>Studio</h1>
+      </div>
+      <p className="muted" style={{ marginTop: 12 }}>
         Assemble clips from newaniAdv, HyperFrames &amp; imports into a finished video — timeline,
         music, transcript, background layers, server-side FFmpeg export.
       </p>

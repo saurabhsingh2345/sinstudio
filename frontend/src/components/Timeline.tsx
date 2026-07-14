@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useStudio, projectDuration } from "../state";
 import { getPeaks } from "../peaks";
 import { mediaUrl, clipPlayDur, type Clip, type EditDoc, type Track } from "../types";
+import { Icon } from "./Icon";
 
 // Waveform draws an asset's peaks for the clip's trimmed span, normalized so the
 // loudest visible peak fills the lane. Redraws on trim/zoom.
@@ -101,22 +102,30 @@ export function Timeline() {
   return (
     <div className="timeline">
       <div className="tl-toolbar">
-        <strong style={{ fontSize: 12 }}>Timeline</strong>
-        <span className="small">{dur.toFixed(1)}s</span>
+        <strong>Timeline</strong>
+        <span className="chip">{dur.toFixed(1)}s</span>
+        <span className="tl-sep" />
         <button onClick={splitAtPlayhead} title="Split at playhead (S)">
-          ✂ Split
+          <Icon name="split" /> Split
         </button>
         <button onClick={addTitle} title="Add a text/title clip at the playhead">
-          T Title
+          <Icon name="title" /> Title
         </button>
         <button onClick={addMarker} title="Add a marker at the playhead">
-          ◇ Marker
+          <Icon name="marker" /> Marker
         </button>
+        <span className="tl-sep" />
         <span className="tl-addtrack">
-          <span className="small">+ track:</span>
-          <button onClick={() => addTrack("video")} title="Add a video track">Video</button>
-          <button onClick={() => addTrack("overlay")} title="Add an overlay track">Overlay</button>
-          <button onClick={() => addTrack("audio")} title="Add an audio track">Audio</button>
+          <span className="small">Add track</span>
+          <button onClick={() => addTrack("video")} title="Add a video track">
+            <Icon name="video" /> Video
+          </button>
+          <button onClick={() => addTrack("overlay")} title="Add an overlay track">
+            <Icon name="overlay" /> Overlay
+          </button>
+          <button onClick={() => addTrack("audio")} title="Add an audio track">
+            <Icon name="audio" /> Audio
+          </button>
         </span>
         <div style={{ flex: 1 }} />
         <button
@@ -128,11 +137,17 @@ export function Timeline() {
           }}
           title="Zoom to fit the whole project"
         >
-          ⤢ Fit
+          <Icon name="fit" /> Fit
         </button>
-        <button onClick={() => setZoom(pxPerSec - 20)}>–</button>
-        <span className="small">{pxPerSec}px/s</span>
-        <button onClick={() => setZoom(pxPerSec + 20)}>+</button>
+        <span className="seg">
+          <button className="icon-btn" onClick={() => setZoom(pxPerSec - 20)} title="Zoom out">
+            <Icon name="minus" />
+          </button>
+          <span className="seg-val">{pxPerSec}px/s</span>
+          <button className="icon-btn" onClick={() => setZoom(pxPerSec + 20)} title="Zoom in">
+            <Icon name="plus" />
+          </button>
+        </span>
       </div>
 
       <div className="tl-scroll" ref={scrollRef}>
@@ -271,13 +286,13 @@ function Lane({
             {reorderable && (
               <>
                 <button onClick={() => moveTrack(track.id, -1)} title="Move up">
-                  ▲
+                  <Icon name="up" />
                 </button>
                 <button onClick={() => moveTrack(track.id, 1)} title="Move down">
-                  ▼
+                  <Icon name="down" />
                 </button>
                 <button className="rm" onClick={() => removeTrack(track.id)} title="Remove track">
-                  ✕
+                  <Icon name="close" />
                 </button>
               </>
             )}

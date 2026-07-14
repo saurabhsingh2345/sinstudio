@@ -6,6 +6,7 @@ import { mediaUrl, type Asset } from "../types";
 import { GenerateModal } from "./GenerateModal";
 import { LibraryModal } from "./LibraryModal";
 import { AppsModal } from "./AppsModal";
+import { Icon } from "./Icon";
 
 // Default lane for an asset kind.
 const laneFor = (a: Asset) =>
@@ -41,17 +42,17 @@ export function AssetPanel({ projectId }: { projectId: string }) {
       <div className="panel-h">
         Assets
         <div className="spacer" />
-        <button onClick={() => setAppsOpen(true)} title="Run & manage your generator apps">
-          Apps
+        <button className="ghost icon-btn" onClick={() => setAppsOpen(true)} title="Run & manage your generator apps">
+          <Icon name="apps" />
         </button>
-        <button onClick={() => setLib(true)} title="Clips from your other products">
-          Library
+        <button className="ghost icon-btn" onClick={() => setLib(true)} title="Clips from your other products">
+          <Icon name="library" />
         </button>
-        <button onClick={() => fileRef.current?.click()} disabled={busy}>
-          {busy ? "…" : "Import"}
+        <button className="ghost icon-btn" onClick={() => fileRef.current?.click()} disabled={busy} title="Import media">
+          <Icon name="import" />
         </button>
-        <button className="primary" onClick={() => setGen(true)}>
-          Generate
+        <button className="primary" onClick={() => setGen(true)} title="Generate a clip">
+          <Icon name="generate" /> Generate
         </button>
         <input
           ref={fileRef}
