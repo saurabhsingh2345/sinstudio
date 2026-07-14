@@ -285,6 +285,7 @@ export function Preview() {
       const v = videoRefs.current[clip.id];
       if (!v) continue;
       v.muted = !!track.muted || (soloActive && !track.solo);
+      v.volume = Math.max(0, Math.min(1, clip.volume ?? 1)); // respect per-clip Volume (was ignored)
       const sp = clip.speed && clip.speed > 0 ? clip.speed : 1;
       if (v.playbackRate !== sp) v.playbackRate = sp;
       const local = clip.in + (playhead - clip.start) * sp;
