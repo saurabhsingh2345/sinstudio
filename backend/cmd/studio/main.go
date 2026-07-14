@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -49,7 +50,21 @@ func main() {
 		log.Fatalf("generators: %v", err)
 	}
 
-	lib := library.New(absRoot, filepath.Join(st.Root(), "inbox"))
+	// Watch dirs where the sibling apps drop browser-downloaded clips (so they
+	// can auto-import). The user's Downloads folder is watched by default;
+	// STUDIO_WATCH_DIRS (comma-separated) adds custom drop folders.
+	var watch []library.Source
+	if home, err := os.UserHomeDir(); err == nil {
+		watch = append(watch, library.Source{ID: "downloads", Name: "Downloads", Dir: filepath.Join(home, "Downloads")})
+	}
+	if v := strings.TrimSpace(os.Getenv("STUDIO_WATCH_DIRS")); v != "" {
+		for i, d := range strings.Split(v, ",") {
+			if d = strings.TrimSpace(d); d != "" {
+				watch = append(watch, library.Source{ID: fmt.Sprintf("watch%d", i+1), Name: filepath.Base(d), Dir: d})
+			}
+		}
+	}
+	lib := library.New(absRoot, filepath.Join(st.Root(), "inbox"), watch)
 
 	appMgr, err := apps.NewManager(absRoot)
 	if err != nil {

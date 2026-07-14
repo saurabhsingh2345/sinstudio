@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"studio/internal/render"
 	"studio/internal/store"
@@ -38,10 +39,13 @@ func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Unique per request so fast scrubbing can't race two ffmpeg writes onto one
-	// file (which would serve a half-written / wrong frame). Prune older previews
-	// first so this directory doesn't grow without bound.
+	// file (which would serve a half-written / wrong frame). Prune only frames
+	// older than a few seconds so a concurrent request's just-written frame (that
+	// the client hasn't fetched yet) isn't deleted out from under it.
 	for _, old := range prevFrames(renders) {
-		_ = os.Remove(old)
+		if fi, err := os.Stat(old); err == nil && time.Since(fi.ModTime()) > 10*time.Second {
+			_ = os.Remove(old)
+		}
 	}
 	out := filepath.Join(renders, "frame-"+store.NewID("")+".png")
 	lutDir, _ := s.Store.LutsDir(doc.ID)

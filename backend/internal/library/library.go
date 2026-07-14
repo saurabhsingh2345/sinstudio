@@ -56,7 +56,9 @@ var candidates = []candidate{
 
 // New builds a scanner for the given studio root and inbox dir. Missing
 // directories are skipped so it works regardless of which products are present.
-func New(studioRoot, inboxDir string) *Scanner {
+// extra watch dirs (e.g. the user's Downloads folder) are appended so clips the
+// sibling apps download from the browser are picked up and can auto-import.
+func New(studioRoot, inboxDir string, extra []Source) *Scanner {
 	s := &Scanner{}
 	add := func(id, name, dir string) {
 		abs, err := filepath.Abs(dir)
@@ -73,6 +75,9 @@ func New(studioRoot, inboxDir string) *Scanner {
 	add("inbox", "Inbox (Send to Studio)", inboxDir)
 	for _, c := range candidates {
 		add(c.id, c.name, filepath.Join(studioRoot, c.rel))
+	}
+	for _, e := range extra {
+		add(e.ID, e.Name, e.Dir)
 	}
 	return s
 }

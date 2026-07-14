@@ -139,6 +139,7 @@ export interface Asset {
   width: number;
   height: number;
   hasAlpha: boolean;
+  hasAudio?: boolean; // undefined = not yet probed; false = silent (no audio stream)
   thumbnail?: string;
   source: string;
   createdAt: string;

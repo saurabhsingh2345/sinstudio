@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { api } from "./api";
-import type { Asset, CaptionCue, Clip, EditDoc, Track, TitleAnim, TitleReveal } from "./types";
+import type { Asset, CaptionCue, Clip, EditDoc, Keyframe, Track, TitleAnim, TitleReveal } from "./types";
 import { newId, clipPlayDur } from "./types";
 import { buildTitleAnim } from "./titleAnim";
 import { clearPeaks } from "./peaks";
@@ -242,8 +242,28 @@ export const useStudio = create<StudioState>((set, get) => ({
           const isTarget = selClip ? c.id === selClip.clipId : true;
           if (isTarget && playhead > c.start + 0.05 && playhead < end - 0.05) {
             const srcCut = c.in + (playhead - c.start) * sp;
-            list.push({ ...c, out: srcCut, fadeOut: 0 });
-            list.push({ ...c, id: newId("clip_"), in: srcCut, start: playhead, fadeIn: 0 });
+            // Keyframes are clip-local (from Start); the right half starts at the
+            // playhead, so shift its keyframe times by the split offset and drop any
+            // that fall before the new start. Also clear the transition that no
+            // longer sits at a clip boundary (left's end / right's start).
+            const off = playhead - c.start;
+            const rightKf: Record<string, Keyframe[]> = {};
+            for (const [prop, pts] of Object.entries(c.keyframes ?? {})) {
+              const shifted = pts
+                .map((p) => ({ ...p, t: +(p.t - off).toFixed(4) }))
+                .filter((p) => p.t >= -1e-6);
+              if (shifted.length) rightKf[prop] = shifted;
+            }
+            list.push({ ...c, out: srcCut, fadeOut: 0, transitionOut: undefined });
+            list.push({
+              ...c,
+              id: newId("clip_"),
+              in: srcCut,
+              start: playhead,
+              fadeIn: 0,
+              transitionIn: undefined,
+              keyframes: Object.keys(rightKf).length ? rightKf : undefined,
+            });
           } else {
             list.push(c);
           }

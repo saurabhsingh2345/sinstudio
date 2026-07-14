@@ -17,6 +17,7 @@ type Info struct {
 	Width    int
 	Height   int
 	HasAlpha bool
+	HasAudio bool // an audible audio stream is present
 }
 
 type ffprobeOut struct {
@@ -60,6 +61,9 @@ func Probe(ctx context.Context, path string) (*Info, error) {
 		info.Duration = d
 	}
 	for _, s := range p.Streams {
+		if s.CodecType == "audio" {
+			info.HasAudio = true
+		}
 		if s.CodecType == "video" {
 			info.Width, info.Height = s.Width, s.Height
 			if alphaPixFmts[s.PixFmt] {

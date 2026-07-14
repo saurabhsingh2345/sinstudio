@@ -155,6 +155,19 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, err)
 		return
 	}
+	// Backfill hasAudio for assets that predate the field so the UI can flag
+	// silent clips. In-memory only — the client persists it on its next save, so
+	// this doesn't bump the version out from under the editor.
+	for i := range doc.Assets {
+		a := &doc.Assets[i]
+		if a.HasAudio != nil || (a.Kind != "video" && a.Kind != "audio") {
+			continue
+		}
+		if info, err := media.Probe(r.Context(), s.Store.Abs(a.Path)); err == nil {
+			has := info.HasAudio
+			a.HasAudio = &has
+		}
+	}
 	writeJSON(w, 200, doc)
 }
 
@@ -239,6 +252,7 @@ func (s *Server) registerAsset(ctx context.Context, projID, assetID, path, name,
 		Width:     info.Width,
 		Height:    info.Height,
 		HasAlpha:  info.HasAlpha,
+		HasAudio:  &info.HasAudio,
 		Source:    source,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
