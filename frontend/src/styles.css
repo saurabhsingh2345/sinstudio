@@ -203,6 +203,44 @@ label { display: block; color: var(--dim); font-size: 10.5px; font-weight: 500; 
 .center { display: flex; flex-direction: column; min-height: 0; overflow: hidden;
   background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--r-3); box-shadow: var(--sh-2); }
 
+/* left dock: fixed tab strip + scrollable body (Media ⇄ Plugins) */
+.col.leftcol { overflow: hidden; display: flex; flex-direction: column; }
+.dock-body { flex: 1; min-height: 0; overflow: auto; }
+.dock-tabs { display: flex; gap: 4px; padding: 8px 8px 0; flex: 0 0 auto;
+  border-bottom: 1px solid var(--line); background: var(--panel); }
+.dock-tabs button { flex: 1; justify-content: center; background: transparent; border-color: transparent;
+  color: var(--dim); border-radius: var(--r-2) var(--r-2) 0 0; padding: 8px 6px; font-weight: 600; margin-bottom: -1px; }
+.dock-tabs button:hover { color: var(--text); background: var(--panel-2); }
+.dock-tabs button.on { color: var(--text); background: var(--panel-2);
+  border-color: var(--line); border-bottom-color: var(--panel-2); box-shadow: inset 0 2px 0 var(--accent); }
+
+/* plugins panel */
+.plugins { padding-bottom: 8px; }
+.plugin-card { margin: 8px; border: 1px solid var(--line-2); border-radius: var(--r-3);
+  background: var(--panel-2); overflow: hidden; transition: border-color 0.15s var(--ease); }
+.plugin-card.open { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.plugin-head { width: 100%; display: flex; align-items: center; gap: 10px; padding: 11px 12px;
+  background: transparent; border: none; border-radius: 0; text-align: left; color: var(--text); }
+.plugin-head:hover { background: var(--panel-3); }
+.plugin-head > svg { color: var(--dim); flex: 0 0 auto; }
+.plugin-mark { width: 34px; height: 34px; border-radius: 9px; flex: 0 0 auto; display: grid; place-items: center;
+  font-weight: 800; font-size: 16px; color: #fff; text-transform: lowercase;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3), var(--sh-1); }
+.plugin-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.plugin-name { display: flex; align-items: center; gap: 6px; font-weight: 650; font-size: 12.5px; }
+.plugin-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; box-shadow: 0 0 5px currentColor; }
+.plugin-live { font-size: 8.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--teal); border: 1px solid var(--teal); border-radius: var(--r-pill); padding: 1px 5px; }
+.plugin-desc { font-size: 10.5px; color: var(--dim); line-height: 1.35; white-space: normal; }
+.plugin-body { padding: 4px 12px 12px; border-top: 1px solid var(--line); }
+.plugin-body label { margin-top: 8px; }
+.plugin-params { display: flex; flex-wrap: wrap; gap: 8px; }
+.plugin-check { display: inline-flex !important; align-items: center; gap: 7px; text-transform: none;
+  letter-spacing: 0; font-size: 11.5px; color: var(--text-2); cursor: pointer; }
+.plugin-check input { width: auto; }
+.plugin-warn { font-size: 11px; color: var(--danger); background: rgba(244, 85, 107, 0.08);
+  border: 1px solid rgba(244, 85, 107, 0.3); border-radius: var(--r-2); padding: 8px 10px; margin: 8px 0; white-space: pre-wrap; }
+
 .panel-h {
   padding: 11px 13px; font-weight: 650; font-size: 12.5px; letter-spacing: 0.01em;
   border-bottom: 1px solid var(--line); position: sticky; top: 0;

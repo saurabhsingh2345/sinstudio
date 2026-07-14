@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useStudio } from "../state";
 import { AssetPanel } from "./AssetPanel";
+import { PluginsPanel } from "./PluginsPanel";
 import { Preview } from "./Preview";
 import { Timeline } from "./Timeline";
 import { Inspector } from "./Inspector";
@@ -28,6 +29,7 @@ export function Editor({ projectId, onHome }: { projectId: string; onHome: () =>
   } = useStudio();
   const [showExport, setShowExport] = useState(false);
   const [showRenders, setShowRenders] = useState(false);
+  const [leftTab, setLeftTab] = useState<"media" | "plugins">("media");
 
   useEffect(() => {
     load(projectId).catch(console.error);
@@ -121,8 +123,22 @@ export function Editor({ projectId, onHome }: { projectId: string; onHome: () =>
       </div>
 
       <div className="editor">
-        <div className="col">
-          <AssetPanel projectId={projectId} />
+        <div className="col leftcol">
+          <div className="dock-tabs">
+            <button className={leftTab === "media" ? "on" : ""} onClick={() => setLeftTab("media")}>
+              <Icon name="library" /> Media
+            </button>
+            <button className={leftTab === "plugins" ? "on" : ""} onClick={() => setLeftTab("plugins")}>
+              <Icon name="apps" /> Plugins
+            </button>
+          </div>
+          <div className="dock-body">
+            {leftTab === "media" ? (
+              <AssetPanel projectId={projectId} />
+            ) : (
+              <PluginsPanel projectId={projectId} />
+            )}
+          </div>
         </div>
 
         <div className="col center">

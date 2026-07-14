@@ -3,9 +3,7 @@ import { useStudio } from "../state";
 import { api } from "../api";
 import { toast } from "../toast";
 import { mediaUrl, type Asset } from "../types";
-import { GenerateModal } from "./GenerateModal";
 import { LibraryModal } from "./LibraryModal";
-import { AppsModal } from "./AppsModal";
 import { Icon } from "./Icon";
 
 // Default lane for an asset kind.
@@ -15,10 +13,7 @@ const laneFor = (a: Asset) =>
 export function AssetPanel({ projectId }: { projectId: string }) {
   const { doc, addAsset, addClip, removeAsset, playhead } = useStudio();
   const fileRef = useRef<HTMLInputElement>(null);
-  const [gen, setGen] = useState(false);
-  const [genInit, setGenInit] = useState<string | undefined>();
   const [lib, setLib] = useState(false);
-  const [appsOpen, setAppsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const onImport = async (files: FileList | null) => {
@@ -40,19 +35,13 @@ export function AssetPanel({ projectId }: { projectId: string }) {
   return (
     <>
       <div className="panel-h">
-        Assets
+        Media
         <div className="spacer" />
-        <button className="ghost icon-btn" onClick={() => setAppsOpen(true)} title="Run & manage your generator apps">
-          <Icon name="apps" />
+        <button className="ghost" onClick={() => setLib(true)} title="Browse clips already produced by your apps">
+          <Icon name="library" /> Library
         </button>
-        <button className="ghost icon-btn" onClick={() => setLib(true)} title="Clips from your other products">
-          <Icon name="library" />
-        </button>
-        <button className="ghost icon-btn" onClick={() => fileRef.current?.click()} disabled={busy} title="Import media">
-          <Icon name="import" />
-        </button>
-        <button className="primary" onClick={() => setGen(true)} title="Generate a clip">
-          <Icon name="generate" /> Generate
+        <button className="primary" onClick={() => fileRef.current?.click()} disabled={busy} title="Import media files">
+          <Icon name="import" /> {busy ? "…" : "Import"}
         </button>
         <input
           ref={fileRef}
@@ -66,7 +55,7 @@ export function AssetPanel({ projectId }: { projectId: string }) {
 
       {doc?.assets.length === 0 && (
         <div className="muted" style={{ padding: 12 }}>
-          Import media or Generate a clip from newaniAdv / HyperFrames.
+          Import media, browse your Library, or generate a clip from the <b>Plugins</b> tab.
         </div>
       )}
 
@@ -104,31 +93,6 @@ export function AssetPanel({ projectId }: { projectId: string }) {
         </div>
       ))}
 
-      {appsOpen && (
-        <AppsModal
-          onClose={() => setAppsOpen(false)}
-          onGenerate={(generatorId) => {
-            setAppsOpen(false);
-            setGenInit(generatorId);
-            setGen(true);
-          }}
-        />
-      )}
-      {gen && (
-        <GenerateModal
-          projectId={projectId}
-          initialGenerator={genInit}
-          onClose={() => {
-            setGen(false);
-            setGenInit(undefined);
-          }}
-          onDone={(asset) => {
-            addAsset(asset);
-            setGen(false);
-            setGenInit(undefined);
-          }}
-        />
-      )}
       {lib && (
         <LibraryModal
           projectId={projectId}
