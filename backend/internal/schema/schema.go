@@ -176,6 +176,7 @@ type Asset struct {
 	Width     int     `json:"width"`
 	Height    int     `json:"height"`
 	HasAlpha  bool    `json:"hasAlpha"`
+	HasAudio  *bool   `json:"hasAudio,omitempty"` // nil = not yet probed; false = silent (no audio stream)
 	Thumbnail string  `json:"thumbnail,omitempty"` // relative to the media root
 	Source    string  `json:"source"`              // import|newaniadv|hyperframes
 	CreatedAt string  `json:"createdAt"`

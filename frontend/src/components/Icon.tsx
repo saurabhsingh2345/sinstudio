@@ -8,7 +8,7 @@ export type IconName =
   | "split" | "title" | "marker" | "caption" | "scope"
   | "plus" | "minus" | "fit" | "trash" | "close"
   | "up" | "down" | "apps" | "library" | "import" | "generate"
-  | "video" | "overlay" | "audio" | "eye" | "eyeOff";
+  | "video" | "overlay" | "audio" | "eye" | "eyeOff" | "mute";
 
 const P: Record<IconName, JSX.Element> = {
   back: <path d="M15 18l-6-6 6-6" />,
@@ -39,6 +39,7 @@ const P: Record<IconName, JSX.Element> = {
   video: <><rect x="3" y="6" width="12" height="12" rx="2" /><path d="M15 10l6-3v10l-6-3" /></>,
   overlay: <><rect x="7" y="7" width="12" height="12" rx="2" /><path d="M5 15V6a1 1 0 0 1 1-1h9" /></>,
   audio: <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" />,
+  mute: <><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor" stroke="none" /><path d="M16.5 10l5 5M21.5 10l-5 5" /></>,
   eye: <><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" /><circle cx="12" cy="12" r="3" /></>,
   eyeOff: <><path d="M9.9 5.2A9.8 9.8 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3 3.8M6.2 6.2A17 17 0 0 0 2 12s3.5 7 10 7a9.8 9.8 0 0 0 4-.8" /><path d="M3 3l18 18" /></>,
 };

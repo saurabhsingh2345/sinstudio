@@ -495,7 +495,12 @@ function ClipView({ track, clip, pxPerSec }: { track: Track; clip: Clip; pxPerSe
         />
       )}
       <div className="handle l" onPointerDown={startDrag("l")} />
-      <div className="clip-title">{label}</div>
+      <div className="clip-title">
+        {asset && (asset.kind === "video" || asset.kind === "audio") && asset.hasAudio === false && (
+          <Icon name="mute" />
+        )}
+        {label}
+      </div>
       {kfTimes.map((t) => (
         <div
           key={t}

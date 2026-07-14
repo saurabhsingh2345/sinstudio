@@ -389,6 +389,7 @@ label { display: block; color: var(--dim); font-size: 10.5px; font-weight: 500; 
   width: 2px; height: 14px; border-radius: 2px; background: rgba(255, 255, 255, 0); transition: background 0.12s var(--ease); }
 .tl-clip:hover .handle::after { background: rgba(255, 255, 255, 0.35); }
 .tl-clip .handle:hover::after { background: #fff; }
+.tl-clip .clip-title svg { width: 11px; height: 11px; vertical-align: -2px; margin-right: 4px; color: #ffc4cc; }
 .tl-clip .kf-dot { position: absolute; bottom: 2px; width: 7px; height: 7px; margin-left: -3px; z-index: 4;
   background: var(--amber); border: 1px solid #7a5c12; transform: rotate(45deg); cursor: pointer; box-shadow: 0 0 3px rgba(0, 0, 0, 0.5); }
 .tl-clip .kf-dot:hover { background: #fff; }
