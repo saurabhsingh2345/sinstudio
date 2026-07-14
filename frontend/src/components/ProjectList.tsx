@@ -17,7 +17,7 @@ export function ProjectList({ onOpen }: { onOpen: (id: string) => void }) {
   };
 
   return (
-    <div className="projects">
+    <div className="projects legacy">
       <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
         <span
           className="brand-mark"

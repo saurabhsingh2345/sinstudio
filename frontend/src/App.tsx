@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ProjectList } from "./components/ProjectList";
-import { Editor } from "./components/Editor";
+import { StudioView } from "./components/studio/StudioView";
 import { JobsOverlay } from "./components/JobsOverlay";
 import { Toasts } from "./components/Toasts";
 import { AuthGate } from "./components/AuthGate";
@@ -31,7 +31,7 @@ export function App() {
   return (
     <AuthGate>
       {projectId ? (
-        <Editor projectId={projectId} onHome={home} />
+        <StudioView key={projectId} projectId={projectId} onHome={home} />
       ) : (
         <ProjectList onOpen={open} />
       )}

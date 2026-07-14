@@ -51,6 +51,9 @@ interface StudioState {
 
   setBackground: (color: string) => void;
 
+  detachAudio: (trackId: string, clipId: string) => void;
+  attachAudio: (trackId: string, clipId: string) => void;
+
   addTrack: (kind: "video" | "overlay" | "audio") => void;
   removeTrack: (trackId: string) => void;
   moveTrack: (trackId: string, dir: -1 | 1) => void;
@@ -385,6 +388,54 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().mutate((d) => {
       const t = d.tracks.find((t) => t.kind === "background");
       if (t) t.backgroundColor = color;
+    }),
+
+  // detachAudio splits a video clip's audio into an independent clip on a dedicated
+  // "Dialogue" audio track (so it can be volumed/EQ'd/deleted separately), and mutes
+  // the source clip's own audio so the export doesn't double it.
+  detachAudio: (trackId, clipId) =>
+    get().mutate((d) => {
+      const vt = d.tracks.find((t) => t.id === trackId);
+      const c = vt?.clips?.find((c) => c.id === clipId);
+      if (!c || c.title) return; // titles carry no audio
+      for (const t of d.tracks)
+        if (t.kind === "audio")
+          for (const ac of t.clips || []) if (ac.sourceClip === clipId) return; // already detached
+      let at = d.tracks.find((t) => t.kind === "audio" && t.name === "Dialogue");
+      if (!at) {
+        at = { id: newId("t_"), kind: "audio", name: "Dialogue", clips: [] };
+        const capIdx = d.tracks.findIndex((t) => t.kind === "caption");
+        if (capIdx >= 0) d.tracks.splice(capIdx, 0, at);
+        else d.tracks.push(at);
+      }
+      (at.clips ||= []).push({
+        id: newId("aud_"),
+        assetId: c.assetId,
+        start: c.start,
+        in: c.in,
+        out: c.out,
+        transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+        volume: c.volume && c.volume > 0 ? c.volume : 1,
+        speed: c.speed,
+        fadeIn: c.fadeIn,
+        fadeOut: c.fadeOut,
+        eq: c.eq ? { ...c.eq } : undefined,
+        sourceClip: clipId,
+      });
+      c.mute = true;
+    }),
+
+  // attachAudio re-embeds: removes the detached audio clip(s) for a video clip and
+  // un-mutes it, pruning the Dialogue track if it becomes empty.
+  attachAudio: (trackId, clipId) =>
+    get().mutate((d) => {
+      for (const t of d.tracks)
+        if (t.kind === "audio" && t.clips) t.clips = t.clips.filter((ac) => ac.sourceClip !== clipId);
+      d.tracks = d.tracks.filter(
+        (t) => !(t.kind === "audio" && t.name === "Dialogue" && (!t.clips || t.clips.length === 0))
+      );
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      if (c) c.mute = false;
     }),
 
   // addTrack inserts a new content lane above the captions lane. Kept between the

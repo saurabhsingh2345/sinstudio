@@ -47,6 +47,7 @@ type visual struct {
 	fadeIn, fadeOut   float64
 	transIn, transOut *schema.Transition
 	cx, cy            int                          // centered base position (no offset) for keyframes
+	rot               float64                      // clockwise rotation in degrees about center (0 = none)
 	keyframes         map[string][]schema.Keyframe // property -> control points (clip-local t)
 	effects           *schema.Effects
 	lut               string // absolute path to a .cube LUT, or "" for none
@@ -275,6 +276,13 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB,%s,format=rgba",
 				inputIdx, v.in, v.out, sp, v.start, scaleSeg)
 		}
+		// Static rotation about the clip's center. format=rgba first so the corners
+		// exposed by the rotation are transparent (c=none), not black. rotw/roth grow
+		// the box to fit the rotated content; positioning below re-centers dynamically.
+		if v.rot != 0 {
+			rad := v.rot * math.Pi / 180
+			fmt.Fprintf(&fc, ",format=rgba,rotate=%.6f:ow=rotw(%.6f):oh=roth(%.6f):c=none", rad, rad, rad)
+		}
 		// Opacity: animated alpha via geq when keyframed, else a constant multiplier.
 		if okf := v.keyframes["opacity"]; len(okf) > 0 {
 			fmt.Fprintf(&fc,
@@ -300,15 +308,18 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		// Position — motion keyframes win per axis, else a slide expression, else
 		// static. When scale is animated the center must track the clip's live
 		// size, so use overlay's own w/h ("(W-w)/2") instead of the static center.
+		// Rotation (like scale animation) grows the overlay box, so its center must
+		// track the overlay's live size instead of the static pre-transform center.
+		dynCenter := scaleActive || v.rot != 0
 		cxExpr, cyExpr := fmt.Sprintf("%d", v.cx), fmt.Sprintf("%d", v.cy)
-		if scaleActive {
+		if dynCenter {
 			cxExpr, cyExpr = "(W-w)/2", "(H-h)/2"
 		}
 		var xPos, yPos string
 		switch {
 		case len(v.keyframes["x"]) > 0:
 			xPos = kfExpr(cxExpr, v.start, v.keyframes["x"])
-		case scaleActive:
+		case dynCenter:
 			xPos = axisPosDyn(cxExpr, v.x-v.cx, v.start, v.end, tr.xInOff, tr.xInDur, tr.xOutOff, tr.xOutDur)
 		default:
 			xPos = axisPos(v.x, v.start, v.end, tr.xInOff, tr.xInDur, tr.xOutOff, tr.xOutDur)
@@ -316,7 +327,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		switch {
 		case len(v.keyframes["y"]) > 0:
 			yPos = kfExpr(cyExpr, v.start, v.keyframes["y"])
-		case scaleActive:
+		case dynCenter:
 			yPos = axisPosDyn(cyExpr, v.y-v.cy, v.start, v.end, tr.yInOff, tr.yInDur, tr.yOutOff, tr.yOutDur)
 		default:
 			yPos = axisPos(v.y, v.start, v.end, tr.yInOff, tr.yInDur, tr.yOutOff, tr.yOutDur)
@@ -551,9 +562,9 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		x: x, y: y, sw: sw, sh: sh, opacity: op,
 		speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
-		cx: cx, cy: cy, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
+		cx: cx, cy: cy, rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
 	})
-	if !muted && !isBG {
+	if !muted && !isBG && !c.Mute {
 		vol := c.Volume
 		if vol == 0 {
 			vol = 1

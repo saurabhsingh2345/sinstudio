@@ -15,3 +15,8 @@ go.work.sum
 # misc
 .DS_Store
 *.log
+
+# Lovable design reference (separate git repo — reference only, do not commit)
+studio-frontend/
+# stray root lockfile
+/package-lock.json

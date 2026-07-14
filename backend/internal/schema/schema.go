@@ -15,10 +15,11 @@ type Canvas struct {
 // Transform positions/scales a clip within the canvas. x/y are top-left offsets
 // in canvas pixels; scale is a multiplier (1 = fit); opacity is 0..1.
 type Transform struct {
-	X       float64 `json:"x"`
-	Y       float64 `json:"y"`
-	Scale   float64 `json:"scale"`
-	Opacity float64 `json:"opacity"`
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+	Scale    float64 `json:"scale"`
+	Opacity  float64 `json:"opacity"`
+	Rotation float64 `json:"rotation,omitempty"` // clockwise degrees about the clip's center
 }
 
 // Clip is a placed reference to an asset on a track.
@@ -46,6 +47,13 @@ type Clip struct {
 	// LUT names a .cube color lookup table (in the project's luts dir) applied to
 	// this clip's video. Empty = none.
 	LUT string `json:"lut,omitempty"`
+	// Mute silences this clip's own audio in the export — used after its audio is
+	// detached to a separate audio-track clip. This is distinct from Volume 0,
+	// which the renderer treats as "unset" (and plays at full gain).
+	Mute bool `json:"mute,omitempty"`
+	// SourceClip links a detached audio clip back to the video clip it came from.
+	// UI grouping only; the renderer ignores it.
+	SourceClip string `json:"sourceClip,omitempty"`
 	// Title makes this a text clip (no asset). It is rendered to a full-canvas
 	// PNG and composited like any visual, so transforms/transitions/keyframes/
 	// effects/fades all apply. Duration comes from In/Out like any clip.

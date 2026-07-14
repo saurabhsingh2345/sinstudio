@@ -7,6 +7,7 @@ export interface Transform {
   y: number;
   scale: number;
   opacity: number;
+  rotation?: number; // clockwise degrees about the clip's center
 }
 
 // Transition types: fade | dissolve | slide-left | slide-right | slide-top | slide-bottom
@@ -73,6 +74,8 @@ export interface Clip {
   effects?: Effects;
   eq?: AudioEQ; // 3-band audio equalizer
   lut?: string; // .cube color LUT filename (in the project's luts dir)
+  mute?: boolean; // silence this clip's own audio (used after detaching audio)
+  sourceClip?: string; // detached audio clip → the video clip it came from (UI grouping)
   title?: Title; // when set, this is a text clip (no asset)
 }
 
