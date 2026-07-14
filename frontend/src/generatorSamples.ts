@@ -41,18 +41,27 @@ export const SAMPLES: Record<string, string> = {
     null,
     2
   ),
+  // HyperFrames composition — a div carrying data-composition-id + data-width/
+  // height/duration is the current runtime contract (v0.7+). Renders at 1920×1080
+  // (matches the default "landscape" resolution param).
   htmlComposition: `<!doctype html>
 <html>
-<head><style>
-  body{margin:0;background:#0e1230;color:#fff;font-family:Inter,sans-serif;
-       display:flex;align-items:center;justify-content:center;height:100vh}
-  h1{font-size:96px}
-</style></head>
-<body data-composition-duration="4">
-  <h1 id="t">Hello HyperFrames</h1>
-  <script src="https://cdn.jsdelivr.net/npm/gsap@3/dist/gsap.min.js"></script>
+<head>
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <style>
+    html,body{margin:0;width:1920px;height:1080px;overflow:hidden;
+      background:#0e1230;font-family:Inter,sans-serif}
+    #main{position:relative;width:1920px;height:1080px;
+      display:flex;align-items:center;justify-content:center}
+    h1{color:#fff;font-size:120px;margin:0}
+  </style>
+</head>
+<body>
+  <div id="main" data-composition-id="main" data-width="1920" data-height="1080" data-duration="3">
+    <h1 id="t">Hello HyperFrames</h1>
+  </div>
   <script>
-    gsap.from("#t",{opacity:0,y:60,duration:1.2,ease:"power3.out"});
+    gsap.from("#t",{opacity:0,y:80,duration:1.2,ease:"power3.out"});
   </script>
 </body>
 </html>`,

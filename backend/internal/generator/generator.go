@@ -39,6 +39,7 @@ type Adapter struct {
 	Command     []string    `json:"command"`     // argv template; {input} {output} substituted
 	InputKind   string      `json:"inputKind"`   // lessonJson|htmlComposition
 	InputExt    string      `json:"inputExt"`    // e.g. ".json" or ".html"
+	InputMode   string      `json:"inputMode"`   // "file" (default) | "dir" (write input as <tmpdir>/index.html, pass the dir)
 	OutputExt   string      `json:"outputExt"`   // e.g. "mp4"
 	Params      []ParamSpec `json:"params"`      // exposed flags
 	SamplePath  string      `json:"samplePath"`  // optional sample input file (relative to cwd)
@@ -125,18 +126,35 @@ func (r *Registry) Generate(ctx context.Context, j *jobs.Job, id, inputContent s
 		return err
 	}
 
-	// Write the input file inside the generator cwd so relative asset paths resolve.
-	inFile, err := os.CreateTemp(r.cwd(a), "studio-in-*"+a.InputExt)
-	if err != nil {
-		return err
+	// Materialize the input inside the generator cwd so relative asset paths
+	// resolve. Two shapes: a single file ({input} → its path), or a directory
+	// holding index.html ({input} → the dir) for tools like HyperFrames whose
+	// render CLI expects a project directory, not a lone file.
+	var inputArg string
+	if a.InputMode == "dir" {
+		dir, err := os.MkdirTemp(r.cwd(a), "studio-in-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dir)
+		if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte(inputContent), 0o644); err != nil {
+			return err
+		}
+		inputArg = dir
+	} else {
+		inFile, err := os.CreateTemp(r.cwd(a), "studio-in-*"+a.InputExt)
+		if err != nil {
+			return err
+		}
+		defer os.Remove(inFile.Name())
+		if _, err := inFile.WriteString(inputContent); err != nil {
+			return err
+		}
+		inFile.Close()
+		inputArg = inFile.Name()
 	}
-	defer os.Remove(inFile.Name())
-	if _, err := inFile.WriteString(inputContent); err != nil {
-		return err
-	}
-	inFile.Close()
 
-	argv := r.buildArgv(a, inFile.Name(), outputPath, params)
+	argv := r.buildArgv(a, inputArg, outputPath, params)
 	j.Log("$ " + strings.Join(argv, " "))
 
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)

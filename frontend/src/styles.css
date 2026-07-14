@@ -240,6 +240,50 @@ label { display: block; color: var(--dim); font-size: 10.5px; font-weight: 500; 
 .plugin-check input { width: auto; }
 .plugin-warn { font-size: 11px; color: var(--danger); background: rgba(244, 85, 107, 0.08);
   border: 1px solid rgba(244, 85, 107, 0.3); border-radius: var(--r-2); padding: 8px 10px; margin: 8px 0; white-space: pre-wrap; }
+.plugin-live.booting { color: var(--amber); border-color: var(--amber); }
+.plugin-voice { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; color: var(--dim); margin-top: 3px; }
+.plugin-voice svg { width: 12px; height: 12px; }
+.plugin-voice.on { color: var(--teal); }
+
+/* recent-clips strip (in-panel) */
+.recent { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.recent-h { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 650;
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-2); margin-bottom: 6px; }
+.recent-h .spacer, .recent-h button { margin-left: auto; }
+.recent-h button.ghost { padding: 2px 6px; font-size: 12px; }
+.recent-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; }
+.recent-row.fresh { background: var(--accent-soft); border-radius: var(--r-1); padding: 5px 6px; margin: 0 -6px; }
+.recent-nm { flex: 1; min-width: 0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; gap: 6px; }
+.recent-row button { flex: 0 0 auto; padding: 4px 9px; font-size: 11px; }
+.new-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 6px var(--teal); flex: 0 0 auto; }
+
+/* advanced (headless) disclosure */
+.advanced { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 8px; }
+.advanced-t { width: 100%; justify-content: flex-start; gap: 6px; background: transparent; border-color: transparent;
+  color: var(--dim); font-size: 11px; padding: 4px 2px; }
+.advanced-t:hover { color: var(--text); background: transparent; }
+.advanced-body { margin-top: 6px; }
+
+/* AppStudio overlay — a sibling app's UI embedded inside Studio */
+.appstudio-bg { position: fixed; inset: 0; background: rgba(6, 7, 10, 0.72); backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center; z-index: 55; animation: fade 0.15s var(--ease); }
+.appstudio { width: 94vw; height: 92vh; background: var(--panel); border: 1px solid var(--line-2);
+  border-radius: var(--r-3); overflow: hidden; display: flex; flex-direction: column; box-shadow: var(--sh-3); animation: pop 0.18s var(--ease); }
+.appstudio-h { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--panel-2), var(--panel)); flex: 0 0 auto; }
+.appstudio-h b { font-size: 14px; }
+.appstudio-h .spacer { flex: 1; }
+.appstudio-body { flex: 1; min-height: 0; display: flex; }
+.appstudio-frame { flex: 1; min-width: 0; background: #fff; position: relative; }
+.appstudio-frame iframe { width: 100%; height: 100%; border: none; display: block; }
+.appstudio-boot { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; color: var(--dim); font-size: 13px; background: var(--bg-2); }
+.appstudio-boot .spinner { width: 30px; height: 30px; border-radius: 50%; border: 3px solid var(--line-2);
+  border-top-color: var(--accent); animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.appstudio-side { flex: 0 0 300px; border-left: 1px solid var(--line); overflow: auto; padding: 12px 14px; background: var(--panel); }
+.appstudio-side .recent-row { padding: 7px 0; border-bottom: 1px solid var(--line); }
 
 .panel-h {
   padding: 11px 13px; font-weight: 650; font-size: 12.5px; letter-spacing: 0.01em;
