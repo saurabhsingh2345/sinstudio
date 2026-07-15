@@ -61,6 +61,7 @@ interface StudioState {
   addTrack: (kind: "video" | "overlay" | "audio") => void;
   removeTrack: (trackId: string) => void;
   moveTrack: (trackId: string, dir: -1 | 1) => void;
+  moveTrackZ: (trackId: string, dir: -1 | 1) => void;
   toggleTrackFlag: (trackId: string, flag: "muted" | "hidden" | "solo" | "duck") => void;
 
   addKeyframe: (trackId: string, clipId: string, prop: "x" | "y" | "scale" | "opacity") => void;
@@ -570,6 +571,25 @@ export const useStudio = create<StudioState>((set, get) => ({
       const fixed = (t: Track) => t.kind === "background" || t.kind === "caption";
       if (fixed(a) || fixed(b)) return;
       d.tracks[i] = b;
+      d.tracks[j] = a;
+    }),
+
+  // moveTrackZ changes a track's stacking order among tracks of the SAME kind
+  // (+1 = closer to the front). Both the preview and the exporter stack
+  // same-kind tracks by array position, and the kind rank (background < video
+  // < overlay) pins the groups — swapping across kinds would be a no-op
+  // visually, so we hop to the nearest same-kind neighbour instead.
+  moveTrackZ: (trackId, dir) =>
+    get().mutate((d) => {
+      const i = d.tracks.findIndex((t) => t.id === trackId);
+      if (i < 0) return;
+      const kind = d.tracks[i]!.kind;
+      if (kind === "background" || kind === "caption") return;
+      let j = i + dir;
+      while (j >= 0 && j < d.tracks.length && d.tracks[j]!.kind !== kind) j += dir;
+      if (j < 0 || j >= d.tracks.length) return;
+      const a = d.tracks[i]!;
+      d.tracks[i] = d.tracks[j]!;
       d.tracks[j] = a;
     }),
 

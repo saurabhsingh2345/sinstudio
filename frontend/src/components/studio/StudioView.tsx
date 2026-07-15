@@ -3,6 +3,9 @@ import {
   ChevronLeft,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
+  Eye,
+  EyeOff,
   Undo2,
   Redo2,
   Play,
@@ -63,7 +66,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import { useStudio, projectDuration } from "../../state";
-import type { AppStatus, Asset, CaptionCue, Clip, EditDoc, GeneratorStatus, LibraryEntry, ParamSpec } from "../../types";
+import type { AppStatus, Asset, CaptionCue, Clip, EditDoc, GeneratorStatus, LibraryEntry, ParamSpec, Track } from "../../types";
 import { SAMPLES } from "../../generatorSamples";
 import { clipPlayDur, mediaUrl } from "../../types";
 import { api } from "../../api";
@@ -1523,7 +1526,13 @@ function SpineArea({
           ))}
         </div>
 
-        <GlobalLayers doc={doc} selection={selection} onSelect={onSelect} />
+        <GlobalLayers
+          doc={doc}
+          selection={selection}
+          onSelect={onSelect}
+          spineTrackId={track?.id}
+          onPickSpineTrack={setSpineTrackId}
+        />
       </div>
     </div>
   );
@@ -1936,97 +1945,196 @@ function Waveform({ hue }: { hue: number }) {
 
 // ─────────────────────────── Global layers ────────────────────────────────
 
-function GlobalLayers({ doc, selection, onSelect }: { doc: EditDoc; selection: Selection; onSelect: (s: Selection) => void }) {
+// GlobalLayers is the layer stack: every visual track top-most first (the
+// stacking the preview and exporter actually use — kind rank background <
+// video < overlay, array order within a kind), plus the audio lanes. Each row
+// carries the whole-track controls: raise/lower (z-order), hide, mute, solo,
+// remove.
+function GlobalLayers({
+  doc,
+  selection,
+  onSelect,
+  spineTrackId,
+  onPickSpineTrack,
+}: {
+  doc: EditDoc;
+  selection: Selection;
+  onSelect: (s: Selection) => void;
+  spineTrackId?: string;
+  onPickSpineTrack?: (id: string) => void;
+}) {
   const toggleTrackFlag = useStudio((s) => s.toggleTrackFlag);
+  const addTrack = useStudio((s) => s.addTrack);
   const overlays = overlayTracksOf(doc).flatMap((t) => (t.clips ?? []).map((c) => ({ trackId: t.id, clip: c })));
-  const sound = audioTracksOf(doc)[0];
+  const bg = doc.tracks.find((t) => t.kind === "background");
+
+  // Visual stack, front-most first: overlay tracks (reverse array order), then
+  // video tracks (reverse), background at the very back.
+  const overlayTracks = [...doc.tracks.filter((t) => t.kind === "overlay")].reverse();
+  const videoTracks = [...doc.tracks.filter((t) => t.kind === "video")].reverse();
+  const audioTracks = doc.tracks.filter((t) => t.kind === "audio");
 
   return (
     <div className="mt-4 space-y-1.5 rounded-lg border hairline bg-panel/30 p-2">
-      <LayerRow Icon={Layers} label="Overlays">
-        {overlays.length === 0 ? (
-          <span className="absolute inset-y-1 left-2 flex items-center text-[10.5px] text-muted-foreground">No overlays</span>
-        ) : (
-          overlays.slice(0, 6).map(({ trackId, clip }, i) => {
-            const sel = selection.kind === "overlay" && selection.clipId === clip.id;
-            return (
-              <div
-                key={clip.id}
-                onClick={() => onSelect({ kind: "overlay", trackId, clipId: clip.id })}
-                className={cn(
-                  "absolute inset-y-1 cursor-pointer truncate rounded bg-gradient-to-r from-brand/70 to-brand/40 px-2 py-0.5 text-[10.5px] font-medium text-white shadow",
-                  sel && "ring-1 ring-brand"
-                )}
-                style={{ left: `${6 + i * 22}%`, width: "20%" }}
-              >
-                {clip.title?.text || "overlay"}
-              </div>
-            );
-          })
-        )}
-      </LayerRow>
+      <div className="flex items-center justify-between px-1 pb-0.5">
+        <div className="label-caps flex items-center gap-1.5">
+          <Layers className="h-3 w-3" /> Layers
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={() => addTrack("video")} className="rounded border hairline bg-panel-2 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground">
+            + Video
+          </button>
+          <button onClick={() => addTrack("overlay")} className="rounded border hairline bg-panel-2 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground">
+            + Overlay
+          </button>
+          <button onClick={() => addTrack("audio")} className="rounded border hairline bg-panel-2 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground">
+            + Audio
+          </button>
+        </div>
+      </div>
 
-      <LayerRow
-        Icon={Music2}
-        label="Soundtrack"
-        active={selection.kind === "soundtrack"}
-        onLabelClick={() => sound && onSelect({ kind: "soundtrack", trackId: sound.id })}
-        rightSlot={
-          sound ? (
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-muted-foreground">Duck</span>
-              <Switch checked={!!sound.duck} onCheckedChange={() => toggleTrackFlag(sound.id, "duck")} className="scale-75" />
-            </div>
-          ) : undefined
-        }
-      >
-        {sound ? (
-          <div
-            onClick={() => onSelect({ kind: "soundtrack", trackId: sound.id })}
+      {overlayTracks.map((t) => (
+        <TrackLayerRow key={t.id} doc={doc} track={t}>
+          {(t.clips ?? []).length === 0 ? (
+            <span className="flex h-full items-center px-2 text-[10.5px] text-muted-foreground">No overlays</span>
+          ) : (
+            overlays
+              .filter((o) => o.trackId === t.id)
+              .slice(0, 6)
+              .map(({ trackId, clip }, i) => {
+                const sel = selection.kind === "overlay" && selection.clipId === clip.id;
+                return (
+                  <div
+                    key={clip.id}
+                    onClick={() => onSelect({ kind: "overlay", trackId, clipId: clip.id })}
+                    className={cn(
+                      "absolute inset-y-1 cursor-pointer truncate rounded bg-gradient-to-r from-brand/70 to-brand/40 px-2 py-0.5 text-[10.5px] font-medium text-white shadow",
+                      sel && "ring-1 ring-brand"
+                    )}
+                    style={{ left: `${2 + i * 22}%`, width: "20%" }}
+                  >
+                    {clip.title?.text || "overlay"}
+                  </div>
+                );
+              })
+          )}
+        </TrackLayerRow>
+      ))}
+
+      {videoTracks.map((t) => (
+        <TrackLayerRow key={t.id} doc={doc} track={t}>
+          <button
+            onClick={() => onPickSpineTrack?.(t.id)}
             className={cn(
-              "absolute inset-y-1 left-[2%] right-[2%] cursor-pointer overflow-hidden rounded bg-panel-3 px-2 py-0.5 text-[10.5px] font-medium text-muted-foreground",
-              selection.kind === "soundtrack" && "text-foreground ring-1 ring-brand"
+              "flex h-full w-full items-center px-2 text-left text-[10.5px]",
+              spineTrackId === t.id ? "text-foreground" : "text-muted-foreground hover:text-foreground"
             )}
+            title="Edit this track in the spine"
           >
-            <div className="flex h-full items-center">
-              <span>{sound.name || "Soundtrack"} · {sound.clips?.length ?? 0} clips</span>
-            </div>
-          </div>
-        ) : (
-          <span className="absolute inset-y-1 left-2 flex items-center text-[10.5px] text-muted-foreground">No music track</span>
-        )}
-      </LayerRow>
+            {(t.clips ?? []).length} clips · {fmtDur((t.clips ?? []).reduce((s, c) => Math.max(s, c.start + clipPlayDur(c)), 0))}
+            {spineTrackId === t.id && <span className="ml-2 rounded bg-brand-soft px-1 py-0.5 text-[9px] uppercase tracking-wider text-brand">in spine</span>}
+          </button>
+        </TrackLayerRow>
+      ))}
+
+      {bg && (
+        <div className="flex items-center gap-2 px-1 py-0.5 text-[10.5px] text-muted-foreground">
+          <span className="ml-1 h-3 w-3 shrink-0 rounded-sm border hairline" style={{ background: bg.backgroundColor || "#000" }} />
+          <span className="w-40 shrink-0">Background</span>
+          <span>always at the back — color in Project settings</span>
+        </div>
+      )}
+
+      <div className="!mt-2.5 border-t hairline pt-1.5" />
+
+      {audioTracks.length === 0 ? (
+        <div className="px-2 text-[10.5px] text-muted-foreground">No audio tracks</div>
+      ) : (
+        audioTracks.map((t) => (
+          <TrackLayerRow
+            key={t.id}
+            doc={doc}
+            track={t}
+            rightSlot={
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] text-muted-foreground">Duck</span>
+                <Switch checked={!!t.duck} onCheckedChange={() => toggleTrackFlag(t.id, "duck")} className="scale-75" />
+              </div>
+            }
+          >
+            <button
+              onClick={() => onSelect({ kind: "soundtrack", trackId: t.id })}
+              className={cn(
+                "flex h-full w-full items-center px-2 text-left text-[10.5px]",
+                selection.kind === "soundtrack" && selection.trackId === t.id ? "text-foreground" : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              {(t.clips ?? []).length} clips
+            </button>
+          </TrackLayerRow>
+        ))
+      )}
     </div>
   );
 }
 
-function LayerRow({
-  Icon,
-  label,
+// TrackLayerRow is one row of the layer stack: name + content strip + the
+// track-wide controls (z-order, hide, mute, solo, remove).
+function TrackLayerRow({
+  doc,
+  track,
   children,
-  active,
-  onLabelClick,
   rightSlot,
 }: {
-  Icon: React.ComponentType<{ className?: string }>;
-  label: string;
+  doc: EditDoc;
+  track: Track;
   children: React.ReactNode;
-  active?: boolean;
-  onLabelClick?: () => void;
   rightSlot?: React.ReactNode;
 }) {
+  const moveTrackZ = useStudio((s) => s.moveTrackZ);
+  const toggleTrackFlag = useStudio((s) => s.toggleTrackFlag);
+  const removeTrack = useStudio((s) => s.removeTrack);
+  const isAudio = track.kind === "audio";
+  const Icon = isAudio ? Music2 : track.kind === "overlay" ? Layers : VideoIcon;
+  const siblings = doc.tracks.filter((t) => t.kind === track.kind).length;
+
+  const iconBtn = (title: string, active: boolean, onClick: () => void, child: React.ReactNode) => (
+    <button
+      title={title}
+      onClick={onClick}
+      className={cn(
+        "grid h-5 w-5 place-items-center rounded hover:bg-panel-3",
+        active ? "text-brand" : "text-muted-foreground hover:text-foreground"
+      )}
+    >
+      {child}
+    </button>
+  );
+
   return (
-    <div className="flex items-center gap-2">
-      <button
-        onClick={onLabelClick}
-        className={cn("flex w-24 shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground", active && "text-foreground")}
-      >
-        <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/60" />
-        <Icon className="h-3 w-3" />
-        {label}
-      </button>
-      <div className="relative h-6 flex-1 rounded bg-panel-2/50">{children}</div>
+    <div className={cn("flex items-center gap-2", (track.hidden || track.muted) && "opacity-60")}>
+      <div className="flex w-40 shrink-0 items-center gap-1.5 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground">
+        <Icon className="h-3 w-3 shrink-0" />
+        <span className="truncate">{track.name || track.kind}</span>
+      </div>
+      <div className="relative h-6 flex-1 overflow-hidden rounded bg-panel-2/50">{children}</div>
       {rightSlot && <div className="shrink-0">{rightSlot}</div>}
+      <div className="flex shrink-0 items-center gap-0.5">
+        {!isAudio && siblings > 1 && (
+          <>
+            {iconBtn("Bring forward", false, () => moveTrackZ(track.id, +1), <ChevronUp className="h-3 w-3" />)}
+            {iconBtn("Send backward", false, () => moveTrackZ(track.id, -1), <ChevronDown className="h-3 w-3" />)}
+          </>
+        )}
+        {!isAudio &&
+          iconBtn(track.hidden ? "Show layer" : "Hide layer", !!track.hidden, () => toggleTrackFlag(track.id, "hidden"), track.hidden ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />)}
+        {iconBtn(track.muted ? "Unmute track" : "Mute track", !!track.muted, () => toggleTrackFlag(track.id, "muted"), track.muted ? <VolumeX className="h-3 w-3" /> : <Volume2 className="h-3 w-3" />)}
+        {iconBtn(track.solo ? "Unsolo" : "Solo (only this track's audio)", !!track.solo, () => toggleTrackFlag(track.id, "solo"), <span className="text-[9px] font-bold">S</span>)}
+        {iconBtn("Remove track (and its clips)", false, () => {
+          const n = track.clips?.length ?? 0;
+          if (n === 0 || confirm(`Remove "${track.name || track.kind}" and its ${n} clip${n === 1 ? "" : "s"}?`)) removeTrack(track.id);
+        }, <Trash2 className="h-3 w-3" />)}
+      </div>
     </div>
   );
 }

@@ -368,7 +368,9 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	audioLabels := []string{}
 	voiceLabels := []string{}
 	duckLabels := []string{}
-	if !gif {
+	// A single-frame grab maps only the video label; building the audio graph
+	// anyway would leave amix's output unconnected, which ffmpeg rejects.
+	if !gif && opts.FrameAt <= 0 {
 		for i, a := range audios {
 			args = append(args, "-i", a.path)
 			lbl := fmt.Sprintf("[a%d]", i)
