@@ -693,6 +693,7 @@ function PluginsPanel({ projectId }: { projectId: string }) {
   const addClipToLane = useStudio((s) => s.addClipToLane);
   const [gens, setGens] = useState<GeneratorStatus[]>([]);
   const [apps, setApps] = useState<Record<string, AppStatus>>({});
+  const [appsLoaded, setAppsLoaded] = useState(false);
   const [studioFor, setStudioFor] = useState<AppStatus | null>(null);
   const [genFor, setGenFor] = useState<string | null>(null);
 
@@ -702,7 +703,15 @@ function PluginsPanel({ projectId }: { projectId: string }) {
   // Poll live dev-server status for the plugin cards' live/booting dots.
   useEffect(() => {
     let alive = true;
-    const tick = () => api.apps().then((l) => alive && setApps(Object.fromEntries(l.map((a) => [a.id, a])))).catch(() => {});
+    const tick = () =>
+      api
+        .apps()
+        .then((l) => {
+          if (!alive) return;
+          setApps(Object.fromEntries(l.map((a) => [a.id, a])));
+          setAppsLoaded(true);
+        })
+        .catch(() => {});
     tick();
     const t = setInterval(tick, 5000);
     return () => {
@@ -775,6 +784,10 @@ function PluginsPanel({ projectId }: { projectId: string }) {
               const app = apps[g.id];
               const live = app?.state === "running" && app?.healthy;
               const booting = app?.state === "running" && !app?.healthy;
+              // Generate-only plugins (e.g. Voiceover) have no runnable dev
+              // server, so once the app list has loaded and this id isn't in it,
+              // drop the dead "Start & open" button and let Generate fill the row.
+              const isApp = !appsLoaded || !!app;
               return (
                 <div key={g.id} className="rounded-lg border hairline bg-panel-2/60 p-2">
                   <div className="flex items-center gap-2.5">
@@ -794,14 +807,16 @@ function PluginsPanel({ projectId }: { projectId: string }) {
                     </div>
                   </div>
                   <div className="mt-2 flex gap-1.5">
-                    <Button
-                      size="sm"
-                      className="h-7 flex-1 bg-brand text-xs text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
-                      disabled={!apps[g.id]}
-                      onClick={() => openStudio(g)}
-                    >
-                      <ImportIcon className="mr-1 h-3.5 w-3.5" /> {live ? "Open in Studio" : "Start & open"}
-                    </Button>
+                    {isApp && (
+                      <Button
+                        size="sm"
+                        className="h-7 flex-1 bg-brand text-xs text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
+                        disabled={!app}
+                        onClick={() => openStudio(g)}
+                      >
+                        <ImportIcon className="mr-1 h-3.5 w-3.5" /> {live ? "Open in Studio" : "Start & open"}
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="ghost"
