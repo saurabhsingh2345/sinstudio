@@ -432,10 +432,27 @@ async function transcribeToCues(projectId: string, asset: Asset): Promise<number
   return cues.length;
 }
 
+// Whisper availability, probed once and cached. Auto-transcribe stays silent
+// when it's unavailable so a machine without whisper.cpp doesn't get a failure
+// toast on every import; the manual Captions button still reports the reason.
+let whisperReady: boolean | null = null;
+async function transcribeAvailable(): Promise<boolean> {
+  if (whisperReady === null) {
+    try {
+      whisperReady = (await api.capabilities()).transcribe;
+    } catch {
+      whisperReady = false;
+    }
+  }
+  return whisperReady;
+}
+
 // autoTranscribe fires after an import lands a video with audio: best-effort in
-// the background, reports via toasts, never throws.
+// the background, reports via toasts, never throws. No-ops when whisper is
+// unavailable so imports don't spam errors on machines without it.
 async function autoTranscribe(projectId: string, asset: Asset) {
   if (asset.kind !== "video" || asset.hasAudio === false) return;
+  if (!(await transcribeAvailable())) return;
   try {
     toast.info(`Transcribing ${asset.name}…`);
     const n = await transcribeToCues(projectId, asset);
@@ -452,6 +469,11 @@ function CaptionsPanel({ projectId, doc, onSelect }: { projectId: string; doc: E
   const removeCue = useStudio((s) => s.removeCue);
   const [assetId, setAssetId] = useState("");
   const [busy, setBusy] = useState(false);
+  const [whisper, setWhisper] = useState<{ transcribe: boolean; transcribeError: string } | null>(null);
+
+  useEffect(() => {
+    api.capabilities().then(setWhisper).catch(() => {});
+  }, []);
 
   const cues = captionTrack(doc)?.cues ?? [];
   const audible = doc.assets.filter((a) => a.kind !== "image");
@@ -489,11 +511,15 @@ function CaptionsPanel({ projectId, doc, onSelect }: { projectId: string; doc: E
               ))}
             </SelectContent>
           </Select>
-          <Button size="sm" className="h-8 bg-brand text-xs text-brand-foreground hover:bg-brand/90 disabled:opacity-40" disabled={busy || audible.length === 0} onClick={transcribe}>
+          <Button size="sm" className="h-8 bg-brand text-xs text-brand-foreground hover:bg-brand/90 disabled:opacity-40" disabled={busy || audible.length === 0 || whisper?.transcribe === false} onClick={transcribe}>
             {busy ? "…" : "Transcribe"}
           </Button>
         </div>
-        <div className="mt-1 text-[10.5px] text-muted-foreground">Speech → timed caption cues (Whisper).</div>
+        {whisper?.transcribe === false ? (
+          <div className="mt-1 text-[10.5px] text-amber-400/90">Transcription unavailable — install whisper.cpp + a model. See README.</div>
+        ) : (
+          <div className="mt-1 text-[10.5px] text-muted-foreground">Speech → timed caption cues (Whisper). Videos with audio auto-transcribe on import.</div>
+        )}
       </div>
       <div className="scrollbar-thin flex-1 overflow-y-auto px-2 pb-3">
         {cues.length === 0 ? (
