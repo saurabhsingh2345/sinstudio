@@ -60,6 +60,10 @@ func (s *Server) libraryImport(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 403, fmt.Errorf("path not in an allowed library source"))
 		return
 	}
+	if err := waitForStable(r.Context(), body.Path); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
 	dir, _ := s.Store.AssetsDir(projID)
 	assetID := store.NewID("asset_")
 	dst := filepath.Join(dir, assetID+filepath.Ext(body.Path))
@@ -73,6 +77,7 @@ func (s *Server) libraryImport(w http.ResponseWriter, r *http.Request) {
 	}
 	asset, err := s.registerAsset(r.Context(), projID, assetID, dst, name, "library")
 	if err != nil {
+		os.Remove(dst)
 		httpErr(w, 500, err)
 		return
 	}
@@ -124,22 +129,65 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Close()
 
-	// Optional direct import into a project.
+	// Optional direct import into a project. The clip is already safe in the
+	// inbox, so an import failure is reported alongside the inbox location
+	// rather than silently swallowed.
 	if projID := r.URL.Query().Get("projectId"); projID != "" {
-		if _, err := s.Store.GetProject(projID); err == nil {
-			dir, _ := s.Store.AssetsDir(projID)
-			assetID := store.NewID("asset_")
-			adst := filepath.Join(dir, assetID+filepath.Ext(dst))
-			if copyFile(dst, adst) == nil {
-				if asset, err := s.registerAsset(r.Context(), projID, assetID, adst, name, src); err == nil {
-					s.Store.AddAsset(projID, *asset)
-					writeJSON(w, 200, map[string]any{"ok": true, "asset": asset, "inbox": s.Store.Rel(dst)})
-					return
-				}
-			}
+		if _, err := s.Store.GetProject(projID); err != nil {
+			httpErr(w, 404, fmt.Errorf("project %s: %w", projID, err))
+			return
 		}
+		dir, _ := s.Store.AssetsDir(projID)
+		assetID := store.NewID("asset_")
+		adst := filepath.Join(dir, assetID+filepath.Ext(dst))
+		if err := copyFile(dst, adst); err != nil {
+			writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name, "importError": err.Error()})
+			return
+		}
+		asset, err := s.registerAsset(r.Context(), projID, assetID, adst, name, src)
+		if err != nil {
+			os.Remove(adst)
+			writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name, "importError": err.Error()})
+			return
+		}
+		if _, err := s.Store.AddAsset(projID, *asset); err != nil {
+			writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name, "importError": err.Error()})
+			return
+		}
+		writeJSON(w, 200, map[string]any{"ok": true, "asset": asset, "inbox": s.Store.Rel(dst)})
+		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name})
+}
+
+// waitForStable blocks until path looks fully written: its mtime is not
+// fresh and its size has stopped changing. Auto-import can race an ffmpeg
+// render that is still writing the file; importing mid-write yields a
+// truncated asset that probes silent (or fails outright). Old files return
+// immediately; a writer still going at the deadline is an error rather than
+// a truncated import.
+func waitForStable(ctx context.Context, path string) error {
+	deadline := time.Now().Add(15 * time.Second)
+	var lastSize int64 = -1
+	for {
+		fi, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		settled := time.Since(fi.ModTime()) >= 1200*time.Millisecond
+		if settled && fi.Size() > 0 && (lastSize == -1 || fi.Size() == lastSize) {
+			return nil
+		}
+		lastSize = fi.Size()
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s is still being written — import it once the render finishes", filepath.Base(path))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(400 * time.Millisecond):
+		}
+	}
 }
 
 func copyFile(src, dst string) error {

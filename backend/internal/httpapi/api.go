@@ -296,7 +296,18 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 	job := s.Jobs.New("generate", 15*time.Minute)
 	dir, _ := s.Store.AssetsDir(projID)
 	assetID := store.NewID("asset_")
-	out := filepath.Join(dir, assetID+"."+adapter.OutputExt)
+	// A generator exposing a --format param writes that container, not its
+	// default OutputExt — name the file accordingly or ffprobe/browsers choke.
+	ext := adapter.OutputExt
+	for _, spec := range adapter.Params {
+		if spec.Flag == "--format" {
+			if v := body.Params["--format"]; v != "" {
+				ext = v
+			}
+			break
+		}
+	}
+	out := filepath.Join(dir, assetID+"."+ext)
 
 	go func() {
 		ctx := job.Context()

@@ -62,7 +62,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import { useStudio, projectDuration } from "../../state";
-import type { AppStatus, Asset, CaptionCue, Clip, EditDoc, GeneratorStatus, LibraryEntry } from "../../types";
+import type { AppStatus, Asset, CaptionCue, Clip, EditDoc, GeneratorStatus, LibraryEntry, ParamSpec } from "../../types";
+import { SAMPLES } from "../../generatorSamples";
 import { clipPlayDur, mediaUrl } from "../../types";
 import { api } from "../../api";
 import { toast } from "../../toast";
@@ -476,13 +477,11 @@ function CaptionsPanel({ projectId, doc, onSelect }: { projectId: string; doc: E
 
 function MediaPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
   const addAsset = useStudio((s) => s.addAsset);
-  const addClip = useStudio((s) => s.addClip);
+  const addClipToLane = useStudio((s) => s.addClipToLane);
   const removeAsset = useStudio((s) => s.removeAsset);
   const [busy, setBusy] = useState(false);
   const [lib, setLib] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-
-  const target = primaryTrack(doc);
 
   const onFiles = async (files: FileList | null) => {
     if (!files?.length) return;
@@ -500,11 +499,7 @@ function MediaPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
   };
 
   const addToTimeline = (a: Asset) => {
-    if (!target) {
-      toast.error("No video track to add to");
-      return;
-    }
-    addClip(target.id, a.id, useStudio.getState().playhead);
+    addClipToLane(a.id, useStudio.getState().playhead);
   };
 
   return (
@@ -593,6 +588,7 @@ function MediaCard({ asset, onAdd, onRemove }: { asset: Asset; onAdd: () => void
         </div>
         <div className="mt-0.5 truncate text-[11px] text-muted-foreground tabular">
           {asset.kind} · {asset.duration.toFixed(1)}s{asset.hasAlpha ? " · alpha" : ""}
+          {asset.kind === "video" && asset.hasAudio === false ? " · silent" : ""}
         </div>
       </div>
       <button
@@ -614,14 +610,14 @@ const PLUGIN_SOURCES: Record<string, string[]> = {
   hyperframes: ["hyperframes", "hyper-app"],
   funkycode: ["funkycode"],
 };
-const laneForAsset = (a: Asset) => (a.kind === "audio" ? "t_music" : a.kind === "image" ? "t_overlay" : "t_video");
 
 function PluginsPanel({ projectId }: { projectId: string }) {
   const addAsset = useStudio((s) => s.addAsset);
-  const addClip = useStudio((s) => s.addClip);
+  const addClipToLane = useStudio((s) => s.addClipToLane);
   const [gens, setGens] = useState<GeneratorStatus[]>([]);
   const [apps, setApps] = useState<Record<string, AppStatus>>({});
   const [studioFor, setStudioFor] = useState<AppStatus | null>(null);
+  const [genFor, setGenFor] = useState<string | null>(null);
 
   useEffect(() => {
     api.generators().then(setGens).catch(() => {});
@@ -641,9 +637,31 @@ function PluginsPanel({ projectId }: { projectId: string }) {
   const importEntry = async (e: LibraryEntry, toTimeline: boolean) => {
     const { asset } = await api.importFromLibrary(projectId, e.path, e.name);
     addAsset(asset);
-    if (toTimeline) addClip(laneForAsset(asset), asset.id, useStudio.getState().playhead);
+    if (toTimeline) addClipToLane(asset.id, useStudio.getState().playhead);
     toast.success(`Imported ${e.name}${toTimeline ? " → timeline" : ""}`);
     return asset as Asset;
+  };
+
+  // A finished generate job's SSE payload carries the freshly registered asset;
+  // if the terminal event was missed (poll fallback resolves null), re-fetch the
+  // project and merge any assets the backend added that we don't have yet.
+  const onGenerated = async (asset: Asset | null) => {
+    if (!asset) {
+      try {
+        const fresh = await api.getProject(projectId);
+        const have = new Set(useStudio.getState().doc?.assets.map((a) => a.id));
+        asset = fresh.assets.find((a) => !have.has(a.id)) ?? null;
+      } catch {
+        /* leave asset null */
+      }
+    }
+    if (!asset) {
+      toast.error("Generated, but the clip didn't come back — check the Media tab.");
+      return;
+    }
+    addAsset(asset);
+    addClipToLane(asset.id, useStudio.getState().playhead);
+    toast.success(`${asset.name} → timeline`);
   };
 
   const openStudio = async (g: GeneratorStatus) => {
@@ -696,14 +714,29 @@ function PluginsPanel({ projectId }: { projectId: string }) {
                       <div className="truncate text-[11px] text-muted-foreground">{g.description}</div>
                     </div>
                   </div>
-                  <Button
-                    size="sm"
-                    className="mt-2 h-7 w-full bg-brand text-xs text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
-                    disabled={!apps[g.id]}
-                    onClick={() => openStudio(g)}
-                  >
-                    <ImportIcon className="mr-1 h-3.5 w-3.5" /> {live ? `Open ${g.name} in Studio` : `Start & open ${g.name}`}
-                  </Button>
+                  <div className="mt-2 flex gap-1.5">
+                    <Button
+                      size="sm"
+                      className="h-7 flex-1 bg-brand text-xs text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
+                      disabled={!apps[g.id]}
+                      onClick={() => openStudio(g)}
+                    >
+                      <ImportIcon className="mr-1 h-3.5 w-3.5" /> {live ? "Open in Studio" : "Start & open"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      title={g.available ? `Generate a clip with ${g.name} without leaving Studio` : g.buildHint || "Generator CLI not available"}
+                      className="h-7 flex-1 bg-panel-3 text-xs text-foreground hover:bg-panel-3/80 disabled:opacity-40"
+                      disabled={!g.available}
+                      onClick={() => setGenFor(genFor === g.id ? null : g.id)}
+                    >
+                      <Wand2 className="mr-1 h-3.5 w-3.5" /> Generate
+                    </Button>
+                  </div>
+                  {genFor === g.id && (
+                    <GenerateForm projectId={projectId} gen={g} onDone={onGenerated} />
+                  )}
                 </div>
               );
             })}
@@ -722,6 +755,112 @@ function PluginsPanel({ projectId }: { projectId: string }) {
         </div>
       )}
     </>
+  );
+}
+
+// GenerateForm is the inline "create a clip without leaving Studio" path: it
+// feeds the generator CLI (which does the real render — narration included)
+// and the finished file lands in the project automatically.
+function GenerateForm({
+  projectId,
+  gen,
+  onDone,
+}: {
+  projectId: string;
+  gen: GeneratorStatus;
+  onDone: (asset: Asset | null) => Promise<void> | void;
+}) {
+  const [input, setInput] = useState(() => SAMPLES[gen.inputKind] ?? "");
+  const [params, setParams] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+
+  const setParam = (flag: string, v: string) => setParams((p) => ({ ...p, [flag]: v }));
+
+  const run = async () => {
+    if (!input.trim()) {
+      toast.error("Input is empty.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { jobId } = await api.generate(projectId, gen.id, input, params);
+      const data = await awaitJob(jobId);
+      await onDone((data?.asset as Asset) ?? null);
+    } catch (e) {
+      toast.error(`Generate failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-2 space-y-2 rounded-md border hairline bg-panel/60 p-2">
+      <Textarea
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        spellCheck={false}
+        className="scrollbar-thin h-36 resize-y bg-panel-2 font-mono text-[11px] leading-snug"
+      />
+      {gen.params.length > 0 && (
+        <div className="space-y-1.5">
+          {gen.params.map((spec) => (
+            <ParamControl key={spec.flag} spec={spec} value={params[spec.flag] ?? spec.default ?? ""} onChange={(v) => setParam(spec.flag, v)} />
+          ))}
+        </div>
+      )}
+      <Button
+        size="sm"
+        className="h-7 w-full bg-brand text-xs text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
+        disabled={busy}
+        onClick={run}
+      >
+        <Wand2 className="mr-1 h-3.5 w-3.5" /> {busy ? "Generating… (see Jobs)" : "Generate → timeline"}
+      </Button>
+    </div>
+  );
+}
+
+function ParamControl({ spec, value, onChange }: { spec: ParamSpec; value: string; onChange: (v: string) => void }) {
+  if (spec.type === "bool") {
+    return (
+      <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
+        <input
+          type="checkbox"
+          checked={value === "true" || value === "1"}
+          onChange={(e) => onChange(e.target.checked ? "true" : "")}
+          className="h-3.5 w-3.5 accent-[var(--brand)]"
+        />
+        {spec.label}
+      </label>
+    );
+  }
+  if (spec.type === "enum") {
+    return (
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-muted-foreground">{spec.label}</span>
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="h-6 rounded border hairline bg-panel-2 px-1 text-[11px] text-foreground"
+        >
+          {(spec.options ?? []).map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-[11px] text-muted-foreground">{spec.label}</span>
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-6 w-24 rounded border hairline bg-panel-2 px-1.5 text-right text-[11px] text-foreground"
+      />
+    </div>
   );
 }
 
@@ -812,7 +951,9 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
       const v = videoRefs.current[clip.id];
       if (!v) continue;
       v.muted = !!track.muted || (soloActive && !track.solo) || !!clip.mute;
-      v.volume = Math.max(0, Math.min(1, clip.volume ?? 1));
+      // volume 0 means "unset" in the schema (omitempty); the export renders it
+      // at full gain, so the preview must agree.
+      v.volume = Math.max(0, Math.min(1, clip.volume || 1));
       const sp = clip.speed && clip.speed > 0 ? clip.speed : 1;
       if (v.playbackRate !== sp) v.playbackRate = sp;
       const local = clip.in + (playhead - clip.start) * sp;
@@ -1459,6 +1600,8 @@ function SubLane({
   const cue = cueForClip(captionTrack(doc)?.cues, clip);
   const detached = detachedAudioFor(doc, clip.id);
   const isMuted = !!clip.mute;
+  const asset = doc.assets.find((a) => a.id === clip.assetId);
+  const silent = asset?.hasAudio === false;
 
   return (
     <button
@@ -1478,13 +1621,24 @@ function SubLane({
         )}
         {lane === "audio" && (
           <>
-            <Waveform hue={hue} />
-            {detached && (
+            {silent ? (
+              <div className="flex h-full items-center bg-panel-2 px-1.5">
+                <span className="h-px flex-1 bg-hairline" />
+              </div>
+            ) : (
+              <Waveform hue={hue} />
+            )}
+            {silent && (
+              <span className="absolute right-1 top-1/2 -translate-y-1/2 rounded bg-panel-3 px-1 py-0.5 text-[8px] font-medium uppercase tracking-wider text-muted-foreground">
+                no audio
+              </span>
+            )}
+            {detached && !silent && (
               <span className="absolute right-1 top-1/2 -translate-y-1/2 rounded bg-brand-soft px-1 py-0.5 text-[8px] font-medium uppercase tracking-wider text-brand">
                 detached
               </span>
             )}
-            {isMuted && !detached && (
+            {isMuted && !detached && !silent && (
               <span className="absolute right-1 top-1/2 -translate-y-1/2 rounded bg-panel-3 px-1 py-0.5 text-[8px] font-medium uppercase tracking-wider text-muted-foreground">
                 muted
               </span>

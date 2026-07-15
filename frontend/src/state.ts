@@ -35,6 +35,7 @@ interface StudioState {
   addAsset: (a: Asset) => void;
   removeAsset: (assetId: string) => void;
   addClip: (trackId: string, assetId: string, start: number) => void;
+  addClipToLane: (assetId: string, start: number) => void;
   updateClip: (trackId: string, clipId: string, patch: Partial<Clip>) => void;
   removeClip: (trackId: string, clipId: string) => void;
   splitAtPlayhead: () => void;
@@ -218,6 +219,34 @@ export const useStudio = create<StudioState>((set, get) => ({
       (t.clips ||= []).push(clip);
     }),
 
+  // addClipToLane drops an asset onto the first lane matching its kind, creating
+  // the lane if the project no longer has one. Imports use this instead of
+  // hardcoded default track ids, which stop existing once lanes are recreated.
+  addClipToLane: (assetId, start) =>
+    get().mutate((d) => {
+      const asset = d.assets.find((a) => a.id === assetId);
+      if (!asset) return;
+      const kind = asset.kind === "audio" ? "audio" : asset.kind === "image" ? "overlay" : "video";
+      let t = d.tracks.find((t) => t.kind === kind);
+      if (!t) {
+        const label = kind === "audio" ? "Audio" : kind === "overlay" ? "Overlay" : "Video";
+        t = { id: newId("t_"), kind, name: `${label} 1`, clips: [] };
+        const capIdx = d.tracks.findIndex((x) => x.kind === "caption");
+        if (capIdx >= 0) d.tracks.splice(capIdx, 0, t);
+        else d.tracks.push(t);
+      }
+      const dur = asset.duration > 0 ? asset.duration : 5;
+      (t.clips ||= []).push({
+        id: newId("clip_"),
+        assetId,
+        start,
+        in: 0,
+        out: dur,
+        transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+        volume: 1,
+      });
+    }),
+
   updateClip: (trackId, clipId, patch) =>
     get().mutate((d) => {
       const t = d.tracks.find((t) => t.id === trackId);
@@ -228,7 +257,10 @@ export const useStudio = create<StudioState>((set, get) => ({
   removeClip: (trackId, clipId) =>
     get().mutate((d) => {
       const t = d.tracks.find((t) => t.id === trackId);
-      if (t?.clips) t.clips = t.clips.filter((c) => c.id !== clipId);
+      if (!t?.clips) return;
+      const removed = t.clips.filter((c) => c.id === clipId);
+      t.clips = t.clips.filter((c) => c.id !== clipId);
+      unmuteOrphanedSources(d, removed);
     }),
 
   // splitAtPlayhead razors the selected clip (or any clip under the playhead) in two.
@@ -287,7 +319,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (selClips.length) {
       const ids = new Set(selClips.map((c) => c.clipId));
       get().mutate((d) => {
-        for (const t of d.tracks) if (t.clips) t.clips = t.clips.filter((c) => !ids.has(c.id));
+        const removed: Clip[] = [];
+        for (const t of d.tracks)
+          if (t.clips) {
+            removed.push(...t.clips.filter((c) => ids.has(c.id)));
+            t.clips = t.clips.filter((c) => !ids.has(c.id));
+          }
+        unmuteOrphanedSources(d, removed);
       });
       set({ selClip: null, selClips: [] });
     } else if (selCue) {
@@ -302,10 +340,12 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (!selClips.length) return;
     const ids = new Set(selClips.map((c) => c.clipId));
     get().mutate((d) => {
+      const removed: Clip[] = [];
       for (const t of d.tracks) {
         if (!t.clips) continue;
         const dead = t.clips.filter((c) => ids.has(c.id));
         if (!dead.length) continue;
+        removed.push(...dead);
         t.clips = t.clips.filter((c) => !ids.has(c.id));
         for (const c of t.clips) {
           const shift = dead
@@ -314,6 +354,7 @@ export const useStudio = create<StudioState>((set, get) => ({
           c.start = Math.max(0, c.start - shift);
         }
       }
+      unmuteOrphanedSources(d, removed);
     });
     set({ selClip: null, selClips: [] });
   },
@@ -659,6 +700,20 @@ export const useStudio = create<StudioState>((set, get) => ({
   setZoom: (px) => set({ pxPerSec: Math.min(400, Math.max(20, px)) }),
   setSnapLine: (t) => set({ snapLine: t }),
 }));
+
+// unmuteOrphanedSources restores audio on video clips whose detached-audio clip
+// was just deleted. detachAudio mutes the source so the export doesn't double
+// its audio; deleting the detached clip by any path other than attachAudio
+// would otherwise leave the video permanently (and mysteriously) silent.
+function unmuteOrphanedSources(d: EditDoc, removed: Clip[]) {
+  for (const r of removed) {
+    if (!r.sourceClip) continue;
+    for (const t of d.tracks) {
+      const src = t.clips?.find((c) => c.id === r.sourceClip);
+      if (src) src.mute = false;
+    }
+  }
+}
 
 // pruneSelection drops selection entries pointing at clips/cues that no longer
 // exist in the target doc (e.g. after an undo/redo that removed them), so the

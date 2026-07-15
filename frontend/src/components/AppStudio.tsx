@@ -30,6 +30,7 @@ export function AppStudio({
   const [importedIds, setImportedIds] = useState<Set<string>>(new Set());
   const baseline = useRef<Set<string> | null>(null); // clip ids that existed when we opened
   const known = useRef<Set<string>>(new Set());
+  const sizes = useRef<Map<string, number>>(new Map()); // last seen size per id, to settle still-writing renders
   const autoRef = useRef(autoImport);
   autoRef.current = autoImport;
 
@@ -67,6 +68,11 @@ export function AppStudio({
         } else {
           for (const e of all) {
             if (!known.current.has(e.id)) {
+              // A render being written grows between scans — hold off until its
+              // size is stable for one full poll so we never import a partial file.
+              const last = sizes.current.get(e.id);
+              sizes.current.set(e.id, e.size);
+              if (last === undefined || last !== e.size || e.size === 0) continue;
               known.current.add(e.id);
               toast.success(`New clip: ${e.name}`);
               if (autoRef.current) void doImport(e);
