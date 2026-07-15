@@ -1,0 +1,114 @@
+@import "tailwindcss" source(none);
+@source "./";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  /* Decoupled from the legacy `--accent` (indigo brand) so shadcn's neutral
+     surface tokens stay correct even though the old app defines --accent. */
+  --color-accent: var(--ui-accent);
+  --color-accent-foreground: var(--ui-accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  /* Decoupled from legacy `--ring` (a box-shadow value) — shadcn needs a color. */
+  --color-ring: var(--ui-ring);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-panel-3: var(--panel-3);
+  --color-hairline: var(--hairline);
+  --color-brand: var(--brand);
+  --color-brand-foreground: var(--brand-foreground);
+  --color-brand-soft: var(--brand-soft);
+  --color-signal: var(--signal);
+  --color-signal-soft: var(--signal-soft);
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+:root {
+  --radius: 0.5rem;
+
+  /* Editor dark palette */
+  --background: oklch(0.16 0.008 265);      /* #0c0d10 */
+  --foreground: oklch(0.96 0.005 260);
+
+  --panel: oklch(0.195 0.008 265);          /* #141519 */
+  --panel-2: oklch(0.225 0.009 265);        /* #1b1d23 */
+  --panel-3: oklch(0.265 0.010 265);        /* card hover */
+
+  --card: var(--panel);
+  --card-foreground: var(--foreground);
+  --popover: oklch(0.21 0.009 265);
+  --popover-foreground: var(--foreground);
+
+  --primary: oklch(0.66 0.19 285);          /* electric indigo #7c6cff */
+  --primary-foreground: oklch(0.99 0 0);
+  --brand: var(--primary);
+  --brand-foreground: var(--primary-foreground);
+  --brand-soft: oklch(0.66 0.19 285 / 18%);
+
+  --signal: oklch(0.78 0.16 165);           /* teal-green #3ddc97 */
+  --signal-soft: oklch(0.78 0.16 165 / 18%);
+
+  --secondary: oklch(0.245 0.010 265);
+  --secondary-foreground: var(--foreground);
+  --muted: oklch(0.235 0.010 265);
+  --muted-foreground: oklch(0.68 0.015 260);
+
+  /* shadcn neutral surface tokens (mapped via --color-accent above) */
+  --ui-accent: oklch(0.28 0.012 265);
+  --ui-accent-foreground: var(--foreground);
+  --ui-ring: var(--primary);
+
+  --destructive: oklch(0.62 0.22 25);
+  --destructive-foreground: oklch(0.99 0 0);
+
+  --hairline: oklch(1 0 0 / 6%);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 10%);
+}
+
+.dark { color-scheme: dark; }
+
+@layer base {
+  html { color-scheme: dark; }
+  .tabular { font-variant-numeric: tabular-nums; }
+}
+
+@utility label-caps {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+@utility hairline {
+  border-color: var(--hairline);
+}
+
+@utility scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: oklch(1 0 0 / 12%) transparent;
+  &::-webkit-scrollbar { height: 8px; width: 8px; }
+  &::-webkit-scrollbar-thumb { background: oklch(1 0 0 / 10%); border-radius: 8px; }
+}

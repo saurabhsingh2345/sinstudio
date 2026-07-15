@@ -70,6 +70,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/login", s.login)
 	mux.HandleFunc("POST /api/logout", s.logout)
 	mux.HandleFunc("GET /api/auth", s.authState)
+	mux.HandleFunc("GET /api/capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/generators", s.listGenerators)
 
 	// Sibling-app supervisor: run/manage newaniAdv, funkycode, hyperframes.
@@ -125,6 +126,20 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) listGenerators(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, s.Gens.List())
+}
+
+// capabilities reports optional features that depend on external tooling, so
+// the UI can gate auto-behaviors (e.g. auto-transcribe) instead of surfacing a
+// failure for every import on a machine without whisper.cpp.
+func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
+	transcribeErr := ""
+	if err := transcribe.Available(); err != nil {
+		transcribeErr = err.Error()
+	}
+	writeJSON(w, 200, map[string]any{
+		"transcribe":      transcribeErr == "",
+		"transcribeError": transcribeErr,
+	})
 }
 
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
@@ -296,7 +311,18 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 	job := s.Jobs.New("generate", 15*time.Minute)
 	dir, _ := s.Store.AssetsDir(projID)
 	assetID := store.NewID("asset_")
-	out := filepath.Join(dir, assetID+"."+adapter.OutputExt)
+	// A generator exposing a --format param writes that container, not its
+	// default OutputExt — name the file accordingly or ffprobe/browsers choke.
+	ext := adapter.OutputExt
+	for _, spec := range adapter.Params {
+		if spec.Flag == "--format" {
+			if v := body.Params["--format"]; v != "" {
+				ext = v
+			}
+			break
+		}
+	}
+	out := filepath.Join(dir, assetID+"."+ext)
 
 	go func() {
 		ctx := job.Context()

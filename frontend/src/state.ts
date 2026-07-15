@@ -35,8 +35,12 @@ interface StudioState {
   addAsset: (a: Asset) => void;
   removeAsset: (assetId: string) => void;
   addClip: (trackId: string, assetId: string, start: number) => void;
+  addClipToLane: (assetId: string, start: number) => void;
   updateClip: (trackId: string, clipId: string, patch: Partial<Clip>) => void;
   removeClip: (trackId: string, clipId: string) => void;
+  duplicateClip: (trackId: string, clipId: string) => void;
+  reflowTrack: (trackId: string) => void;
+  insertAssetOnSpine: (trackId: string, assetId: string, index: number) => void;
   splitAtPlayhead: () => void;
   deleteSelected: () => void;
   rippleDelete: () => void;
@@ -51,9 +55,13 @@ interface StudioState {
 
   setBackground: (color: string) => void;
 
+  detachAudio: (trackId: string, clipId: string) => void;
+  attachAudio: (trackId: string, clipId: string) => void;
+
   addTrack: (kind: "video" | "overlay" | "audio") => void;
   removeTrack: (trackId: string) => void;
   moveTrack: (trackId: string, dir: -1 | 1) => void;
+  moveTrackZ: (trackId: string, dir: -1 | 1) => void;
   toggleTrackFlag: (trackId: string, flag: "muted" | "hidden" | "solo" | "duck") => void;
 
   addKeyframe: (trackId: string, clipId: string, prop: "x" | "y" | "scale" | "opacity") => void;
@@ -215,6 +223,34 @@ export const useStudio = create<StudioState>((set, get) => ({
       (t.clips ||= []).push(clip);
     }),
 
+  // addClipToLane drops an asset onto the first lane matching its kind, creating
+  // the lane if the project no longer has one. Imports use this instead of
+  // hardcoded default track ids, which stop existing once lanes are recreated.
+  addClipToLane: (assetId, start) =>
+    get().mutate((d) => {
+      const asset = d.assets.find((a) => a.id === assetId);
+      if (!asset) return;
+      const kind = asset.kind === "audio" ? "audio" : asset.kind === "image" ? "overlay" : "video";
+      let t = d.tracks.find((t) => t.kind === kind);
+      if (!t) {
+        const label = kind === "audio" ? "Audio" : kind === "overlay" ? "Overlay" : "Video";
+        t = { id: newId("t_"), kind, name: `${label} 1`, clips: [] };
+        const capIdx = d.tracks.findIndex((x) => x.kind === "caption");
+        if (capIdx >= 0) d.tracks.splice(capIdx, 0, t);
+        else d.tracks.push(t);
+      }
+      const dur = asset.duration > 0 ? asset.duration : 5;
+      (t.clips ||= []).push({
+        id: newId("clip_"),
+        assetId,
+        start,
+        in: 0,
+        out: dur,
+        transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+        volume: 1,
+      });
+    }),
+
   updateClip: (trackId, clipId, patch) =>
     get().mutate((d) => {
       const t = d.tracks.find((t) => t.id === trackId);
@@ -225,7 +261,67 @@ export const useStudio = create<StudioState>((set, get) => ({
   removeClip: (trackId, clipId) =>
     get().mutate((d) => {
       const t = d.tracks.find((t) => t.id === trackId);
-      if (t?.clips) t.clips = t.clips.filter((c) => c.id !== clipId);
+      if (!t?.clips) return;
+      const removed = t.clips.filter((c) => c.id === clipId);
+      t.clips = t.clips.filter((c) => c.id !== clipId);
+      unmuteOrphanedSources(d, removed);
+    }),
+
+  // duplicateClip ripple-inserts a copy right after the original: later clips on
+  // the track shift by the copy's duration so nothing overlaps.
+  duplicateClip: (trackId, clipId) =>
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      const c = t?.clips?.find((c) => c.id === clipId);
+      if (!t || !c) return;
+      const copy = structuredClone(c);
+      copy.id = newId("clip_");
+      const dur = clipPlayDur(c);
+      const end = c.start + dur;
+      // The original's detached-audio clip isn't cloned, so if that's why it is
+      // muted, the copy should play its own embedded audio.
+      const hasDetached = d.tracks.some((x) => x.clips?.some((ac) => ac.sourceClip === clipId));
+      if (hasDetached) copy.mute = false;
+      for (const x of t.clips!) if (x.id !== c.id && x.start >= end - 1e-6) x.start = +(x.start + dur).toFixed(3);
+      copy.start = +end.toFixed(3);
+      t.clips!.push(copy);
+    }),
+
+  // reflowTrack packs a track's clips back-to-back from 0 in start order — the
+  // spine's contiguity invariant, re-established after a trim changes durations.
+  reflowTrack: (trackId) =>
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      if (!t?.clips) return;
+      const order = [...t.clips].sort((a, b) => a.start - b.start);
+      let cursor = 0;
+      for (const c of order) {
+        c.start = +cursor.toFixed(3);
+        cursor += clipPlayDur(c);
+      }
+    }),
+
+  // insertAssetOnSpine ripple-inserts an asset as a clip at a spine position
+  // (index in start order); later clips shift right by its duration.
+  insertAssetOnSpine: (trackId, assetId, index) =>
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      const asset = d.assets.find((a) => a.id === assetId);
+      if (!t || !asset) return;
+      const dur = asset.duration > 0 ? asset.duration : 5;
+      const sorted = [...(t.clips ?? [])].sort((a, b) => a.start - b.start);
+      const prev = sorted[Math.min(index, sorted.length) - 1];
+      const at = prev ? prev.start + clipPlayDur(prev) : 0;
+      for (const c of t.clips ?? []) if (c.start >= at - 1e-6) c.start = +(c.start + dur).toFixed(3);
+      (t.clips ||= []).push({
+        id: newId("clip_"),
+        assetId,
+        start: +at.toFixed(3),
+        in: 0,
+        out: dur,
+        transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+        volume: 1,
+      });
     }),
 
   // splitAtPlayhead razors the selected clip (or any clip under the playhead) in two.
@@ -284,7 +380,13 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (selClips.length) {
       const ids = new Set(selClips.map((c) => c.clipId));
       get().mutate((d) => {
-        for (const t of d.tracks) if (t.clips) t.clips = t.clips.filter((c) => !ids.has(c.id));
+        const removed: Clip[] = [];
+        for (const t of d.tracks)
+          if (t.clips) {
+            removed.push(...t.clips.filter((c) => ids.has(c.id)));
+            t.clips = t.clips.filter((c) => !ids.has(c.id));
+          }
+        unmuteOrphanedSources(d, removed);
       });
       set({ selClip: null, selClips: [] });
     } else if (selCue) {
@@ -299,10 +401,12 @@ export const useStudio = create<StudioState>((set, get) => ({
     if (!selClips.length) return;
     const ids = new Set(selClips.map((c) => c.clipId));
     get().mutate((d) => {
+      const removed: Clip[] = [];
       for (const t of d.tracks) {
         if (!t.clips) continue;
         const dead = t.clips.filter((c) => ids.has(c.id));
         if (!dead.length) continue;
+        removed.push(...dead);
         t.clips = t.clips.filter((c) => !ids.has(c.id));
         for (const c of t.clips) {
           const shift = dead
@@ -311,6 +415,7 @@ export const useStudio = create<StudioState>((set, get) => ({
           c.start = Math.max(0, c.start - shift);
         }
       }
+      unmuteOrphanedSources(d, removed);
     });
     set({ selClip: null, selClips: [] });
   },
@@ -387,6 +492,54 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (t) t.backgroundColor = color;
     }),
 
+  // detachAudio splits a video clip's audio into an independent clip on a dedicated
+  // "Dialogue" audio track (so it can be volumed/EQ'd/deleted separately), and mutes
+  // the source clip's own audio so the export doesn't double it.
+  detachAudio: (trackId, clipId) =>
+    get().mutate((d) => {
+      const vt = d.tracks.find((t) => t.id === trackId);
+      const c = vt?.clips?.find((c) => c.id === clipId);
+      if (!c || c.title) return; // titles carry no audio
+      for (const t of d.tracks)
+        if (t.kind === "audio")
+          for (const ac of t.clips || []) if (ac.sourceClip === clipId) return; // already detached
+      let at = d.tracks.find((t) => t.kind === "audio" && t.name === "Dialogue");
+      if (!at) {
+        at = { id: newId("t_"), kind: "audio", name: "Dialogue", clips: [] };
+        const capIdx = d.tracks.findIndex((t) => t.kind === "caption");
+        if (capIdx >= 0) d.tracks.splice(capIdx, 0, at);
+        else d.tracks.push(at);
+      }
+      (at.clips ||= []).push({
+        id: newId("aud_"),
+        assetId: c.assetId,
+        start: c.start,
+        in: c.in,
+        out: c.out,
+        transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+        volume: c.volume && c.volume > 0 ? c.volume : 1,
+        speed: c.speed,
+        fadeIn: c.fadeIn,
+        fadeOut: c.fadeOut,
+        eq: c.eq ? { ...c.eq } : undefined,
+        sourceClip: clipId,
+      });
+      c.mute = true;
+    }),
+
+  // attachAudio re-embeds: removes the detached audio clip(s) for a video clip and
+  // un-mutes it, pruning the Dialogue track if it becomes empty.
+  attachAudio: (trackId, clipId) =>
+    get().mutate((d) => {
+      for (const t of d.tracks)
+        if (t.kind === "audio" && t.clips) t.clips = t.clips.filter((ac) => ac.sourceClip !== clipId);
+      d.tracks = d.tracks.filter(
+        (t) => !(t.kind === "audio" && t.name === "Dialogue" && (!t.clips || t.clips.length === 0))
+      );
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      if (c) c.mute = false;
+    }),
+
   // addTrack inserts a new content lane above the captions lane. Kept between the
   // existing content tracks and captions so lane ordering stays sensible.
   addTrack: (kind) =>
@@ -418,6 +571,25 @@ export const useStudio = create<StudioState>((set, get) => ({
       const fixed = (t: Track) => t.kind === "background" || t.kind === "caption";
       if (fixed(a) || fixed(b)) return;
       d.tracks[i] = b;
+      d.tracks[j] = a;
+    }),
+
+  // moveTrackZ changes a track's stacking order among tracks of the SAME kind
+  // (+1 = closer to the front). Both the preview and the exporter stack
+  // same-kind tracks by array position, and the kind rank (background < video
+  // < overlay) pins the groups — swapping across kinds would be a no-op
+  // visually, so we hop to the nearest same-kind neighbour instead.
+  moveTrackZ: (trackId, dir) =>
+    get().mutate((d) => {
+      const i = d.tracks.findIndex((t) => t.id === trackId);
+      if (i < 0) return;
+      const kind = d.tracks[i]!.kind;
+      if (kind === "background" || kind === "caption") return;
+      let j = i + dir;
+      while (j >= 0 && j < d.tracks.length && d.tracks[j]!.kind !== kind) j += dir;
+      if (j < 0 || j >= d.tracks.length) return;
+      const a = d.tracks[i]!;
+      d.tracks[i] = d.tracks[j]!;
       d.tracks[j] = a;
     }),
 
@@ -608,6 +780,20 @@ export const useStudio = create<StudioState>((set, get) => ({
   setZoom: (px) => set({ pxPerSec: Math.min(400, Math.max(20, px)) }),
   setSnapLine: (t) => set({ snapLine: t }),
 }));
+
+// unmuteOrphanedSources restores audio on video clips whose detached-audio clip
+// was just deleted. detachAudio mutes the source so the export doesn't double
+// its audio; deleting the detached clip by any path other than attachAudio
+// would otherwise leave the video permanently (and mysteriously) silent.
+function unmuteOrphanedSources(d: EditDoc, removed: Clip[]) {
+  for (const r of removed) {
+    if (!r.sourceClip) continue;
+    for (const t of d.tracks) {
+      const src = t.clips?.find((c) => c.id === r.sourceClip);
+      if (src) src.mute = false;
+    }
+  }
+}
 
 // pruneSelection drops selection entries pointing at clips/cues that no longer
 // exist in the target doc (e.g. after an undo/redo that removed them), so the

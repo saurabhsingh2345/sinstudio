@@ -38,6 +38,7 @@ export const api = {
       j<{ ok: boolean; version: number }>(r)
     ),
   generators: () => fetch("/api/generators").then((r) => j<GeneratorStatus[]>(r)),
+  capabilities: () => fetch("/api/capabilities").then((r) => j<{ transcribe: boolean; transcribeError: string }>(r)),
 
   // Sibling-app supervisor (run/manage newaniAdv, funkycode, hyperframes).
   apps: () => fetch("/api/apps").then((r) => j<AppStatus[]>(r)),

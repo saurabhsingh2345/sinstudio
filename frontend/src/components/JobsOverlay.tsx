@@ -12,7 +12,7 @@ export function JobsOverlay() {
   const list = Object.values(jobs);
   if (list.length === 0) return null;
   return (
-    <div className="jobs">
+    <div className="jobs legacy">
       {list.map((j) => {
         const terminal = j.status === "done" || j.status === "error" || j.status === "canceled";
         const bad = j.status === "error" || j.status === "canceled";

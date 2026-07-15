@@ -45,7 +45,7 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (phase === "open") return <>{children}</>;
 
   return (
-    <div className="auth-gate">
+    <div className="auth-gate legacy">
       <form className="auth-card" onSubmit={submit}>
         <h1>Studio</h1>
         <p className="small">This instance is protected. Enter the access token to continue.</p>
