@@ -2,6 +2,12 @@
 // the Generate modal so the starter content stays in one place.
 
 export const SAMPLES: Record<string, string> = {
+  // Plain narration script for the Voiceover (Kokoro) generator — one line per
+  // idea; the CLI speaks it sentence-by-sentence with a short breath gap.
+  text:
+    "Welcome back. Today we're going to keep it short and clear.\n" +
+    "Type your script here, and Kokoro will speak it in the voice you pick.\n" +
+    "The finished audio track drops straight onto your timeline.",
   lessonJson: JSON.stringify(
     {
       title: "Sample — f-strings",

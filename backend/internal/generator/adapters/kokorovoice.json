@@ -1,0 +1,21 @@
+{
+  "id": "kokorovoice",
+  "name": "Voiceover (Kokoro)",
+  "description": "Generate a narration audio track from a text script using local Kokoro TTS (no key, no cloud).",
+  "cwd": "../newaniAdv",
+  "command": ["npx", "tsx", "scripts/tts-cli.mts", "{input}", "{output}"],
+  "inputKind": "text",
+  "inputExt": ".txt",
+  "outputExt": "wav",
+  "buildHint": "Run `npm install` in newaniAdv so kokoro-js + `npx tsx` are available.",
+  "params": [
+    {
+      "flag": "--voice",
+      "label": "Voice",
+      "type": "enum",
+      "default": "af_heart",
+      "options": ["af_heart", "af_bella", "af_nicole", "am_michael", "am_fenrir", "bf_emma", "bm_george"]
+    },
+    { "flag": "--speed", "label": "Speed (0.5–1.5)", "type": "string", "default": "1" }
+  ]
+}
