@@ -38,6 +38,9 @@ interface StudioState {
   addClipToLane: (assetId: string, start: number) => void;
   updateClip: (trackId: string, clipId: string, patch: Partial<Clip>) => void;
   removeClip: (trackId: string, clipId: string) => void;
+  duplicateClip: (trackId: string, clipId: string) => void;
+  reflowTrack: (trackId: string) => void;
+  insertAssetOnSpine: (trackId: string, assetId: string, index: number) => void;
   splitAtPlayhead: () => void;
   deleteSelected: () => void;
   rippleDelete: () => void;
@@ -261,6 +264,63 @@ export const useStudio = create<StudioState>((set, get) => ({
       const removed = t.clips.filter((c) => c.id === clipId);
       t.clips = t.clips.filter((c) => c.id !== clipId);
       unmuteOrphanedSources(d, removed);
+    }),
+
+  // duplicateClip ripple-inserts a copy right after the original: later clips on
+  // the track shift by the copy's duration so nothing overlaps.
+  duplicateClip: (trackId, clipId) =>
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      const c = t?.clips?.find((c) => c.id === clipId);
+      if (!t || !c) return;
+      const copy = structuredClone(c);
+      copy.id = newId("clip_");
+      const dur = clipPlayDur(c);
+      const end = c.start + dur;
+      // The original's detached-audio clip isn't cloned, so if that's why it is
+      // muted, the copy should play its own embedded audio.
+      const hasDetached = d.tracks.some((x) => x.clips?.some((ac) => ac.sourceClip === clipId));
+      if (hasDetached) copy.mute = false;
+      for (const x of t.clips!) if (x.id !== c.id && x.start >= end - 1e-6) x.start = +(x.start + dur).toFixed(3);
+      copy.start = +end.toFixed(3);
+      t.clips!.push(copy);
+    }),
+
+  // reflowTrack packs a track's clips back-to-back from 0 in start order — the
+  // spine's contiguity invariant, re-established after a trim changes durations.
+  reflowTrack: (trackId) =>
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      if (!t?.clips) return;
+      const order = [...t.clips].sort((a, b) => a.start - b.start);
+      let cursor = 0;
+      for (const c of order) {
+        c.start = +cursor.toFixed(3);
+        cursor += clipPlayDur(c);
+      }
+    }),
+
+  // insertAssetOnSpine ripple-inserts an asset as a clip at a spine position
+  // (index in start order); later clips shift right by its duration.
+  insertAssetOnSpine: (trackId, assetId, index) =>
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      const asset = d.assets.find((a) => a.id === assetId);
+      if (!t || !asset) return;
+      const dur = asset.duration > 0 ? asset.duration : 5;
+      const sorted = [...(t.clips ?? [])].sort((a, b) => a.start - b.start);
+      const prev = sorted[Math.min(index, sorted.length) - 1];
+      const at = prev ? prev.start + clipPlayDur(prev) : 0;
+      for (const c of t.clips ?? []) if (c.start >= at - 1e-6) c.start = +(c.start + dur).toFixed(3);
+      (t.clips ||= []).push({
+        id: newId("clip_"),
+        assetId,
+        start: +at.toFixed(3),
+        in: 0,
+        out: dur,
+        transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+        volume: 1,
+      });
     }),
 
   // splitAtPlayhead razors the selected clip (or any clip under the playhead) in two.

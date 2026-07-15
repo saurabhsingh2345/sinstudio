@@ -20,6 +20,7 @@ import {
   VolumeX,
   Captions,
   Scissors,
+  Copy,
   Link2,
   Music2,
   Image as ImageIcon,
@@ -1219,12 +1220,53 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
           <span>{fmtTC(total)}</span>
         </div>
 
+        <SeekBar total={total} />
+
         <AudioMeter level={level} />
 
-        <div className="ml-auto flex items-center gap-1.5">
+        <div className="flex items-center gap-1.5">
           <Chip onClick={() => addCue()}><Captions className="h-3 w-3" /> Caption</Chip>
         </div>
       </div>
+    </div>
+  );
+}
+
+// SeekBar is the transport scrubber: click or drag anywhere to move the
+// playhead — the aiming device for split (S) and caption timing.
+function SeekBar({ total }: { total: number }) {
+  const playhead = useStudio((s) => s.playhead);
+  const setPlayhead = useStudio((s) => s.setPlayhead);
+  const ref = useRef<HTMLDivElement>(null);
+
+  const seekTo = (clientX: number) => {
+    const el = ref.current;
+    if (!el || total <= 0) return;
+    const r = el.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+    setPlayhead(frac * total);
+  };
+  const pct = total > 0 ? Math.min(100, (playhead / total) * 100) : 0;
+
+  return (
+    <div
+      ref={ref}
+      title="Click or drag to seek"
+      onPointerDown={(e) => {
+        ref.current?.setPointerCapture(e.pointerId);
+        seekTo(e.clientX);
+      }}
+      onPointerMove={(e) => {
+        if (e.buttons & 1) seekTo(e.clientX);
+      }}
+      className="group relative h-8 min-w-16 flex-1 cursor-pointer"
+    >
+      <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-panel-2" />
+      <div className="absolute left-0 top-1/2 h-1 -translate-y-1/2 rounded-l-full bg-brand/60" style={{ width: `${pct}%` }} />
+      <span
+        className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-brand shadow-[0_0_10px_var(--brand)] transition-transform group-hover:scale-125"
+        style={{ left: `${pct}%` }}
+      />
     </div>
   );
 }
@@ -1310,14 +1352,30 @@ function SpineArea({
   };
 
   const handleGapDragOver = (i: number) => (e: React.DragEvent) => {
-    if (draggingIndex === null) return;
+    // Two drag flavours land here: internal spine reorders and asset drags
+    // from the Media panel ("text/assetId"; types are lowercased by the DnD API).
+    const assetDrag = e.dataTransfer.types.includes("text/assetid");
+    if (draggingIndex === null && !assetDrag) return;
     e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
+    e.dataTransfer.dropEffect = draggingIndex !== null ? "move" : "copy";
     if (dropIndex !== i) setDropIndex(i);
   };
   const handleGapDrop = (i: number) => (e: React.DragEvent) => {
     e.preventDefault();
-    if (draggingIndex !== null) reorder(draggingIndex, i);
+    if (draggingIndex !== null) {
+      reorder(draggingIndex, i);
+    } else {
+      const assetId = e.dataTransfer.getData("text/assetId");
+      const asset = doc.assets.find((a) => a.id === assetId);
+      if (asset && track) {
+        if (asset.kind === "audio") {
+          const prev = clips[i - 1];
+          useStudio.getState().addClipToLane(assetId, prev ? clipEnd(prev) : 0);
+        } else {
+          useStudio.getState().insertAssetOnSpine(track.id, assetId, i);
+        }
+      }
+    }
     setDraggingIndex(null);
     setDropIndex(null);
   };
@@ -1503,6 +1561,31 @@ function ClipBlock({
   const hue = hueFor(clip.id);
   const label = clip.title ? clip.title.text || "Title" : asset?.name || "Clip";
 
+  const splitHere = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const st = useStudio.getState();
+    const end = clip.start + clipPlayDur(clip);
+    if (st.playhead <= clip.start + 0.05 || st.playhead >= end - 0.05) {
+      toast.info("Scrub the playhead into this clip, then split.");
+      return;
+    }
+    st.select(trackId, clip.id);
+    st.splitAtPlayhead();
+  };
+  const duplicate = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    useStudio.getState().duplicateClip(trackId, clip.id);
+  };
+  const remove = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!confirm("Remove this clip?")) return;
+    const st = useStudio.getState();
+    st.beginTransient();
+    st.removeClip(trackId, clip.id);
+    st.reflowTrack(trackId);
+    st.commitTransient();
+  };
+
   return (
     <div className="shrink-0">
       <button
@@ -1529,7 +1612,38 @@ function ClipBlock({
             <div className="min-w-0 truncate text-[13px] font-medium">{label}</div>
             <GripVertical className="h-3.5 w-3.5 opacity-0 group-hover:opacity-40" />
           </div>
-          <div className="mt-0.5 text-[10.5px] uppercase tracking-wider text-muted-foreground">{clip.title ? "title" : "clip"}</div>
+          <div className="mt-0.5 flex items-center justify-between">
+            <span className="text-[10.5px] uppercase tracking-wider text-muted-foreground">{clip.title ? "title" : "clip"}</span>
+            <span className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+              <span
+                role="button"
+                tabIndex={-1}
+                title="Split at playhead (S)"
+                onClick={splitHere}
+                className="grid h-5 w-5 place-items-center rounded text-muted-foreground hover:bg-panel-3 hover:text-foreground"
+              >
+                <Scissors className="h-3 w-3" />
+              </span>
+              <span
+                role="button"
+                tabIndex={-1}
+                title="Duplicate clip"
+                onClick={duplicate}
+                className="grid h-5 w-5 place-items-center rounded text-muted-foreground hover:bg-panel-3 hover:text-foreground"
+              >
+                <Copy className="h-3 w-3" />
+              </span>
+              <span
+                role="button"
+                tabIndex={-1}
+                title="Remove clip (⌫)"
+                onClick={remove}
+                className="grid h-5 w-5 place-items-center rounded text-muted-foreground hover:bg-panel-3 hover:text-destructive"
+              >
+                <Trash2 className="h-3 w-3" />
+              </span>
+            </span>
+          </div>
           <div
             role="button"
             tabIndex={0}
@@ -1616,9 +1730,12 @@ function SubLane({
         <span>{meta.label}</span>
       </div>
       <div className="relative h-6 flex-1 overflow-hidden rounded">
-        {lane === "video" && (
-          <div className="h-full w-full" style={{ background: `repeating-linear-gradient(90deg, hsl(${hue} 45% 25%) 0 12px, hsl(${hue} 40% 18%) 12px 14px)` }} />
-        )}
+        {lane === "video" &&
+          (clip.title || !asset || !(asset.duration > 0) ? (
+            <div className="h-full w-full" style={{ background: `repeating-linear-gradient(90deg, hsl(${hue} 45% 25%) 0 12px, hsl(${hue} 40% 18%) 12px 14px)` }} />
+          ) : (
+            <TrimBar trackId={trackId} clip={clip} srcDur={asset.duration} hue={hue} />
+          ))}
         {lane === "audio" && (
           <>
             {silent ? (
@@ -1697,6 +1814,63 @@ function SubLane({
         )}
       </div>
     </button>
+  );
+}
+
+// TrimBar renders the clip's window into its source ([in, out] over the full
+// asset duration) with draggable edge handles. Dragging trims live (one undo
+// entry per gesture) and the spine reflows on release so clips stay contiguous.
+function TrimBar({ trackId, clip, srcDur, hue }: { trackId: string; clip: Clip; srcDur: number; hue: number }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const drag = useRef<null | "in" | "out">(null);
+
+  const begin = (which: "in" | "out") => (e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    drag.current = which;
+    useStudio.getState().beginTransient();
+    ref.current?.setPointerCapture(e.pointerId);
+  };
+  const move = (e: React.PointerEvent) => {
+    if (!drag.current || !ref.current) return;
+    const r = ref.current.getBoundingClientRect();
+    const t = Math.max(0, Math.min(srcDur, ((e.clientX - r.left) / r.width) * srcDur));
+    const st = useStudio.getState();
+    const cur = st.doc?.tracks.find((x) => x.id === trackId)?.clips?.find((x) => x.id === clip.id);
+    if (!cur) return;
+    if (drag.current === "in") st.updateClip(trackId, clip.id, { in: +Math.min(t, cur.out - 0.1).toFixed(3) });
+    else st.updateClip(trackId, clip.id, { out: +Math.max(t, cur.in + 0.1).toFixed(3) });
+  };
+  const end = () => {
+    if (!drag.current) return;
+    drag.current = null;
+    const st = useStudio.getState();
+    st.reflowTrack(trackId);
+    st.commitTransient();
+  };
+
+  const left = Math.max(0, Math.min(100, (clip.in / srcDur) * 100));
+  const right = Math.max(left, Math.min(100, (clip.out / srcDur) * 100));
+
+  return (
+    <div ref={ref} onPointerMove={move} onPointerUp={end} onPointerCancel={end} className="relative h-full w-full bg-panel-2" title="Drag the edges to trim">
+      <div
+        className="absolute inset-y-0"
+        style={{ left: `${left}%`, width: `${right - left}%`, background: `repeating-linear-gradient(90deg, hsl(${hue} 45% 25%) 0 12px, hsl(${hue} 40% 18%) 12px 14px)` }}
+      />
+      <span
+        onPointerDown={begin("in")}
+        title="Trim start"
+        className="absolute inset-y-0 z-10 w-1.5 cursor-ew-resize rounded-sm bg-brand/80 hover:bg-brand"
+        style={{ left: `calc(${left}% - 3px)` }}
+      />
+      <span
+        onPointerDown={begin("out")}
+        title="Trim end"
+        className="absolute inset-y-0 z-10 w-1.5 cursor-ew-resize rounded-sm bg-brand/80 hover:bg-brand"
+        style={{ left: `calc(${right}% - 3px)` }}
+      />
+    </div>
   );
 }
 
