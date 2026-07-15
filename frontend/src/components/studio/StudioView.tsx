@@ -393,8 +393,57 @@ function LeftRail({ projectId, doc, onSelect }: { projectId: string; doc: EditDo
   );
 }
 
+// transcribeToCues runs Whisper on an asset and merges the resulting cues into
+// the caption track, anchored to where the asset's clip sits on the timeline
+// (shifted by start−in, clipped to the trimmed window). Returns the cue count.
+async function transcribeToCues(projectId: string, asset: Asset): Promise<number> {
+  const { jobId } = await api.transcribe(projectId, asset.id);
+  const data = await awaitJob(jobId);
+  const raw = (data?.cues as CaptionCue[] | undefined) ?? null;
+  if (!raw) throw new Error("result was lost (connection blip) — try again");
+  const st = useStudio.getState();
+  const doc = st.doc;
+  if (!doc) return 0;
+  let offset = 0;
+  let lo = -Infinity;
+  let hi = Infinity;
+  outer: for (const t of doc.tracks)
+    for (const c of t.clips ?? [])
+      if (c.assetId === asset.id && !c.sourceClip) {
+        offset = c.start - c.in;
+        lo = c.in;
+        hi = c.out;
+        break outer;
+      }
+  const cues = raw
+    .filter((q) => q.end > lo && q.start < hi)
+    .map((q) => ({
+      ...q,
+      start: +(Math.max(q.start, lo) + offset).toFixed(3),
+      end: +(Math.min(q.end, hi) + offset).toFixed(3),
+    }));
+  if (cues.length) {
+    const existing = captionTrack(doc)?.cues ?? [];
+    st.setCues([...existing, ...cues].sort((a, b) => a.start - b.start));
+  }
+  return cues.length;
+}
+
+// autoTranscribe fires after an import lands a video with audio: best-effort in
+// the background, reports via toasts, never throws.
+async function autoTranscribe(projectId: string, asset: Asset) {
+  if (asset.kind !== "video" || asset.hasAudio === false) return;
+  try {
+    toast.info(`Transcribing ${asset.name}…`);
+    const n = await transcribeToCues(projectId, asset);
+    if (n) toast.success(`${asset.name}: ${n} captions added`);
+    else toast.info(`${asset.name}: no speech found`);
+  } catch (e) {
+    toast.error(`Transcribe failed: ${(e as Error).message}`);
+  }
+}
+
 function CaptionsPanel({ projectId, doc, onSelect }: { projectId: string; doc: EditDoc; onSelect: (s: Selection) => void }) {
-  const setCues = useStudio((s) => s.setCues);
   const addCue = useStudio((s) => s.addCue);
   const updateCue = useStudio((s) => s.updateCue);
   const removeCue = useStudio((s) => s.removeCue);
@@ -406,18 +455,12 @@ function CaptionsPanel({ projectId, doc, onSelect }: { projectId: string; doc: E
 
   const transcribe = async () => {
     const id = assetId || audible[0]?.id;
-    if (!id) return;
+    const asset = doc.assets.find((a) => a.id === id);
+    if (!asset) return;
     setBusy(true);
     try {
-      const { jobId } = await api.transcribe(projectId, id);
-      const data = await awaitJob(jobId);
-      const newCues = (data?.cues as CaptionCue[] | undefined) ?? null;
-      if (!newCues) {
-        toast.error("Transcription finished but the result was lost (connection blip) — try again.");
-        return;
-      }
-      setCues([...cues, ...newCues].sort((a, b) => a.start - b.start));
-      toast.success(`Added ${newCues.length} caption cues`);
+      const n = await transcribeToCues(projectId, asset);
+      toast.success(`Added ${n} caption cues`);
     } catch (e) {
       toast.error("Transcription failed: " + (e as Error).message);
     } finally {
@@ -491,6 +534,7 @@ function MediaPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
       for (const f of Array.from(files)) {
         const { asset } = await api.importAsset(projectId, f);
         addAsset(asset);
+        void autoTranscribe(projectId, asset);
       }
     } catch (e) {
       toast.error(String((e as Error)?.message || e));
@@ -551,7 +595,10 @@ function MediaPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
           <LibraryModal
             projectId={projectId}
             onClose={() => setLib(false)}
-            onImported={(a) => addAsset(a)}
+            onImported={(a) => {
+              addAsset(a);
+              void autoTranscribe(projectId, a);
+            }}
           />
         </div>
       )}
@@ -640,6 +687,7 @@ function PluginsPanel({ projectId }: { projectId: string }) {
     addAsset(asset);
     if (toTimeline) addClipToLane(asset.id, useStudio.getState().playhead);
     toast.success(`Imported ${e.name}${toTimeline ? " → timeline" : ""}`);
+    void autoTranscribe(projectId, asset);
     return asset as Asset;
   };
 
@@ -663,6 +711,7 @@ function PluginsPanel({ projectId }: { projectId: string }) {
     addAsset(asset);
     addClipToLane(asset.id, useStudio.getState().playhead);
     toast.success(`${asset.name} → timeline`);
+    void autoTranscribe(projectId, asset);
   };
 
   const openStudio = async (g: GeneratorStatus) => {

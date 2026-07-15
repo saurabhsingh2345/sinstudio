@@ -22,6 +22,7 @@ import (
 	"studio/internal/jobs"
 	"studio/internal/library"
 	"studio/internal/store"
+	"studio/internal/transcribe"
 )
 
 func main() {
@@ -35,6 +36,9 @@ func main() {
 	if err != nil {
 		log.Fatalf("resolve root: %v", err)
 	}
+	// Whisper models are auto-discovered in <root>/models when WHISPER_MODEL
+	// isn't set, so transcription works out of the box once a ggml-*.bin lands there.
+	transcribe.SetDefaultModelDir(filepath.Join(absRoot, "models"))
 
 	media := *mediaDir
 	if media == "" {

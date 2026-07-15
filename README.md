@@ -29,8 +29,10 @@ studio/
 - **Captions** are rendered to PNG in Go using a system font (Arial/Helvetica/DejaVu autodetected;
   override with `CAPTION_FONT=/path/to.ttf`). This works even on minimal FFmpeg builds that lack
   `libass`/`drawtext`.
-- **Transcription (optional):** whisper.cpp. Set `WHISPER_BIN=/path/to/whisper-cli` and
-  `WHISPER_MODEL=/path/to/ggml-*.bin`.
+- **Transcription (optional):** whisper.cpp (`brew install whisper-cpp`). Drop a ggml model into
+  `studio/models/` (e.g. `curl -L -o models/ggml-base.en.bin https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`)
+  and it is auto-discovered; `WHISPER_BIN`/`WHISPER_MODEL` env vars override. Videos with audio
+  auto-transcribe into caption cues on import; the Captions panel button re-runs it manually.
 
 ## Run
 

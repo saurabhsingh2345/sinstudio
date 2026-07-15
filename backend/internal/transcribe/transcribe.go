@@ -25,9 +25,21 @@ func binary() string {
 	return "whisper-cli"
 }
 
+// defaultModelDir is where models are auto-discovered when WHISPER_MODEL is
+// unset (main wires it to <studio root>/models). First ggml-*.bin wins.
+var defaultModelDir string
+
+// SetDefaultModelDir configures the auto-discovery directory.
+func SetDefaultModelDir(dir string) { defaultModelDir = dir }
+
 func model() string {
 	if m := os.Getenv("WHISPER_MODEL"); m != "" {
 		return m
+	}
+	if defaultModelDir != "" {
+		if matches, _ := filepath.Glob(filepath.Join(defaultModelDir, "ggml-*.bin")); len(matches) > 0 {
+			return matches[0]
+		}
 	}
 	return "" // must be provided; error surfaced below
 }
