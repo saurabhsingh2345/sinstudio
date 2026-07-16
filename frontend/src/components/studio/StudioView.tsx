@@ -68,7 +68,7 @@ import { cn } from "@/lib/utils";
 import { useStudio, projectDuration } from "../../state";
 import type { AppStatus, Asset, CaptionCue, Clip, EditDoc, GeneratorStatus, LibraryEntry, ParamSpec, Track } from "../../types";
 import { SAMPLES } from "../../generatorSamples";
-import { clipPlayDur, mediaUrl } from "../../types";
+import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { api } from "../../api";
 import { toast } from "../../toast";
 import { revealedText } from "../../titleAnim";
@@ -573,7 +573,7 @@ function MediaPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
   };
 
   const addToTimeline = (a: Asset) => {
-    addClipToLane(a.id, useStudio.getState().playhead);
+    addClipToLane(a.id);
   };
 
   return (
@@ -642,7 +642,13 @@ function MediaCard({ asset, onAdd, onRemove }: { asset: Asset; onAdd: () => void
       onClick={onAdd}
       title="Click to add at playhead · or drag onto a track"
       draggable
-      onDragStart={(e) => e.dataTransfer.setData("text/assetId", asset.id)}
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/assetId", asset.id);
+        // Kind-scoped type so a track row can validate compatibility during
+        // dragover (getData is blocked until drop; types is readable).
+        e.dataTransfer.setData(`asset/${asset.kind}`, asset.id);
+        e.dataTransfer.effectAllowed = "copy";
+      }}
       className="group relative flex cursor-grab items-center gap-2.5 rounded-lg border border-transparent bg-panel-2/60 p-2 transition-colors hover:border-hairline hover:bg-panel-2 active:cursor-grabbing"
     >
       <div className="relative grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-md bg-gradient-to-br from-panel-3 to-panel">
@@ -723,7 +729,7 @@ function PluginsPanel({ projectId }: { projectId: string }) {
   const importEntry = async (e: LibraryEntry, toTimeline: boolean) => {
     const { asset } = await api.importFromLibrary(projectId, e.path, e.name);
     addAsset(asset);
-    if (toTimeline) addClipToLane(asset.id, useStudio.getState().playhead);
+    if (toTimeline) addClipToLane(asset.id);
     toast.success(`Imported ${e.name}${toTimeline ? " → timeline" : ""}`);
     void autoTranscribe(projectId, asset);
     return asset as Asset;
@@ -747,7 +753,7 @@ function PluginsPanel({ projectId }: { projectId: string }) {
       return;
     }
     addAsset(asset);
-    addClipToLane(asset.id, useStudio.getState().playhead);
+    addClipToLane(asset.id);
     toast.success(`${asset.name} → timeline`);
     void autoTranscribe(projectId, asset);
   };
@@ -1050,6 +1056,18 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
       v.volume = Math.max(0, Math.min(1, clip.volume || 1));
       const sp = clip.speed && clip.speed > 0 ? clip.speed : 1;
       if (v.playbackRate !== sp) v.playbackRate = sp;
+      // Hold region: the source has played out but the clip continues as a frozen
+      // last frame. Pin to the final frame and pause — never advance into black.
+      if (playhead >= clip.start + clipSrcDur(clip) - 1e-3) {
+        const last = Math.max(clip.in, clip.out - 0.04);
+        if (Math.abs(v.currentTime - last) > 0.05) {
+          try {
+            v.currentTime = last;
+          } catch {}
+        }
+        if (!v.paused) v.pause();
+        continue;
+      }
       const local = clip.in + (playhead - clip.start) * sp;
       if (Math.abs(v.currentTime - local) > 0.25) {
         try {
@@ -1930,15 +1948,28 @@ function TrimBar({ trackId, clip, srcDur, hue }: { trackId: string; clip: Clip; 
     useStudio.getState().beginTransient();
     ref.current?.setPointerCapture(e.pointerId);
   };
+  // The bar maps a virtual timeline of the source span plus draggable freeze
+  // headroom, so the right handle can be pulled past the source end to add hold.
+  const holdMax = Math.max(clip.hold ?? 0, srcDur, 8);
+  const vTotal = srcDur + holdMax;
+  const pct = (tt: number) => Math.max(0, Math.min(100, (tt / vTotal) * 100));
+
   const move = (e: React.PointerEvent) => {
     if (!drag.current || !ref.current) return;
     const r = ref.current.getBoundingClientRect();
-    const t = Math.max(0, Math.min(srcDur, ((e.clientX - r.left) / r.width) * srcDur));
+    const t = Math.max(0, Math.min(vTotal, ((e.clientX - r.left) / r.width) * vTotal));
     const st = useStudio.getState();
     const cur = st.doc?.tracks.find((x) => x.id === trackId)?.clips?.find((x) => x.id === clip.id);
     if (!cur) return;
-    if (drag.current === "in") st.updateClip(trackId, clip.id, { in: +Math.min(t, cur.out - 0.1).toFixed(3) });
-    else st.updateClip(trackId, clip.id, { out: +Math.max(t, cur.in + 0.1).toFixed(3) });
+    if (drag.current === "in") {
+      st.updateClip(trackId, clip.id, { in: +Math.min(t, srcDur, cur.out - 0.1).toFixed(3) });
+    } else if (t <= srcDur) {
+      // Inside the source → trim the out point, no freeze.
+      st.updateClip(trackId, clip.id, { out: +Math.max(t, cur.in + 0.1).toFixed(3), hold: undefined });
+    } else {
+      // Past the source end → play all source, then freeze the last frame.
+      st.updateClip(trackId, clip.id, { out: +srcDur.toFixed(3), hold: +(t - srcDur).toFixed(3) });
+    }
   };
   const end = () => {
     if (!drag.current) return;
@@ -1948,15 +1979,26 @@ function TrimBar({ trackId, clip, srcDur, hue }: { trackId: string; clip: Clip; 
     st.commitTransient();
   };
 
-  const left = Math.max(0, Math.min(100, (clip.in / srcDur) * 100));
-  const right = Math.max(left, Math.min(100, (clip.out / srcDur) * 100));
+  const hold = clip.hold && clip.hold > 0 ? clip.hold : 0;
+  const left = pct(clip.in);
+  const contentRight = Math.max(left, pct(clip.out));
+  const rightEdge = pct(clip.out + hold);
 
   return (
-    <div ref={ref} onPointerMove={move} onPointerUp={end} onPointerCancel={end} className="relative h-full w-full bg-panel-2" title="Drag the edges to trim">
+    <div ref={ref} onPointerMove={move} onPointerUp={end} onPointerCancel={end} className="relative h-full w-full bg-panel-2" title="Drag the edges to trim · pull the right edge past the end to freeze the last frame">
       <div
         className="absolute inset-y-0"
-        style={{ left: `${left}%`, width: `${right - left}%`, background: `repeating-linear-gradient(90deg, hsl(${hue} 45% 25%) 0 12px, hsl(${hue} 40% 18%) 12px 14px)` }}
+        style={{ left: `${left}%`, width: `${contentRight - left}%`, background: `repeating-linear-gradient(90deg, hsl(${hue} 45% 25%) 0 12px, hsl(${hue} 40% 18%) 12px 14px)` }}
       />
+      {hold > 0 && (
+        <div
+          className="absolute inset-y-0 flex items-center justify-center overflow-hidden text-[8px] font-semibold uppercase tracking-wide text-white/70"
+          style={{ left: `${contentRight}%`, width: `${rightEdge - contentRight}%`, background: `repeating-linear-gradient(45deg, hsl(${hue} 30% 30% / .55) 0 5px, hsl(${hue} 25% 18% / .55) 5px 10px)` }}
+          title={`Freeze last frame · ${hold.toFixed(1)}s`}
+        >
+          ❄ freeze
+        </div>
+      )}
       <span
         onPointerDown={begin("in")}
         title="Trim start"
@@ -1965,9 +2007,9 @@ function TrimBar({ trackId, clip, srcDur, hue }: { trackId: string; clip: Clip; 
       />
       <span
         onPointerDown={begin("out")}
-        title="Trim end"
-        className="absolute inset-y-0 z-10 w-1.5 cursor-ew-resize rounded-sm bg-brand/80 hover:bg-brand"
-        style={{ left: `calc(${right}% - 3px)` }}
+        title="Trim end · drag past the source end to freeze"
+        className={cn("absolute inset-y-0 z-10 w-1.5 cursor-ew-resize rounded-sm hover:bg-brand", hold > 0 ? "bg-sky-400/80" : "bg-brand/80")}
+        style={{ left: `calc(${rightEdge}% - 3px)` }}
       />
     </div>
   );
@@ -2139,6 +2181,25 @@ function TrackLayerRow({
   const Icon = isAudio ? Music2 : track.kind === "overlay" ? Layers : VideoIcon;
   const siblings = doc.tracks.filter((t) => t.kind === track.kind).length;
 
+  // Asset kinds this track row accepts on drop: audio → audio tracks, visual
+  // media → video tracks. Drops append the asset as a clip at the track's end.
+  const [dropOk, setDropOk] = useState(false);
+  const accepts = track.kind === "audio" ? ["audio"] : track.kind === "video" ? ["video", "image"] : [];
+  const canDrop = (dt: DataTransfer) => accepts.some((k) => dt.types.includes(`asset/${k}`));
+  const onLaneDragOver = (e: React.DragEvent) => {
+    if (!canDrop(e.dataTransfer)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    if (!dropOk) setDropOk(true);
+  };
+  const onLaneDrop = (e: React.DragEvent) => {
+    setDropOk(false);
+    if (!canDrop(e.dataTransfer)) return;
+    e.preventDefault();
+    const assetId = e.dataTransfer.getData("text/assetId");
+    if (assetId) useStudio.getState().insertAssetOnSpine(track.id, assetId, track.clips?.length ?? 0);
+  };
+
   const iconBtn = (title: string, active: boolean, onClick: () => void, child: React.ReactNode) => (
     <button
       title={title}
@@ -2158,7 +2219,14 @@ function TrackLayerRow({
         <Icon className="h-3 w-3 shrink-0" />
         <span className="truncate">{track.name || track.kind}</span>
       </div>
-      <div className="relative h-6 flex-1 overflow-hidden rounded bg-panel-2/50">{children}</div>
+      <div
+        onDragOver={accepts.length ? onLaneDragOver : undefined}
+        onDrop={accepts.length ? onLaneDrop : undefined}
+        onDragLeave={() => dropOk && setDropOk(false)}
+        className={cn("relative h-6 flex-1 overflow-hidden rounded bg-panel-2/50", dropOk && "ring-1 ring-brand bg-brand-soft")}
+      >
+        {children}
+      </div>
       {rightSlot && <div className="shrink-0">{rightSlot}</div>}
       <div className="flex shrink-0 items-center gap-0.5">
         {!isAudio && siblings > 1 && (
@@ -2341,6 +2409,21 @@ function ColorSwatch({ color, onChange }: { color: string; onChange?: (c: string
   );
 }
 
+// fillHoldToEnd extends a clip's freeze-frame so it reaches the furthest end of
+// any OTHER clip in the project — i.e. covers trailing audio to the last sound.
+function fillHoldToEnd(trackId: string, clip: Clip) {
+  const d = useStudio.getState().doc;
+  if (!d) return;
+  let end = 0;
+  for (const t of d.tracks) for (const c of t.clips ?? []) {
+    if (c.id === clip.id) continue;
+    end = Math.max(end, c.start + clipPlayDur(c));
+  }
+  const srcEnd = clip.start + clipSrcDur(clip);
+  const hold = Math.max(0, +(end - srcEnd).toFixed(3));
+  useStudio.getState().updateClip(trackId, clip.id, { hold: hold || undefined });
+}
+
 function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
   const updateClip = useStudio((s) => s.updateClip);
   const updateEffect = useStudio((s) => s.updateEffect);
@@ -2373,6 +2456,28 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
           <Field label="Trim in"><NumInput value={clip.in} step={0.1} suffix="s" min={0} onChange={(v) => updateClip(trackId, clip.id, { in: v })} /></Field>
           <Field label="Trim out"><NumInput value={clip.out} step={0.1} suffix="s" min={0} onChange={(v) => updateClip(trackId, clip.id, { out: v })} /></Field>
         </div>
+        {!clip.title && (
+          <>
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Freeze end"><NumInput value={clip.hold ?? 0} step={0.5} suffix="s" min={0} onChange={(v) => updateClip(trackId, clip.id, { hold: v || undefined })} /></Field>
+              <div className="flex items-end">
+                <Button size="sm" variant="ghost" className="h-7 w-full text-xs" onClick={() => fillHoldToEnd(trackId, clip)}>Extend to end</Button>
+              </div>
+            </div>
+            <div className="text-[10px] text-muted-foreground">Holds the last frame after the clip ends — fills trailing audio instead of cutting to black.</div>
+            {(clip.hold ?? 0) > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 w-full text-xs"
+                title="Put the playhead where the freeze begins — then add a voiceover from Media and it lands right here."
+                onClick={() => useStudio.getState().setPlayhead(+(clip.start + clipSrcDur(clip)).toFixed(3))}
+              >
+                Playhead → freeze start
+              </Button>
+            )}
+          </>
+        )}
       </Section>
 
       <Section label="Transition" defaultOpen={false}>
@@ -2498,6 +2603,14 @@ function AudioInspector({ doc, trackId, clip }: { doc: EditDoc; trackId: string;
     <>
       <Section label="Audio">
         {det && <div className="rounded-md bg-brand-soft px-2 py-1 text-[11px] text-brand">Detached to its own mp3 lane — edits here affect that clip.</div>}
+        {/* Start places the clip on the timeline — set it to the video's freeze
+            point so a voiceover plays after the clip instead of over it. */}
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Start"><NumInput value={target.start} step={0.1} min={0} suffix="s" onChange={(v) => updateClip(tId, target.id, { start: Math.max(0, v) })} /></Field>
+          <div className="flex items-end">
+            <Button size="sm" variant="ghost" className="h-7 w-full text-xs" onClick={() => updateClip(tId, target.id, { start: +Math.max(0, useStudio.getState().playhead).toFixed(3) })}>At playhead</Button>
+          </div>
+        </div>
         <SliderRow label="Volume" value={Math.round((target.volume ?? 1) * 100)} min={0} max={200} onChange={(v) => updateClip(tId, target.id, { volume: v / 100 })} fmt={(v) => `${v}%`} />
         <Field label="Fade in"><NumInput value={target.fadeIn ?? 0} step={0.1} min={0} suffix="s" onChange={(v) => updateClip(tId, target.id, { fadeIn: v })} /></Field>
         <Field label="Fade out"><NumInput value={target.fadeOut ?? 0} step={0.1} min={0} suffix="s" onChange={(v) => updateClip(tId, target.id, { fadeOut: v })} /></Field>

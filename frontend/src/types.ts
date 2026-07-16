@@ -75,6 +75,7 @@ export interface Clip {
   eq?: AudioEQ; // 3-band audio equalizer
   lut?: string; // .cube color LUT filename (in the project's luts dir)
   mute?: boolean; // silence this clip's own audio (used after detaching audio)
+  hold?: number; // seconds of frozen last frame appended after the source plays out
   sourceClip?: string; // detached audio clip → the video clip it came from (UI grouping)
   title?: Title; // when set, this is a text clip (no asset)
 }
@@ -234,6 +235,15 @@ export const newId = (p: string) =>
 // (end = clip.start + clipPlayDur(clip)); trimming with speed != 1 makes the
 // timeline footprint differ from the raw source span (out - in).
 export const clipPlayDur = (c: Clip): number => {
+  const sp = c.speed && c.speed > 0 ? c.speed : 1;
+  const d = (c.out - c.in) / sp;
+  const hold = c.hold && c.hold > 0 ? c.hold : 0;
+  return (d > 0 ? d : 0) + hold;
+};
+
+// clipSrcDur is the played length of the source span only (no hold) — the point
+// on the timeline where the video content ends and the frozen last frame begins.
+export const clipSrcDur = (c: Clip): number => {
   const sp = c.speed && c.speed > 0 ? c.speed : 1;
   const d = (c.out - c.in) / sp;
   return d > 0 ? d : 0;

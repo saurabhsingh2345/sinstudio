@@ -51,6 +51,10 @@ type Clip struct {
 	// detached to a separate audio-track clip. This is distinct from Volume 0,
 	// which the renderer treats as "unset" (and plays at full gain).
 	Mute bool `json:"mute,omitempty"`
+	// Hold appends this many seconds of the frozen last frame after the source
+	// plays out, so a clip can cover trailing audio without cutting to black.
+	// Added to PlayDur; the renderer extends the video with tpad=clone.
+	Hold float64 `json:"hold,omitempty"`
 	// SourceClip links a detached audio clip back to the video clip it came from.
 	// UI grouping only; the renderer ignores it.
 	SourceClip string `json:"sourceClip,omitempty"`
@@ -125,7 +129,10 @@ func (c Clip) PlayDur() float64 {
 	}
 	d := (c.Out - c.In) / sp
 	if d < 0 {
-		return 0
+		d = 0
+	}
+	if c.Hold > 0 {
+		d += c.Hold
 	}
 	return d
 }

@@ -50,8 +50,9 @@ type visual struct {
 	rot               float64                      // clockwise rotation in degrees about center (0 = none)
 	keyframes         map[string][]schema.Keyframe // property -> control points (clip-local t)
 	effects           *schema.Effects
-	lut               string // absolute path to a .cube LUT, or "" for none
-	still             bool   // input is a looped still image (title), not a trimmed video
+	lut               string  // absolute path to a .cube LUT, or "" for none
+	still             bool    // input is a looped still image (title), not a trimmed video
+	hold              float64 // seconds of frozen last frame appended after the source span
 }
 
 // audio is a resolved audio contribution.
@@ -275,6 +276,11 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			fmt.Fprintf(&fc,
 				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB,%s,format=rgba",
 				inputIdx, v.in, v.out, sp, v.start, scaleSeg)
+			// Hold: clone the last frame for `hold` more seconds so the clip covers
+			// trailing audio with a freeze-frame instead of cutting to background.
+			if v.hold > 0 {
+				fmt.Fprintf(&fc, ",tpad=stop_mode=clone:stop_duration=%.3f", v.hold)
+			}
 		}
 		// Static rotation about the clip's center. format=rgba first so the corners
 		// exposed by the rotation are transparent (c=none), not black. rotw/roth grow
@@ -537,6 +543,10 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 	if span <= 0 {
 		return
 	}
+	hold := c.Hold
+	if hold < 0 {
+		hold = 0
+	}
 	scale := c.Transform.Scale
 	if scale == 0 {
 		scale = 1
@@ -560,11 +570,12 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		sw, sh, x, y, cx, cy = w, h, 0, 0, 0, 0
 	}
 	*visuals = append(*visuals, visual{
-		path: p, in: c.In, out: c.Out, start: c.Start, end: c.Start + span,
+		path: p, in: c.In, out: c.Out, start: c.Start, end: c.Start + span + hold,
 		x: x, y: y, sw: sw, sh: sh, opacity: op,
 		speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
 		cx: cx, cy: cy, rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
+		hold: hold,
 	})
 	if !muted && !isBG && !c.Mute {
 		vol := c.Volume
