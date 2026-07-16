@@ -35,7 +35,7 @@ interface StudioState {
   addAsset: (a: Asset) => void;
   removeAsset: (assetId: string) => void;
   addClip: (trackId: string, assetId: string, start: number) => void;
-  addClipToLane: (assetId: string, start: number) => void;
+  addClipToLane: (assetId: string, start?: number) => void;
   updateClip: (trackId: string, clipId: string, patch: Partial<Clip>) => void;
   removeClip: (trackId: string, clipId: string) => void;
   duplicateClip: (trackId: string, clipId: string) => void;
@@ -240,10 +240,18 @@ export const useStudio = create<StudioState>((set, get) => ({
         else d.tracks.push(t);
       }
       const dur = asset.duration > 0 ? asset.duration : 5;
+      // Placement default depends on the lane. Video is the spine: append after
+      // the last clip so clips lay out sequentially (two 10s clips → 0–10, 10–20
+      // = 20s) instead of stacking at 0. Audio/overlay are free-positioned: drop
+      // at the playhead so a voiceover lands where you scrubbed (e.g. a freeze-
+      // frame point) instead of overlapping the video's audio from the top. A
+      // positioned drop passes an explicit start, which always wins.
+      const laneEnd = (t.clips ?? []).reduce((m, c) => Math.max(m, c.start + clipPlayDur(c)), 0);
+      const at = start ?? (kind === "video" ? laneEnd : Math.max(0, get().playhead));
       (t.clips ||= []).push({
         id: newId("clip_"),
         assetId,
-        start,
+        start: +at.toFixed(3),
         in: 0,
         out: dur,
         transform: { x: 0, y: 0, scale: 1, opacity: 1 },
@@ -263,7 +271,12 @@ export const useStudio = create<StudioState>((set, get) => ({
       const t = d.tracks.find((t) => t.id === trackId);
       if (!t?.clips) return;
       const removed = t.clips.filter((c) => c.id === clipId);
+      if (!removed.length) return;
       t.clips = t.clips.filter((c) => c.id !== clipId);
+      // A video track is a contiguous spine: closing the gap shortens the
+      // timeline instead of leaving a hole that reads as a frozen frame during
+      // playback. Overlay/audio clips stay free-positioned.
+      if (t.kind === "video") reflowClips(t);
       unmuteOrphanedSources(d, removed);
     }),
 
@@ -292,13 +305,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   reflowTrack: (trackId) =>
     get().mutate((d) => {
       const t = d.tracks.find((t) => t.id === trackId);
-      if (!t?.clips) return;
-      const order = [...t.clips].sort((a, b) => a.start - b.start);
-      let cursor = 0;
-      for (const c of order) {
-        c.start = +cursor.toFixed(3);
-        cursor += clipPlayDur(c);
-      }
+      if (t) reflowClips(t);
     }),
 
   // insertAssetOnSpine ripple-inserts an asset as a clip at a spine position
@@ -383,8 +390,12 @@ export const useStudio = create<StudioState>((set, get) => ({
         const removed: Clip[] = [];
         for (const t of d.tracks)
           if (t.clips) {
-            removed.push(...t.clips.filter((c) => ids.has(c.id)));
+            const dead = t.clips.filter((c) => ids.has(c.id));
+            if (!dead.length) continue;
+            removed.push(...dead);
             t.clips = t.clips.filter((c) => !ids.has(c.id));
+            // Spine tracks close the gap so the project duration shrinks (see removeClip).
+            if (t.kind === "video") reflowClips(t);
           }
         unmuteOrphanedSources(d, removed);
       });
@@ -785,6 +796,19 @@ export const useStudio = create<StudioState>((set, get) => ({
 // was just deleted. detachAudio mutes the source so the export doesn't double
 // its audio; deleting the detached clip by any path other than attachAudio
 // would otherwise leave the video permanently (and mysteriously) silent.
+// reflowClips packs a track's clips back-to-back from 0 in start order — the
+// spine's contiguity invariant. Used after a delete/trim so gaps close and the
+// project duration (furthest clip end) shrinks instead of leaving a dead hole.
+function reflowClips(t: Track) {
+  if (!t.clips) return;
+  const order = [...t.clips].sort((a, b) => a.start - b.start);
+  let cursor = 0;
+  for (const c of order) {
+    c.start = +cursor.toFixed(3);
+    cursor += clipPlayDur(c);
+  }
+}
+
 function unmuteOrphanedSources(d: EditDoc, removed: Clip[]) {
   for (const r of removed) {
     if (!r.sourceClip) continue;
