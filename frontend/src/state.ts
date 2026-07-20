@@ -33,10 +33,12 @@ interface StudioState {
   redo: () => void;
 
   addAsset: (a: Asset) => void;
+  updateAsset: (a: Asset) => void;
   removeAsset: (assetId: string) => void;
   addClip: (trackId: string, assetId: string, start: number) => void;
   addClipToLane: (assetId: string, start?: number) => void;
   updateClip: (trackId: string, clipId: string, patch: Partial<Clip>) => void;
+  moveClip: (fromTrackId: string, toTrackId: string, clipId: string, start: number) => void;
   removeClip: (trackId: string, clipId: string) => void;
   duplicateClip: (trackId: string, clipId: string) => void;
   reflowTrack: (trackId: string) => void;
@@ -66,6 +68,7 @@ interface StudioState {
 
   addKeyframe: (trackId: string, clipId: string, prop: "x" | "y" | "scale" | "opacity") => void;
   updateKeyframe: (trackId: string, clipId: string, prop: string, index: number, value: number) => void;
+  moveKeyframe: (trackId: string, clipId: string, prop: string, index: number, t: number) => void;
   setKeyframeEase: (trackId: string, clipId: string, prop: string, index: number, ease: string) => void;
   removeKeyframe: (trackId: string, clipId: string, prop: string, index: number) => void;
   updateEffect: (trackId: string, clipId: string, key: keyof NonNullable<Clip["effects"]>, value: number) => void;
@@ -83,6 +86,7 @@ interface StudioState {
 
   select: (trackId: string, clipId: string) => void;
   toggleSelect: (trackId: string, clipId: string) => void;
+  selectClips: (clips: { trackId: string; clipId: string }[]) => void;
   batchUpdateClips: (updates: { trackId: string; clipId: string; patch: Partial<Clip> }[]) => void;
   selectCue: (id: string | null) => void;
   setPlayhead: (t: number) => void;
@@ -198,6 +202,34 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   addAsset: (a) => get().mutate((d) => d.assets.push(a)),
 
+  // updateAsset replaces an asset in place (e.g. after a plugin re-render) and
+  // repairs clips that reference it: a shorter re-render would leave a clip's
+  // out-point past the media end (over-running into black), so clamp in/out into
+  // the new duration. Spine (video) tracks then reflow so gaps close.
+  updateAsset: (a) =>
+    get().mutate((d) => {
+      const i = d.assets.findIndex((x) => x.id === a.id);
+      if (i === -1) d.assets.push(a);
+      else d.assets[i] = a;
+      const dur = a.duration > 0 ? a.duration : 0;
+      for (const t of d.tracks) {
+        if (!t.clips) continue;
+        let touched = false;
+        for (const c of t.clips) {
+          if (c.assetId !== a.id) continue;
+          if (dur > 0 && c.out > dur) {
+            c.out = +dur.toFixed(3);
+            touched = true;
+          }
+          if (dur > 0 && c.in > dur - 0.1) {
+            c.in = +Math.max(0, dur - 0.1).toFixed(3);
+            touched = true;
+          }
+        }
+        if (touched && t.kind === "video") reflowClips(t);
+      }
+    }),
+
   // removeAsset drops an asset and any clips that reference it.
   removeAsset: (assetId) =>
     get().mutate((d) => {
@@ -264,6 +296,28 @@ export const useStudio = create<StudioState>((set, get) => ({
       const t = d.tracks.find((t) => t.id === trackId);
       const c = t?.clips?.find((c) => c.id === clipId);
       if (c) Object.assign(c, patch);
+    }),
+
+  // moveClip repositions a clip in time, optionally relocating it to another
+  // track (same clip object, preserving its id/keyframes/effects). Used by the
+  // timeline's drag gesture — horizontal drag sets start; vertical drag across
+  // same-kind lanes hands the clip to another track. No reflow: the timeline is
+  // free-positioned (gaps allowed), so nothing else shifts.
+  moveClip: (fromTrackId, toTrackId, clipId, start) =>
+    get().mutate((d) => {
+      const from = d.tracks.find((t) => t.id === fromTrackId);
+      const c = from?.clips?.find((c) => c.id === clipId);
+      if (!from || !c) return;
+      const s = +Math.max(0, start).toFixed(3);
+      if (fromTrackId === toTrackId) {
+        c.start = s;
+        return;
+      }
+      const to = d.tracks.find((t) => t.id === toTrackId);
+      if (!to) return;
+      from.clips = from.clips!.filter((x) => x.id !== clipId);
+      c.start = s;
+      (to.clips ||= []).push(c);
     }),
 
   removeClip: (trackId, clipId) =>
@@ -636,6 +690,19 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (k) k.value = value;
     }),
 
+  // moveKeyframe retimes a keyframe (clip-local seconds, clamped ≥0) and re-sorts
+  // the property's points so interpolation stays ordered. Used by dragging a
+  // keyframe diamond on the timeline.
+  moveKeyframe: (trackId, clipId, prop, index, t) =>
+    get().mutate((d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      const list = c?.keyframes?.[prop];
+      const k = list?.[index];
+      if (!list || !k) return;
+      k.t = +Math.max(0, t).toFixed(3);
+      list.sort((a, b) => a.t - b.t);
+    }),
+
   setKeyframeEase: (trackId, clipId, prop, index, ease) =>
     get().mutate((d) => {
       const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
@@ -785,10 +852,13 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
     }),
 
+  // selectClips replaces the whole selection at once (marquee/box select).
+  selectClips: (clips) => set({ selClips: clips, selClip: clips[clips.length - 1] ?? null, selCue: null }),
+
   selectCue: (id) => set({ selCue: id, selClip: null, selClips: [] }),
   setPlayhead: (t) => set({ playhead: Math.max(0, t) }),
   setPlaying: (p) => set({ playing: p }),
-  setZoom: (px) => set({ pxPerSec: Math.min(400, Math.max(20, px)) }),
+  setZoom: (px) => set({ pxPerSec: Math.min(400, Math.max(4, px)) }),
   setSnapLine: (t) => set({ snapLine: t }),
 }));
 

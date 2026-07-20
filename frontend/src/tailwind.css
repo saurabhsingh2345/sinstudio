@@ -85,6 +85,61 @@
   --hairline: oklch(1 0 0 / 6%);
   --border: oklch(1 0 0 / 8%);
   --input: oklch(1 0 0 / 10%);
+
+  /* editor preview stage + scrollbars (tokenized so light can override) */
+  --stage: oklch(0.22 0.01 265);
+  --stage-2: oklch(0.13 0.008 265);
+  --scrollbar-thumb: oklch(1 0 0 / 10%);
+}
+
+/* ── Editor light palette ──────────────────────────────────────────────────
+   Applied to the StudioView roots (`.studio-light`) so the editor shares the
+   Arc dashboard's light look for continuity across the app. Values mirror the
+   Arc design tokens in arc.css. Toggling never touches the arc screens (which
+   own their own `--arc-*` tokens) — only the editor's semantic tokens here. */
+.studio-light {
+  color-scheme: light;
+
+  --background: #f4f5fa;
+  --foreground: #101828;
+
+  --panel: #ffffff;
+  --panel-2: #f5f6fb;
+  --panel-3: #eceef6;
+
+  --card: var(--panel);
+  --card-foreground: var(--foreground);
+  --popover: #ffffff;
+  --popover-foreground: var(--foreground);
+
+  --primary: #4f46e5;
+  --primary-foreground: #ffffff;
+  --brand: var(--primary);
+  --brand-foreground: var(--primary-foreground);
+  --brand-soft: rgba(79, 70, 229, 0.12);
+
+  --signal: #0d9488;
+  --signal-soft: rgba(13, 148, 136, 0.14);
+
+  --secondary: #eef0f6;
+  --secondary-foreground: var(--foreground);
+  --muted: #eff1f7;
+  --muted-foreground: #5b647a;
+
+  --ui-accent: #eef0f6;
+  --ui-accent-foreground: var(--foreground);
+  --ui-ring: var(--primary);
+
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+
+  --hairline: rgba(16, 24, 40, 0.09);
+  --border: #e4e7f0;
+  --input: #d5d9e8;
+
+  --stage: #eef0f7;
+  --stage-2: #dfe3ee;
+  --scrollbar-thumb: rgba(16, 24, 40, 0.22);
 }
 
 .dark { color-scheme: dark; }
@@ -108,7 +163,7 @@
 
 @utility scrollbar-thin {
   scrollbar-width: thin;
-  scrollbar-color: oklch(1 0 0 / 12%) transparent;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
   &::-webkit-scrollbar { height: 8px; width: 8px; }
-  &::-webkit-scrollbar-thumb { background: oklch(1 0 0 / 10%); border-radius: 8px; }
+  &::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 8px; }
 }

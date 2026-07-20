@@ -213,3 +213,32 @@ func (s *Store) AddAsset(id string, asset schema.Asset) (*schema.EditDoc, error)
 	}
 	return doc, nil
 }
+
+// UpdateAsset replaces an existing asset (matched by ID) in place, or appends it
+// if absent. Used by re-render, which regenerates a generated asset's media file
+// and needs to refresh its probed metadata (duration/size/thumbnail/provenance).
+// Same lock discipline as AddAsset.
+func (s *Store) UpdateAsset(id string, asset schema.Asset) (*schema.EditDoc, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, err := s.getProjectLocked(id)
+	if err != nil {
+		return nil, err
+	}
+	replaced := false
+	for i := range doc.Assets {
+		if doc.Assets[i].ID == asset.ID {
+			doc.Assets[i] = asset
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		doc.Assets = append(doc.Assets, asset)
+	}
+	doc.Version++
+	if err := s.saveProjectLocked(doc); err != nil {
+		return nil, err
+	}
+	return doc, nil
+}

@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { api, setUnauthorizedHandler } from "../api";
 import { toast } from "../toast";
+import { ArcLogo, ThemeToggle } from "./arc/bits";
+import { useArcTheme } from "./arc/theme";
 
 type Phase = "checking" | "locked" | "open";
 
@@ -44,22 +46,42 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (phase === "checking") return null;
   if (phase === "open") return <>{children}</>;
 
+  return <LockedScreen token={token} setToken={setToken} busy={busy} submit={submit} />;
+}
+
+function LockedScreen({
+  token,
+  setToken,
+  busy,
+  submit,
+}: {
+  token: string;
+  setToken: (v: string) => void;
+  busy: boolean;
+  submit: (e: React.FormEvent) => void;
+}) {
+  const [theme, toggleTheme] = useArcTheme();
   return (
-    <div className="auth-gate legacy">
-      <form className="auth-card" onSubmit={submit}>
-        <h1>Studio</h1>
-        <p className="small">This instance is protected. Enter the access token to continue.</p>
-        <input
-          type="password"
-          value={token}
-          autoFocus
-          placeholder="Access token"
-          onChange={(e) => setToken(e.target.value)}
-        />
-        <button type="submit" disabled={busy || !token.trim()}>
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
-      </form>
+    <div className={`arc${theme === "dark" ? " arc-dark" : ""}`}>
+      <ThemeToggle theme={theme} onToggle={toggleTheme} className="arc-auth__toggle" />
+      <div className="arc-auth">
+        <form className="arc-auth__card" onSubmit={submit}>
+          <ArcLogo size={52} />
+          <h1>Arc Studio</h1>
+          <p className="arc-sub">This instance is protected. Enter the access token to continue.</p>
+          <input
+            className="arc-input"
+            type="password"
+            value={token}
+            autoFocus
+            placeholder="Access token"
+            onChange={(e) => setToken(e.target.value)}
+          />
+          <button className="arc-btn arc-btn--primary arc-btn--lg" type="submit" disabled={busy || !token.trim()}>
+            {busy ? "Signing in…" : "Sign in"}
+          </button>
+        </form>
+      </div>
     </div>
   );
 }

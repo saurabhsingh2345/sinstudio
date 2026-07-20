@@ -100,6 +100,7 @@ export function activeVisuals(tracks: Track[], t: number) {
   for (const tr of tracks) {
     if (tr.hidden || !(tr.kind in order)) continue;
     for (const c of tr.clips || []) {
+      if (c.disabled) continue;
       const end = c.start + clipPlayDur(c);
       if (t >= c.start && t < end) out.push({ track: tr, clip: c });
     }
@@ -115,6 +116,7 @@ export function activeAudios(tracks: Track[], t: number, soloActive: boolean) {
     if (tr.kind !== "audio" || tr.muted || tr.hidden) continue;
     if (soloActive && !tr.solo) continue;
     for (const c of tr.clips || []) {
+      if (c.disabled) continue;
       const end = c.start + clipPlayDur(c);
       if (t >= c.start && t < end) out.push({ track: tr, clip: c });
     }

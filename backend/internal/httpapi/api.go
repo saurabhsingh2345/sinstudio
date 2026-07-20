@@ -87,6 +87,7 @@ func (s *Server) Routes() http.Handler {
 
 	mux.HandleFunc("POST /api/projects/{id}/assets", s.importAsset)
 	mux.HandleFunc("POST /api/projects/{id}/generate", s.generate)
+	mux.HandleFunc("POST /api/projects/{id}/rerender", s.rerender)
 	mux.HandleFunc("POST /api/projects/{id}/transcribe", s.transcribe)
 	mux.HandleFunc("POST /api/projects/{id}/export", s.export)
 	mux.HandleFunc("GET /api/projects/{id}/waveform", s.waveform)
@@ -337,11 +338,84 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 			job.Fail(err)
 			return
 		}
+		// Keep the generation "live": remember the input + params so the clip can
+		// be re-rendered later from the studio inspector.
+		asset.GenInput = body.Input
+		asset.GenParams = body.Params
 		if _, err := s.Store.AddAsset(projID, *asset); err != nil {
 			job.Fail(err)
 			return
 		}
 		job.Done(map[string]any{"asset": asset})
+	}()
+
+	writeJSON(w, 202, map[string]any{"jobId": job.ID})
+}
+
+// rerender regenerates an existing generated asset in place: it re-runs the
+// asset's original generator with (possibly edited) input/params, overwrites the
+// same media file, and refreshes the asset's probed metadata. Every clip that
+// references the asset picks up the new render. The generator id is read from the
+// asset's Source, so the client only sends the (edited) input + params.
+func (s *Server) rerender(w http.ResponseWriter, r *http.Request) {
+	projID := r.PathValue("id")
+	doc, err := s.Store.GetProject(projID)
+	if err != nil {
+		httpErr(w, 404, err)
+		return
+	}
+	var body struct {
+		AssetID string            `json:"assetId"`
+		Input   string            `json:"input"`
+		Params  map[string]string `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	var asset *schema.Asset
+	for i := range doc.Assets {
+		if doc.Assets[i].ID == body.AssetID {
+			asset = &doc.Assets[i]
+			break
+		}
+	}
+	if asset == nil {
+		httpErr(w, 404, fmt.Errorf("unknown asset %q", body.AssetID))
+		return
+	}
+	adapter, ok := s.Gens.Get(asset.Source)
+	if !ok {
+		httpErr(w, 400, fmt.Errorf("asset %q was not produced by a known generator", body.AssetID))
+		return
+	}
+	// Overwrite the existing media file in place — same path (and extension), so
+	// the asset's Path stays valid and no orphan file is left behind.
+	out := s.Store.Abs(asset.Path)
+	assetID := asset.ID
+	name := asset.Name
+
+	job := s.Jobs.New("rerender", 15*time.Minute)
+	go func() {
+		ctx := job.Context()
+		job.Progress(0.05, "re-rendering "+adapter.Name)
+		if err := s.Gens.Generate(ctx, job, asset.Source, body.Input, body.Params, out); err != nil {
+			job.Fail(err)
+			return
+		}
+		job.Progress(0.9, "updating clip")
+		newAsset, err := s.registerAsset(ctx, projID, assetID, out, name, asset.Source)
+		if err != nil {
+			job.Fail(err)
+			return
+		}
+		newAsset.GenInput = body.Input
+		newAsset.GenParams = body.Params
+		if _, err := s.Store.UpdateAsset(projID, *newAsset); err != nil {
+			job.Fail(err)
+			return
+		}
+		job.Done(map[string]any{"asset": newAsset})
 	}()
 
 	writeJSON(w, 202, map[string]any{"jobId": job.ID})

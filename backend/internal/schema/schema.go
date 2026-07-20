@@ -58,6 +58,9 @@ type Clip struct {
 	// SourceClip links a detached audio clip back to the video clip it came from.
 	// UI grouping only; the renderer ignores it.
 	SourceClip string `json:"sourceClip,omitempty"`
+	// Disabled excludes this clip from the render/preview without deleting it —
+	// a per-clip enable toggle (both its video and audio are skipped).
+	Disabled bool `json:"disabled,omitempty"`
 	// Title makes this a text clip (no asset). It is rendered to a full-canvas
 	// PNG and composited like any visual, so transforms/transitions/keyframes/
 	// effects/fades all apply. Duration comes from In/Out like any clip.
@@ -195,6 +198,12 @@ type Asset struct {
 	Thumbnail string  `json:"thumbnail,omitempty"` // relative to the media root
 	Source    string  `json:"source"`              // import|newaniadv|hyperframes
 	CreatedAt string  `json:"createdAt"`
+	// Generation provenance: kept so a generated asset stays "live" and can be
+	// re-rendered from the studio. GenInput is the generator input (e.g. the
+	// FunkyCode scenes JSON); GenParams are the CLI flag values. Empty for
+	// imported assets. Source doubles as the generator id for generated assets.
+	GenInput  string            `json:"genInput,omitempty"`
+	GenParams map[string]string `json:"genParams,omitempty"`
 }
 
 // EditDoc is the whole persisted project state.

@@ -39,6 +39,8 @@ import {
   Package,
   Palette,
   RotateCw,
+  Moon,
+  Sun,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -65,9 +67,21 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
+import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
 import type { AppStatus, Asset, CaptionCue, Clip, EditDoc, GeneratorStatus, LibraryEntry, ParamSpec, Track } from "../../types";
 import { SAMPLES } from "../../generatorSamples";
+import {
+  FUNKY_TEMPLATES,
+  FUNKY_LANGS,
+  THROW_TEMPLATES,
+  DEFAULT_FUNKY_SCENE,
+  parseFunky,
+  serializeFunky,
+  type FunkyModel,
+  type FunkyScene,
+  type FunkyTemplateId,
+} from "../../funkycodeSchema";
 import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { api } from "../../api";
 import { toast } from "../../toast";
@@ -76,6 +90,9 @@ import { getPeaks } from "../../peaks";
 import { awaitJob } from "../../jobs";
 import { AppStudio } from "../AppStudio";
 import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel } from "./preview-engine";
+import { Timeline } from "./Timeline";
+import type { LaneKind, Selection } from "./selection";
+import { findClip } from "./selection";
 import { ExportDialog } from "../ExportDialog";
 import { RendersModal } from "../RendersModal";
 import { LibraryModal } from "../LibraryModal";
@@ -96,15 +113,8 @@ import {
 } from "./bridge";
 
 // ───────────────────────────── Selection model ────────────────────────────
-
-type LaneKind = "video" | "audio" | "subtitle";
-type Selection =
-  | { kind: "clip"; trackId: string; clipId: string }
-  | { kind: "lane"; trackId: string; clipId: string; lane: LaneKind }
-  | { kind: "overlay"; trackId: string; clipId: string }
-  | { kind: "soundtrack"; trackId: string }
-  | { kind: "cue"; cueId: string }
-  | { kind: "none" };
+// Selection/LaneKind/findClip now live in ./selection so the Timeline can share
+// them without a circular import.
 
 const ASPECTS = {
   "9:16": { label: "9:16 · Vertical", Icon: RectangleVertical },
@@ -128,6 +138,12 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showExport, setShowExport] = useState(false);
   const [showRenders, setShowRenders] = useState(false);
+
+  // Shared with the Arc dashboard/wizard (localStorage `arc-theme`) so the whole
+  // app stays on one theme. `dark` keeps the original editor palette; `light`
+  // resolves the `.studio-light` tokens in tailwind.css.
+  const [theme, toggleTheme] = useArcTheme();
+  const themeClass = theme === "dark" ? "dark" : "studio-light";
 
   useEffect(() => {
     load(projectId).catch((e) => toast.error(String(e?.message || e)));
@@ -201,7 +217,7 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
 
   if (!doc) {
     return (
-      <div className="dark grid h-screen w-screen place-items-center bg-background text-muted-foreground">
+      <div className={`${themeClass} grid h-screen w-screen place-items-center bg-background text-muted-foreground`}>
         <div className="flex items-center gap-2 text-sm">
           <Sparkles className="h-4 w-4 animate-pulse text-brand" /> Loading project…
         </div>
@@ -212,10 +228,12 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
   const aspect = aspectOf(doc.canvas);
 
   return (
-    <div className="dark flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
+    <div className={`${themeClass} flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground`}>
       <TopBar
         doc={doc}
         aspect={aspect}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         onHome={onHome}
         onExport={() => setShowExport(true)}
         onRenders={() => setShowRenders(true)}
@@ -248,22 +266,21 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
   );
 }
 
-// helpers to reach into the live doc
-function findClip(doc: EditDoc | null, trackId: string, clipId: string): Clip | undefined {
-  return doc?.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
-}
-
 // ───────────────────────────── Top bar ────────────────────────────────────
 
 function TopBar({
   doc,
   aspect,
+  theme,
+  onToggleTheme,
   onHome,
   onExport,
   onRenders,
 }: {
   doc: EditDoc;
   aspect: AspectKey;
+  theme: "light" | "dark";
+  onToggleTheme: () => void;
   onHome?: () => void;
   onExport: () => void;
   onRenders: () => void;
@@ -339,6 +356,13 @@ function TopBar({
         <span className="tabular rounded-md border hairline bg-panel-2 px-2 py-1 text-[11px] text-muted-foreground">
           {doc.canvas.width}×{doc.canvas.height} · {doc.canvas.fps}fps
         </span>
+
+        <IconBtn
+          title={`Switch to ${theme === "light" ? "dark" : "light"} theme`}
+          onClick={onToggleTheme}
+        >
+          {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+        </IconBtn>
 
         <Button variant="ghost" size="sm" className="h-8" onClick={onRenders}>
           <Layers className="mr-1.5 h-4 w-4" /> Renders
@@ -653,7 +677,7 @@ function MediaCard({ asset, onAdd, onRemove }: { asset: Asset; onAdd: () => void
     >
       <div className="relative grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-md bg-gradient-to-br from-panel-3 to-panel">
         {asset.thumbnail ? (
-          <img src={mediaUrl(asset.thumbnail)} alt="" className="absolute inset-0 h-full w-full object-cover" />
+          <img src={mediaUrl(asset.thumbnail, asset.createdAt)} alt="" className="absolute inset-0 h-full w-full object-cover" />
         ) : (
           <div
             className="absolute inset-0 opacity-60"
@@ -983,17 +1007,53 @@ function CenterColumn({
   onSelect: (s: Selection) => void;
   total: number;
 }) {
+  // Bottom editor view: the new Premiere-style Timeline (default) or the legacy
+  // card Spine. Persisted so a session keeps whichever the user prefers.
+  const [view, setView] = useState<"timeline" | "spine">(
+    () => (localStorage.getItem("studio-editor-view") as "timeline" | "spine") || "timeline"
+  );
+  const pick = (v: "timeline" | "spine") => {
+    setView(v);
+    localStorage.setItem("studio-editor-view", v);
+  };
+
   return (
-    <section className="flex min-h-0 flex-col bg-background">
+    <section className="relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-background">
       <PreviewStage doc={doc} aspect={aspect} selection={selection} total={total} />
-      <SpineArea
-        doc={doc}
-        selection={selection}
-        expanded={expanded}
-        onToggleExpand={onToggleExpand}
-        onSelect={onSelect}
-        total={total}
-      />
+
+      <div className="flex shrink-0 items-center gap-1 border-t hairline bg-panel/60 px-3 pt-1.5">
+        <button
+          onClick={() => pick("timeline")}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+            view === "timeline" ? "bg-panel-3 text-foreground" : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          Timeline
+        </button>
+        <button
+          onClick={() => pick("spine")}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+            view === "spine" ? "bg-panel-3 text-foreground" : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          Spine
+        </button>
+      </div>
+
+      {view === "timeline" ? (
+        <Timeline doc={doc} selection={selection} onSelect={onSelect} total={total} />
+      ) : (
+        <SpineArea
+          doc={doc}
+          selection={selection}
+          expanded={expanded}
+          onToggleExpand={onToggleExpand}
+          onSelect={onSelect}
+          total={total}
+        />
+      )}
     </section>
   );
 }
@@ -1191,7 +1251,10 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[radial-gradient(ellipse_at_center,_oklch(0.22_0.01_265),_oklch(0.13_0.008_265))] p-6">
+      <div
+        className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6"
+        style={{ background: "radial-gradient(ellipse at center, var(--stage), var(--stage-2))" }}
+      >
         <div
           className="relative shadow-[0_20px_80px_-20px_rgba(0,0,0,0.8)] transition-[width,height] duration-300"
           style={{
@@ -1259,13 +1322,13 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                 transform: rot ? `rotate(${rot}deg)` : undefined,
               };
               if (asset.kind === "image") {
-                return <img key={clip.id} src={mediaUrl(asset.path)} style={{ position: "absolute", ...style, objectFit: "contain" }} />;
+                return <img key={clip.id} src={mediaUrl(asset.path, asset.createdAt)} style={{ position: "absolute", ...style, objectFit: "contain" }} />;
               }
               return (
                 <video
                   key={clip.id}
                   ref={(el) => (videoRefs.current[clip.id] = el)}
-                  src={mediaUrl(asset.path)}
+                  src={mediaUrl(asset.path, asset.createdAt)}
                   muted={!!track.muted || (soloActive && !track.solo) || !!clip.mute}
                   playsInline
                   style={{ position: "absolute", ...style }}
@@ -1278,7 +1341,7 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
             {audios.map(({ clip }) => {
               const asset = doc.assets.find((a) => a.id === clip.assetId);
               if (!asset) return null;
-              return <audio key={clip.id} ref={(el) => (audioRefs.current[clip.id] = el)} src={mediaUrl(asset.path)} preload="auto" />;
+              return <audio key={clip.id} ref={(el) => (audioRefs.current[clip.id] = el)} src={mediaUrl(asset.path, asset.createdAt)} preload="auto" />;
             })}
 
             <div className="pointer-events-none absolute inset-[4%] rounded border border-dashed border-white/12" />
@@ -1716,7 +1779,7 @@ function ClipBlock({
           className="relative h-[76px] w-[72px] shrink-0 overflow-hidden rounded-md"
           style={{ background: `linear-gradient(140deg, hsl(${hue} 60% 32%), hsl(${(hue + 30) % 360} 65% 14%))` }}
         >
-          {asset?.thumbnail && <img src={mediaUrl(asset.thumbnail)} alt="" className="absolute inset-0 h-full w-full object-cover" />}
+          {asset?.thumbnail && <img src={mediaUrl(asset.thumbnail, asset.createdAt)} alt="" className="absolute inset-0 h-full w-full object-cover" />}
           {clip.title ? (
             <Type className="absolute right-1.5 top-1.5 h-3 w-3 text-white/70" />
           ) : (
@@ -2424,10 +2487,162 @@ function fillHoldToEnd(trackId: string, clip: Clip) {
   useStudio.getState().updateClip(trackId, clip.id, { hold: hold || undefined });
 }
 
+// LivePluginSection surfaces a generated clip's original plugin parameters so it
+// stays editable and re-renderable in place. Only FunkyCode has a structured
+// editor today; other generators render nothing (they're still re-renderable via
+// the API, just no UI yet).
+function LivePluginSection({ asset }: { asset: Asset }) {
+  if (asset.source === "funkycode" && asset.genInput) return <FunkyCodeEditor asset={asset} />;
+  return null;
+}
+
+function FunkyCodeEditor({ asset }: { asset: Asset }) {
+  const projectId = useStudio((s) => s.doc?.id) ?? "";
+  const [model, setModel] = useState<FunkyModel>(() => parseFunky(asset.genInput, asset.genParams));
+  const [busy, setBusy] = useState(false);
+
+  // Re-seed the draft when the committed provenance changes (i.e. after a
+  // re-render replaces the asset). Doesn't fire while editing, since only our own
+  // re-render mutates genInput.
+  useEffect(() => {
+    setModel(parseFunky(asset.genInput, asset.genParams));
+  }, [asset.id, asset.genInput]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const patchScene = (i: number, patch: Partial<FunkyScene>) =>
+    setModel((m) => ({ ...m, scenes: m.scenes.map((s, j) => (j === i ? { ...s, ...patch } : s)) }));
+  const addScene = () => setModel((m) => ({ ...m, scenes: [...m.scenes, DEFAULT_FUNKY_SCENE()] }));
+  const removeScene = (i: number) =>
+    setModel((m) => ({ ...m, scenes: m.scenes.length > 1 ? m.scenes.filter((_, j) => j !== i) : m.scenes }));
+  const moveScene = (i: number, dir: -1 | 1) =>
+    setModel((m) => {
+      const j = i + dir;
+      if (j < 0 || j >= m.scenes.length) return m;
+      const scenes = [...m.scenes];
+      [scenes[i], scenes[j]] = [scenes[j], scenes[i]];
+      return { ...m, scenes };
+    });
+
+  const rerender = async () => {
+    const { input, params } = serializeFunky(model);
+    if (!JSON.parse(input).scenes.length) {
+      toast.error("Add at least one scene with code.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { jobId } = await api.rerender(projectId, asset.id, input, params);
+      const data = await awaitJob(jobId);
+      let next: Asset | null = (data?.asset as Asset) ?? null;
+      // The SSE terminal event can be missed, in which case awaitJob resolves via
+      // its poll fallback with a null payload. The backend has already replaced the
+      // asset in place, so re-fetch and pull it by id — re-render must reliably
+      // REPLACE the existing clip's asset, never silently no-op (which looks like
+      // "it didn't work" and tempts a re-generate that adds a duplicate clip).
+      if (!next) {
+        try {
+          const fresh = await api.getProject(projectId);
+          next = fresh.assets.find((a) => a.id === asset.id) ?? null;
+        } catch {
+          /* leave next null */
+        }
+      }
+      if (next) useStudio.getState().updateAsset(next);
+      toast.success("Re-rendered FunkyCode clip.");
+    } catch (e) {
+      toast.error(`Re-render failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section label="FunkyCode · live">
+      <div className="text-[10px] leading-relaxed text-muted-foreground">
+        Edit the properties that generated this clip, then re-render it in place.
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Field label="FPS"><NumInput value={model.fps} step={1} min={1} onChange={(v) => setModel((m) => ({ ...m, fps: v }))} /></Field>
+        <label className="flex items-end gap-2 pb-1 text-[11px] text-muted-foreground">
+          <input
+            type="checkbox"
+            checked={model.shorts}
+            onChange={(e) => setModel((m) => ({ ...m, shorts: e.target.checked }))}
+            className="h-3.5 w-3.5 accent-[var(--brand)]"
+          />
+          Vertical (1080×1920)
+        </label>
+      </div>
+      <div className="space-y-2">
+        {model.scenes.map((sc, i) => (
+          <div key={i} className="space-y-1.5 rounded-md border hairline bg-panel/60 p-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-medium">Scene {i + 1}</span>
+              <div className="flex items-center gap-1 text-[11px]">
+                <button title="Move up" disabled={i === 0} onClick={() => moveScene(i, -1)} className="px-1 text-muted-foreground hover:text-foreground disabled:opacity-30">▲</button>
+                <button title="Move down" disabled={i === model.scenes.length - 1} onClick={() => moveScene(i, 1)} className="px-1 text-muted-foreground hover:text-foreground disabled:opacity-30">▼</button>
+                <button title="Remove scene" disabled={model.scenes.length <= 1} onClick={() => removeScene(i)} className="px-1 text-muted-foreground hover:text-red-400 disabled:opacity-30">✕</button>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="flex flex-col gap-1 text-[10px] text-muted-foreground">
+                Template
+                <select
+                  value={sc.template}
+                  onChange={(e) => patchScene(i, { template: e.target.value as FunkyTemplateId })}
+                  className="h-6 rounded border hairline bg-panel-2 px-1 text-[11px] text-foreground"
+                >
+                  {FUNKY_TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-[10px] text-muted-foreground">
+                Language
+                <select
+                  value={sc.language}
+                  onChange={(e) => patchScene(i, { language: e.target.value })}
+                  className="h-6 rounded border hairline bg-panel-2 px-1 text-[11px] text-foreground"
+                >
+                  {FUNKY_LANGS.map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </label>
+            </div>
+            <Textarea
+              value={sc.code}
+              onChange={(e) => patchScene(i, { code: e.target.value })}
+              spellCheck={false}
+              placeholder="code…"
+              className="scrollbar-thin h-28 resize-y bg-panel-2 font-mono text-[11px] leading-snug"
+            />
+            <Textarea
+              value={sc.output}
+              onChange={(e) => patchScene(i, { output: e.target.value })}
+              spellCheck={false}
+              placeholder="output (optional)…"
+              className="scrollbar-thin h-14 resize-y bg-panel-2 font-mono text-[11px] leading-snug"
+            />
+            {THROW_TEMPLATES.includes(sc.template) && (
+              <Field label="Throw count"><NumInput value={sc.throwCount} step={1} min={0} onChange={(v) => patchScene(i, { throwCount: v })} /></Field>
+            )}
+          </div>
+        ))}
+      </div>
+      <Button size="sm" variant="ghost" className="h-7 w-full text-xs" onClick={addScene}>+ Add scene</Button>
+      <Button
+        size="sm"
+        className="h-7 w-full bg-brand text-xs text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
+        disabled={busy}
+        onClick={rerender}
+      >
+        <Wand2 className="mr-1 h-3.5 w-3.5" /> {busy ? "Re-rendering… (see Jobs)" : "Re-render clip"}
+      </Button>
+    </Section>
+  );
+}
+
 function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
   const updateClip = useStudio((s) => s.updateClip);
   const updateEffect = useStudio((s) => s.updateEffect);
   const resetEffects = useStudio((s) => s.resetEffects);
+  const asset = useStudio((s) => s.doc?.assets.find((a) => a.id === clip.assetId));
   const tr = clip.transform;
   const setTr = (patch: Partial<Clip["transform"]>) => updateClip(trackId, clip.id, { transform: { ...tr, ...patch } });
   const eff = clip.effects ?? {};
@@ -2435,6 +2650,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
 
   return (
     <>
+      {asset && <LivePluginSection asset={asset} />}
       <Section label="Transform">
         <div className="grid grid-cols-2 gap-2">
           <Field label="X"><NumInput value={tr.x} step={5} suffix="px" onChange={(v) => setTr({ x: v })} /></Field>

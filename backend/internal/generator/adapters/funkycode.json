@@ -3,11 +3,11 @@
   "name": "FunkyCode",
   "description": "Cinematic code-typing animations (deterministic headless-Chromium canvas capture).",
   "cwd": "../funkycode",
-  "command": ["npx", "tsx", "scripts/render-funky.mts", "{input}", "{output}"],
+  "command": ["node", "scripts/render-client.mjs", "{input}", "{output}"],
   "inputKind": "funkyScenes",
   "inputExt": ".json",
   "outputExt": "mp4",
-  "probeBinary": "scripts/render-funky.mts",
+  "probeBinary": "scripts/render-client.mjs",
   "buildHint": "Run `npm install` in funkycode (adds playwright + esbuild + tsx).",
   "params": [
     { "flag": "--fps", "label": "FPS", "type": "string", "default": "30" },

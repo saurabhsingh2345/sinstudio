@@ -77,6 +77,7 @@ export interface Clip {
   mute?: boolean; // silence this clip's own audio (used after detaching audio)
   hold?: number; // seconds of frozen last frame appended after the source plays out
   sourceClip?: string; // detached audio clip → the video clip it came from (UI grouping)
+  disabled?: boolean; // excluded from render/preview without deleting (per-clip enable toggle)
   title?: Title; // when set, this is a text clip (no asset)
 }
 
@@ -147,6 +148,12 @@ export interface Asset {
   thumbnail?: string;
   source: string;
   createdAt: string;
+  // Generation provenance — present on assets produced by a generator plugin so
+  // they stay "live" and re-renderable. genInput is the generator input (e.g.
+  // the FunkyCode scenes JSON); genParams are the CLI flag values. source doubles
+  // as the generator id for generated assets.
+  genInput?: string;
+  genParams?: Record<string, string>;
 }
 
 export interface Canvas {
@@ -226,7 +233,12 @@ export interface RenderEntry {
   created: string;
 }
 
-export const mediaUrl = (rel?: string) => (rel ? `/media/${rel}` : "");
+// mediaUrl builds a URL under the media root. Pass `v` (a version token that
+// changes when the file is rewritten in place — e.g. a re-rendered asset's
+// createdAt) to cache-bust: re-render overwrites the SAME path, so without a
+// changing query the browser keeps serving the stale cached video/thumbnail.
+export const mediaUrl = (rel?: string, v?: string | number) =>
+  rel ? `/media/${rel}${v != null && v !== "" ? `?v=${encodeURIComponent(String(v))}` : ""}` : "";
 export const newId = (p: string) =>
   p + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 

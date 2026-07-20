@@ -63,6 +63,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ generatorId, input, params }),
     }).then((r) => j<{ jobId: string }>(r)),
+  // rerender re-runs the generator that produced an existing asset with edited
+  // input/params, overwriting the same media file in place. The generator id is
+  // read server-side from the asset's source, so only the edits are sent.
+  rerender: (projId: string, assetId: string, input: string, params: Record<string, string>) =>
+    fetch(`/api/projects/${projId}/rerender`, {
+      method: "POST",
+      body: JSON.stringify({ assetId, input, params }),
+    }).then((r) => j<{ jobId: string }>(r)),
   waveform: (projId: string, assetId: string) =>
     fetch(`/api/projects/${projId}/waveform?asset=${assetId}`).then((r) => j<{ peaks: number[] }>(r)),
   transcribe: (projId: string, assetId: string) =>

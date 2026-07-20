@@ -137,10 +137,16 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				bgColor = t.BackgroundColor
 			}
 			for _, c := range t.Clips {
+				if c.Disabled {
+					continue
+				}
 				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir)
 			}
 		case schema.TrackVideo, schema.TrackOverlay:
 			for _, c := range t.Clips {
+				if c.Disabled {
+					continue
+				}
 				if c.Title != nil {
 					if err := addTitleClip(&visuals, c, w, h, srtDir, titleIdx); err == nil {
 						titleIdx++
@@ -154,6 +160,9 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				continue
 			}
 			for _, c := range t.Clips {
+				if c.Disabled {
+					continue
+				}
 				p, ok := resolve(c.AssetID)
 				if !ok {
 					continue
