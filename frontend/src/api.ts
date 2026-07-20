@@ -59,6 +59,13 @@ export const api = {
     ),
   generators: () => fetch("/api/generators").then((r) => j<GeneratorStatus[]>(r)),
   plugins: () => fetch("/api/plugins").then((r) => j<PluginState>(r)),
+  // key groups previews of the same thing so a newer one supersedes the render
+  // still in flight instead of queueing behind it.
+  previewClip: (projId: string, generatorId: string, input: string, params: Record<string, string>, key: string) =>
+    fetch(`/api/projects/${projId}/preview`, {
+      method: "POST",
+      body: JSON.stringify({ generatorId, input, params, key }),
+    }).then((r) => j<{ jobId: string }>(r)),
   reloadPlugins: () =>
     fetch("/api/plugins/reload", { method: "POST" }).then((r) =>
       j<{ generators: number; errors: PluginLoadError[] }>(r)

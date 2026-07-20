@@ -70,6 +70,28 @@ Types: `string`, `text` (multi-line; add `"mono": true` for code), `number`,
 Paths are dot chains with at most one `[]` array hop. **Inside an array, child
 paths are relative to the item** (`"text"`, not `"slides[].text"`).
 
+## Preview — making the editor feel live
+
+A real render takes seconds to minutes, so the editor can only feel live if there
+is a deliberately worse render to show while someone is still editing. Declare
+one as param overrides:
+
+```jsonc
+"preview": {
+  "params": { "--fps": "10" },   // merged over the user's params; these win
+  "note": "10 fps"               // shown in the UI so nobody mistakes it for the real render
+}
+```
+
+Studio renders this after editing goes idle, and a newer edit **cancels** the
+render in flight rather than queueing behind it — so you always get the newest
+state, never a backlog of intermediate ones. Previews are written to
+`previews/`, never registered as assets, and pruned to the newest few.
+
+Omit `preview` and the generator simply has no preview; the editor says so rather
+than showing a spinner that never resolves. That is the right answer when there
+is no cheaper mode — Kokoro TTS has none, so it declares none.
+
 ### Fields are a view, not a schema
 
 The editor reads and writes **only** the paths you list and copies everything else

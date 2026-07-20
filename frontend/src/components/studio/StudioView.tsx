@@ -79,6 +79,7 @@ import type {
   LibraryEntry,
   ParamSpec,
   PluginState,
+  PreviewSpec,
   Track,
 } from "../../types";
 import { SAMPLES } from "../../generatorSamples";
@@ -86,6 +87,7 @@ import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { api } from "../../api";
 import { PluginDocEditor } from "./PluginDocEditor";
 import { parseDoc, seedDoc, serializeDoc, type Doc } from "../../pluginDoc";
+import { useLivePreview, type LivePreview } from "../../useLivePreview";
 import { toast } from "../../toast";
 import { revealedText } from "../../titleAnim";
 import { getPeaks } from "../../peaks";
@@ -2566,6 +2568,41 @@ function fillHoldToEnd(trackId: string, clip: Clip) {
   useStudio.getState().updateClip(trackId, clip.id, { hold: hold || undefined });
 }
 
+// PreviewPane shows the cheap render of the current document. It is deliberately
+// explicit that a preview is not the finished clip — the generator's note says
+// how it differs — so nobody ships something believing they saw the real thing.
+function PreviewPane({ preview, spec }: { preview: LivePreview; spec?: PreviewSpec }) {
+  if (!spec) {
+    return (
+      <div className="rounded-md border hairline bg-panel/50 px-2 py-1.5 text-[10px] text-muted-foreground">
+        No preview for this generator — re-render to see changes.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      <div className="relative overflow-hidden rounded-md border hairline bg-black">
+        {preview.url ? (
+          <video src={preview.url} controls loop className="block max-h-48 w-full" />
+        ) : (
+          <div className="grid h-24 place-items-center text-[10px] text-muted-foreground">
+            {preview.rendering ? "Rendering preview…" : "Edit to preview"}
+          </div>
+        )}
+        {preview.url && preview.rendering && (
+          <div className="absolute right-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[9px] text-white">
+            updating…
+          </div>
+        )}
+      </div>
+      <div className="flex items-center justify-between text-[9px] text-muted-foreground">
+        <span>Preview{spec.note ? ` · ${spec.note}` : ""} — not the final render.</span>
+        {preview.error && <span className="text-red-400">preview failed</span>}
+      </div>
+    </div>
+  );
+}
+
 // LivePluginSection keeps a generated clip editable: it surfaces the plugin
 // document that produced it, so properties can be changed and the clip
 // re-rendered in place rather than regenerated as a new one.
@@ -2594,6 +2631,13 @@ function PluginLiveEditor({ asset, gen }: { asset: Asset; gen: GeneratorStatus }
   const [raw, setRaw] = useState(() => asset.genInput ?? "");
   const [params, setParams] = useState<Record<string, string>>(() => ({ ...(asset.genParams ?? {}) }));
   const [busy, setBusy] = useState(false);
+  const preview = useLivePreview(projectId, gen.id, `asset:${asset.id}`, !!gen.preview);
+
+  // Ask for a cheap preview whenever the edit settles. The hook debounces and
+  // supersedes, so this is safe to call on every change.
+  useEffect(() => {
+    preview.request(hasSchema ? serializeDoc(doc) : raw, params);
+  }, [doc, raw, params]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-seed the draft when the committed provenance changes (i.e. after a
   // re-render replaces the asset). Doesn't fire while editing, since only our own
@@ -2639,6 +2683,7 @@ function PluginLiveEditor({ asset, gen }: { asset: Asset; gen: GeneratorStatus }
         }
       }
       if (next) useStudio.getState().updateAsset(next);
+      preview.clear(); // the clip itself is now up to date
       toast.success(`Re-rendered ${gen.name} clip.`);
     } catch (e) {
       toast.error(`Re-render failed: ${(e as Error).message}`);
@@ -2652,6 +2697,8 @@ function PluginLiveEditor({ asset, gen }: { asset: Asset; gen: GeneratorStatus }
       <div className="text-[10px] leading-relaxed text-muted-foreground">
         Edit the properties that generated this clip, then re-render it in place.
       </div>
+
+      <PreviewPane preview={preview} spec={gen.preview} />
 
       {hasSchema ? (
         <PluginDocEditor fields={gen.fields!} doc={doc} onChange={setDoc} />

@@ -204,6 +204,14 @@ export interface FieldSpec {
   itemOf?: string; // for type "array": singular label, e.g. "Scene"
 }
 
+// How a generator renders a cheap, throwaway version of a clip while its
+// properties are being edited. Absent when the generator has no cheaper mode —
+// the editor then says so rather than pretending.
+export interface PreviewSpec {
+  params?: Record<string, string>;
+  note?: string;
+}
+
 export interface GeneratorStatus {
   id: string;
   name: string;
@@ -215,6 +223,7 @@ export interface GeneratorStatus {
   // raw, in the format rawKind names.
   fields?: FieldSpec[];
   docRoot?: "object" | "array";
+  preview?: PreviewSpec;
   rawKind?: "json" | "text" | "html";
   available: boolean;
   buildHint?: string;

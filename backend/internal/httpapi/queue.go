@@ -26,6 +26,7 @@ const (
 	laneRender     = "render"
 	lanePlugin     = "plugin"
 	laneTranscribe = "transcribe"
+	lanePreview    = "preview"
 )
 
 // Task kinds. Also the job "kind" the UI labels progress with.
@@ -34,6 +35,7 @@ const (
 	kindGenerate   = "generate"
 	kindRerender   = "rerender"
 	kindTranscribe = "transcribe"
+	kindPreview    = "preview"
 )
 
 // Per-kind wall-clock bounds; the job context is canceled at the deadline, which
@@ -42,11 +44,16 @@ const (
 	exportTimeout     = 30 * time.Minute
 	generateTimeout   = 15 * time.Minute
 	transcribeTimeout = 30 * time.Minute
+	previewTimeout    = 5 * time.Minute
 )
 
 // taskHistoryCap bounds how many completed tasks stay retryable, so a
 // long-running server doesn't retain every request it has ever served.
 const taskHistoryCap = 200
+
+// previewsKept bounds the throwaway renders left on disk per project — editing
+// produces one file per change.
+const previewsKept = 4
 
 // Task payloads are the complete API-level inputs to a task, and are deliberately
 // JSON-serializable: the queue dispatches in-process today, but "kind + payload"
@@ -79,6 +86,20 @@ type (
 		ProjID string `json:"projId"`
 		SrcRel string `json:"srcRel"`
 	}
+
+	// previewPayload renders a throwaway version of a clip while its properties
+	// are being edited. Unlike generate, the result is never registered as an
+	// asset — it is a picture of what the document currently says, not a clip.
+	previewPayload struct {
+		ProjID      string            `json:"projId"`
+		GeneratorID string            `json:"generatorId"`
+		Input       string            `json:"input"`
+		Params      map[string]string `json:"params"`
+		// Key identifies the thing being edited, so a newer preview of the same
+		// thing supersedes the one still rendering. Without it, dragging a slider
+		// would queue a render per intermediate value and show them out of order.
+		Key string `json:"key"`
+	}
 )
 
 // task is one unit of queued work: a serializable payload plus the state resolved
@@ -105,14 +126,15 @@ type workQueue struct {
 	srv   *Server
 	lanes map[string]chan *task
 
-	mu    sync.Mutex
-	tasks map[string]*task // jobID -> task, for Retry
-	order []string         // insertion order, for bounded eviction
+	mu       sync.Mutex
+	tasks    map[string]*task  // jobID -> task, for Retry
+	order    []string          // insertion order, for bounded eviction
+	previews map[string]string // preview key -> in-flight job id, for supersede
 }
 
 // newWorkQueue starts the worker pools described by sizes (lane -> concurrency).
 func newWorkQueue(srv *Server, sizes map[string]int) *workQueue {
-	q := &workQueue{srv: srv, lanes: map[string]chan *task{}, tasks: map[string]*task{}}
+	q := &workQueue{srv: srv, lanes: map[string]chan *task{}, tasks: map[string]*task{}, previews: map[string]string{}}
 	for lane, n := range sizes {
 		if n < 1 {
 			n = 1
@@ -159,6 +181,11 @@ func (q *workQueue) Enqueue(ctx context.Context, payload any) (string, error) {
 		t.Kind, t.Lane, timeout = kindRerender, lanePlugin, generateTimeout
 	case transcribePayload:
 		t.Kind, t.Lane, timeout = kindTranscribe, laneTranscribe, transcribeTimeout
+	case previewPayload:
+		if err := q.prepPreview(t, p); err != nil {
+			return "", err
+		}
+		t.Kind, t.Lane, timeout = kindPreview, lanePreview, previewTimeout
 	default:
 		return "", fmt.Errorf("unknown task payload %T", payload)
 	}
@@ -222,6 +249,8 @@ func (q *workQueue) run(t *task) {
 		data, err = q.runRerender(t, p)
 	case transcribePayload:
 		data, err = q.runTranscribe(t, p)
+	case previewPayload:
+		data, err = q.runPreview(t, p)
 	default:
 		err = fmt.Errorf("unknown task payload %T", t.Payload)
 	}
@@ -415,4 +444,77 @@ func (q *workQueue) runTranscribe(t *task, p transcribePayload) (any, error) {
 		return nil, err
 	}
 	return map[string]any{"cues": cues}, nil
+}
+
+// ---- preview ----
+
+// prepPreview resolves where the throwaway render goes and folds in the
+// generator's preview overrides.
+func (q *workQueue) prepPreview(t *task, p previewPayload) error {
+	adapter, ok := q.srv.Gens.Get(p.GeneratorID)
+	if !ok {
+		return fmt.Errorf("unknown generator %q", p.GeneratorID)
+	}
+	if adapter.Preview == nil {
+		return fmt.Errorf("%s has no preview mode", adapter.Name)
+	}
+	dir, err := q.srv.Store.PreviewsDir(p.ProjID)
+	if err != nil {
+		return err
+	}
+	t.assetID = store.NewID("preview_")
+	t.outPath = filepath.Join(dir, t.assetID+"."+outputExt(adapter, p.Params))
+	return nil
+}
+
+// previewParams merges the generator's preview overrides over the user's params.
+// The overrides win: they are what makes the render cheap.
+func previewParams(adapter generator.Adapter, params map[string]string) map[string]string {
+	out := make(map[string]string, len(params)+len(adapter.Preview.Params))
+	for k, v := range params {
+		out[k] = v
+	}
+	for k, v := range adapter.Preview.Params {
+		out[k] = v
+	}
+	return out
+}
+
+func (q *workQueue) runPreview(t *task, p previewPayload) (any, error) {
+	job := t.job
+	adapter, ok := q.srv.Gens.Get(p.GeneratorID)
+	if !ok {
+		return nil, fmt.Errorf("unknown generator %q", p.GeneratorID)
+	}
+	ctx := job.Context()
+	job.Progress(0.05, "preview: "+adapter.Name)
+	if err := q.srv.Gens.Generate(ctx, job, p.GeneratorID, p.Input, previewParams(adapter, p.Params), t.outPath); err != nil {
+		return nil, err
+	}
+	// Deliberately not registered as an asset: a preview is disposable, and
+	// putting it in the media library would bury the real clips.
+	q.srv.Store.PrunePreviews(p.ProjID, previewsKept)
+	return map[string]any{"url": "/media/" + q.srv.Store.Rel(t.outPath), "preview": true}, nil
+}
+
+// Preview enqueues a preview, cancelling any still-running preview of the same
+// thing first. Superseding rather than queueing is the whole point: an editor
+// only ever wants the newest one, and rendering the intermediate states would
+// both waste the machine and deliver them out of order.
+func (q *workQueue) Preview(ctx context.Context, p previewPayload) (string, error) {
+	q.mu.Lock()
+	prev, had := q.previews[p.Key]
+	q.mu.Unlock()
+	if had {
+		q.srv.Jobs.Cancel(prev)
+	}
+
+	id, err := q.Enqueue(ctx, p)
+	if err != nil {
+		return "", err
+	}
+	q.mu.Lock()
+	q.previews[p.Key] = id
+	q.mu.Unlock()
+	return id, nil
 }

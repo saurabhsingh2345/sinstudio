@@ -57,6 +57,9 @@ func (s *Server) queue() *workQueue {
 			laneRender:     orDefault(s.ExportWorkers, 2),
 			lanePlugin:     orDefault(s.PluginWorkers, 4),
 			laneTranscribe: orDefault(s.TranscribeWorkers, 1),
+			// One preview at a time: a newer preview supersedes the one in flight,
+			// so extra workers would only render states nobody is waiting for.
+			lanePreview: 1,
 		})
 	})
 	return s.work
@@ -101,6 +104,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("DELETE /api/projects/{id}/assets/{assetId}", s.deleteAsset)
 	mux.HandleFunc("POST /api/projects/{id}/generate", s.generate)
 	mux.HandleFunc("POST /api/projects/{id}/rerender", s.rerender)
+	mux.HandleFunc("POST /api/projects/{id}/preview", s.previewClip)
 	mux.HandleFunc("POST /api/projects/{id}/transcribe", s.transcribe)
 	mux.HandleFunc("POST /api/projects/{id}/export", s.export)
 	mux.HandleFunc("GET /api/projects/{id}/waveform", s.waveform)
@@ -435,6 +439,43 @@ func (s *Server) rerender(w http.ResponseWriter, r *http.Request) {
 		Name:    asset.Name,
 		Input:   body.Input,
 		Params:  body.Params,
+	})
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 202, map[string]any{"jobId": jobID})
+}
+
+// previewClip renders a throwaway, deliberately cheaper version of a clip from
+// the document currently being edited. The result is not an asset — it exists so
+// the editor can show what the properties currently say without waiting for a
+// real render.
+func (s *Server) previewClip(w http.ResponseWriter, r *http.Request) {
+	projID := r.PathValue("id")
+	if _, err := s.Store.GetProject(r.Context(), projID); err != nil {
+		httpErr(w, 404, err)
+		return
+	}
+	var body struct {
+		GeneratorID string            `json:"generatorId"`
+		Input       string            `json:"input"`
+		Params      map[string]string `json:"params"`
+		Key         string            `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	if body.Key == "" {
+		body.Key = projID + ":" + body.GeneratorID
+	}
+	jobID, err := s.queue().Preview(r.Context(), previewPayload{
+		ProjID:      projID,
+		GeneratorID: body.GeneratorID,
+		Input:       body.Input,
+		Params:      body.Params,
+		Key:         body.Key,
 	})
 	if err != nil {
 		httpErr(w, 400, err)

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -120,6 +121,46 @@ func (s *Store) ThumbsDir(id string) (string, error) {
 func (s *Store) RendersDir(id string) (string, error) {
 	dir := filepath.Join(s.projectDir(id), "renders")
 	return dir, os.MkdirAll(dir, 0o755)
+}
+
+// PreviewsDir returns the throwaway-preview directory for a project. Previews
+// are never registered as assets, so nothing else references them and they can
+// be pruned freely.
+func (s *Store) PreviewsDir(id string) (string, error) {
+	dir := filepath.Join(s.projectDir(id), "previews")
+	return dir, os.MkdirAll(dir, 0o755)
+}
+
+// PrunePreviews keeps only the newest `keep` previews for a project. Editing
+// generates one file per change, so without this a long session fills the disk.
+func (s *Store) PrunePreviews(id string, keep int) {
+	dir := filepath.Join(s.projectDir(id), "previews")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	type ent struct {
+		path string
+		mod  time.Time
+	}
+	var files []ent
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, ent{filepath.Join(dir, e.Name()), info.ModTime()})
+	}
+	if len(files) <= keep {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mod.After(files[j].mod) })
+	for _, f := range files[keep:] {
+		_ = os.Remove(f.path)
+	}
 }
 
 // LutsDir returns the color-LUT (.cube) directory for a project.

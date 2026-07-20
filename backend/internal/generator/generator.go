@@ -54,6 +54,20 @@ type FieldSpec struct {
 	ItemOf  string      `json:"itemOf,omitempty"`  // for type "array": label of one item, e.g. "Scene"
 }
 
+// Preview describes how to render a cheap, throwaway version of a clip while
+// someone is editing its properties. Every generator here takes seconds to
+// minutes for a real render, so the editor can only feel live if there is a
+// deliberately worse render to show in the meantime.
+//
+// It is expressed as param overrides rather than a separate command, because
+// that is what the cheap path actually is for these tools: fewer frames, no
+// voice, a smaller resolution. A generator with no Preview block simply has no
+// preview, and the editor says so instead of pretending.
+type Preview struct {
+	Params map[string]string `json:"params"` // merged over the user's params
+	Note   string            `json:"note"`   // how the preview differs, shown in the UI
+}
+
 // Adapter is a generator manifest.
 type Adapter struct {
 	ID          string      `json:"id"`
@@ -67,6 +81,7 @@ type Adapter struct {
 	OutputExt   string      `json:"outputExt"`   // e.g. "mp4"
 	Params      []ParamSpec `json:"params"`      // exposed flags
 	Fields      []FieldSpec `json:"fields"`      // editable properties of the input document (empty = raw editor)
+	Preview     *Preview    `json:"preview"`     // optional cheap render for live editing
 	DocRoot     string      `json:"docRoot"`     // "object" (default) or "array": shape of the input document
 	RawKind     string      `json:"rawKind"`     // when no fields: "json" (default) | "text" | "html"
 	SamplePath  string      `json:"samplePath"`  // optional sample input file (relative to cwd)

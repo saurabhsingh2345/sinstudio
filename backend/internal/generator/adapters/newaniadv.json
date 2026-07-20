@@ -79,5 +79,11 @@
       "type": "bool",
       "default": false
     }
-  ]
+  ],
+  "preview": {
+    "params": {
+      "--no-voice": "true"
+    },
+    "note": "no voiceover"
+  }
 }

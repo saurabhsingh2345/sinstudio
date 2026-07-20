@@ -51,5 +51,11 @@
       ]
     }
   ],
-  "rawKind": "html"
+  "rawKind": "html",
+  "preview": {
+    "params": {
+      "--resolution": "landscape"
+    },
+    "note": "1080p landscape"
+  }
 }
