@@ -27,10 +27,10 @@ COPY --from=frontend /app/frontend/dist /app/frontend/dist
 # list of CORS origins. Media persists under the /data volume.
 ENV STUDIO_TOKEN="" \
     STUDIO_ALLOWED_ORIGINS=""
-EXPOSE 8787
+EXPOSE 8788
 VOLUME ["/data"]
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s \
-  CMD wget -qO- http://localhost:8787/health >/dev/null 2>&1 || exit 1
+  CMD wget -qO- http://localhost:8788/health >/dev/null 2>&1 || exit 1
 
-ENTRYPOINT ["/app/studio", "-addr", ":8787", "-root", "/app", "-media", "/data", "-front", "/app/frontend/dist"]
+ENTRYPOINT ["/app/studio", "-addr", ":8788", "-root", "/app", "-media", "/data", "-front", "/app/frontend/dist"]

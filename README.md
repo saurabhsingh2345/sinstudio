@@ -43,7 +43,7 @@ studio/
 ## Run
 
 ```bash
-./dev.sh                       # backend :8787 + frontend :5273
+./dev.sh                       # backend :8788 + frontend :5273
 # open http://localhost:5273
 ```
 
@@ -51,8 +51,8 @@ Or production-style (Go serves the built UI):
 
 ```bash
 cd frontend && npm install && npm run build
-cd ../backend && go run ./cmd/studio -addr :8787
-# open http://localhost:8787
+cd ../backend && go run ./cmd/studio -addr :8788
+# open http://localhost:8788
 ```
 
 ## Deploy
@@ -61,7 +61,7 @@ cd ../backend && go run ./cmd/studio -addr :8787
 
 ```bash
 STUDIO_TOKEN=change-me docker compose up --build
-# open http://localhost:8787  → enter the token
+# open http://localhost:8788  → enter the token
 ```
 
 Media persists in the `studio-media` volume (mounted at `/data`). To build/run
@@ -69,7 +69,7 @@ the image directly:
 
 ```bash
 docker build -t studio .
-docker run -p 8787:8787 -e STUDIO_TOKEN=change-me -v studio-media:/data studio
+docker run -p 8788:8788 -e STUDIO_TOKEN=change-me -v studio-media:/data studio
 ```
 
 **Configuration (environment variables):**
@@ -115,7 +115,7 @@ Studio pulls from every product three ways:
    fd.append("file", blob, "clip.mp4");
    fd.append("source", "funkycode");
    // add ?projectId=<id> to import straight into a project
-   await fetch("http://localhost:8787/api/ingest", { method: "POST", body: fd });
+   await fetch("http://localhost:8788/api/ingest", { method: "POST", body: fd });
    ```
 
    Ingested clips land in `media/inbox/` and appear under the Library's "Inbox" source.

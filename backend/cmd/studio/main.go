@@ -37,7 +37,10 @@ func envInt(key string, def int) int {
 }
 
 func main() {
-	addr := flag.String("addr", ":8787", "listen address")
+	// 8788, not 8787: a sibling project (courseSmith) serves on 8787, and because
+	// Go binds the IPv6 wildcard the two can start simultaneously without either
+	// failing — leaving which app you reach up to the browser's address-family choice.
+	addr := flag.String("addr", ":8788", "listen address")
 	root := flag.String("root", "..", "studio project root (parent of backend/); used to locate sibling generators")
 	mediaDir := flag.String("media", "", "media root (default <root>/media)")
 	frontDir := flag.String("front", "", "built frontend dir to serve (default <root>/frontend/dist if present)")
