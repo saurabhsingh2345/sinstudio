@@ -82,6 +82,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/auth", s.authState)
 	mux.HandleFunc("GET /api/capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/generators", s.listGenerators)
+	mux.HandleFunc("GET /api/plugins", s.pluginState)
+	mux.HandleFunc("POST /api/plugins/reload", s.reloadPlugins)
 
 	// Sibling-app supervisor: run/manage newaniAdv, funkycode, hyperframes.
 	mux.HandleFunc("GET /api/apps", s.listApps)
@@ -151,6 +153,25 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"transcribe":      transcribeErr == "",
 		"transcribeError": transcribeErr,
+	})
+}
+
+// pluginState reports the runtime plugin directory and any manifests that failed
+// to load, so a broken plugin is visible in the UI instead of silently absent.
+func (s *Server) pluginState(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{
+		"dir":    s.Gens.PluginDir(),
+		"errors": s.Gens.Errors(),
+	})
+}
+
+// reloadPlugins re-scans the plugin directory, so editing a manifest doesn't
+// need a restart.
+func (s *Server) reloadPlugins(w http.ResponseWriter, r *http.Request) {
+	s.Gens.Reload()
+	writeJSON(w, 200, map[string]any{
+		"generators": len(s.Gens.List()),
+		"errors":     s.Gens.Errors(),
 	})
 }
 

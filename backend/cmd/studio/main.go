@@ -44,6 +44,7 @@ func main() {
 	root := flag.String("root", "..", "studio project root (parent of backend/); used to locate sibling generators")
 	mediaDir := flag.String("media", "", "media root (default <root>/media)")
 	frontDir := flag.String("front", "", "built frontend dir to serve (default <root>/frontend/dist if present)")
+	pluginDir := flag.String("plugins", "", "runtime plugin dir, one <id>/plugin.json per plugin (default <root>/plugins)")
 	flag.Parse()
 
 	absRoot, err := filepath.Abs(*root)
@@ -83,6 +84,16 @@ func main() {
 	if err != nil {
 		log.Fatalf("generators: %v", err)
 	}
+	// Layer runtime plugins over the built-in ones so adding a generator is a
+	// dropped-in folder rather than a rebuild.
+	plugins := *pluginDir
+	if plugins == "" {
+		plugins = strings.TrimSpace(os.Getenv("STUDIO_PLUGINS_DIR"))
+	}
+	if plugins == "" {
+		plugins = filepath.Join(absRoot, "plugins")
+	}
+	reg.SetPluginDir(plugins)
 
 	// Watch dirs where the sibling apps drop browser-downloaded clips (so they
 	// can auto-import). The user's Downloads folder is watched by default;
@@ -146,8 +157,14 @@ func main() {
 	log.Printf("studio backend on %s", *addr)
 	log.Printf("  root=%s", absRoot)
 	log.Printf("  media=%s", st.Root())
+	log.Printf("  plugins    %s", plugins)
 	for _, a := range reg.List() {
 		log.Printf("  generator %-12s available=%v (%s)", a.ID, a.Available, a.CWD)
+	}
+	// Surface bad manifests loudly: a plugin that failed to load is invisible in
+	// the UI otherwise, and "my plugin didn't show up" is a miserable thing to debug.
+	for _, e := range reg.Errors() {
+		log.Printf("  PLUGIN ERROR %s: %s", e.Path, e.Error)
 	}
 	for _, src := range lib.Sources() {
 		log.Printf("  library   %-16s %s", src.ID, src.Dir)

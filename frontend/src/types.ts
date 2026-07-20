@@ -281,3 +281,16 @@ export const clipSrcDur = (c: Clip): number => {
   const d = (c.out - c.in) / sp;
   return d > 0 ? d : 0;
 };
+
+// A plugin manifest that failed to load. Loading is non-fatal, so these are
+// reported rather than thrown — a plugin nobody can see is worse than a visible
+// error.
+export interface PluginLoadError {
+  path: string;
+  error: string;
+}
+
+export interface PluginState {
+  dir: string;
+  errors: PluginLoadError[];
+}

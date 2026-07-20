@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronDown,
@@ -69,7 +69,18 @@ import { cn } from "@/lib/utils";
 
 import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
-import type { AppStatus, Asset, CaptionCue, Clip, EditDoc, GeneratorStatus, LibraryEntry, ParamSpec, Track } from "../../types";
+import type {
+  AppStatus,
+  Asset,
+  CaptionCue,
+  Clip,
+  EditDoc,
+  GeneratorStatus,
+  LibraryEntry,
+  ParamSpec,
+  PluginState,
+  Track,
+} from "../../types";
 import { SAMPLES } from "../../generatorSamples";
 import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { api } from "../../api";
@@ -739,10 +750,30 @@ function PluginsPanel({ projectId }: { projectId: string }) {
   const [appsLoaded, setAppsLoaded] = useState(false);
   const [studioFor, setStudioFor] = useState<AppStatus | null>(null);
   const [genFor, setGenFor] = useState<string | null>(null);
+  const [pluginState, setPluginState] = useState<PluginState | null>(null);
+  const [reloading, setReloading] = useState(false);
 
-  useEffect(() => {
+  const loadPlugins = useCallback(() => {
     api.generators().then(setGens).catch(() => {});
+    api.plugins().then(setPluginState).catch(() => setPluginState(null));
   }, []);
+  useEffect(loadPlugins, [loadPlugins]);
+
+  // Plugins are loaded from a directory at runtime, so a manifest can be added or
+  // fixed without restarting — this picks the change up without a page reload.
+  const reload = async () => {
+    setReloading(true);
+    try {
+      const { generators, errors } = await api.reloadPlugins();
+      loadPlugins();
+      if (errors.length) toast.error(`${errors.length} plugin(s) failed to load.`);
+      else toast.success(`${generators} plugin(s) loaded.`);
+    } catch (e) {
+      toast.error(`Reload failed: ${(e as Error).message}`);
+    } finally {
+      setReloading(false);
+    }
+  };
   // Poll live dev-server status for the plugin cards' live/booting dots.
   useEffect(() => {
     let alive = true;
@@ -815,14 +846,39 @@ function PluginsPanel({ projectId }: { projectId: string }) {
 
   return (
     <>
-      <div className="px-3 pt-3 pb-2 text-[11px] leading-relaxed text-muted-foreground">
-        Open an app inside Studio, create there, and its clips import automatically.
+      <div className="flex items-start justify-between gap-2 px-3 pt-3 pb-2">
+        <div className="text-[11px] leading-relaxed text-muted-foreground">
+          Generate a clip here and it stays editable — click it on the timeline to change
+          its properties and re-render.
+        </div>
+        <button
+          onClick={reload}
+          disabled={reloading}
+          title={pluginState?.dir ? `Re-scan ${pluginState.dir}` : "Re-scan the plugin directory"}
+          className="shrink-0 rounded border hairline px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-panel-2 disabled:opacity-40"
+        >
+          {reloading ? "…" : "Reload"}
+        </button>
       </div>
       <div className="scrollbar-thin flex-1 overflow-y-auto px-2 pb-3">
         {gens.length === 0 ? (
           <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">No plugins configured.</div>
         ) : (
           <div className="space-y-1.5">
+            {/* A plugin whose manifest failed to load is simply absent from the
+                list, which is impossible to debug. Say so instead. */}
+            {!!pluginState?.errors.length && (
+              <div className="space-y-1 rounded-lg border border-red-500/40 bg-red-500/10 p-2 text-[11px]">
+                <div className="font-medium text-red-300">
+                  {pluginState.errors.length} plugin(s) failed to load
+                </div>
+                {pluginState.errors.map((e) => (
+                  <div key={e.path} className="text-[10px] text-red-200/80">
+                    <span className="font-mono">{e.path.split("/").slice(-2).join("/")}</span> — {e.error}
+                  </div>
+                ))}
+              </div>
+            )}
             {gens.map((g) => {
               const app = apps[g.id];
               const live = app?.state === "running" && app?.healthy;

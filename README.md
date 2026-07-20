@@ -78,6 +78,7 @@ docker run -p 8788:8788 -e STUDIO_TOKEN=change-me -v studio-media:/data studio
 | --- | --- | --- |
 | `STUDIO_TOKEN` | *(unset)* | When set, the API and `/media` require a login. Browsers sign in once at the token screen (httpOnly session cookie); programmatic clients may send `Authorization: Bearer <token>`. **Unset = open**, intended for localhost only. |
 | `STUDIO_ALLOWED_ORIGINS` | *(unset)* | Comma-separated CORS allowlist (e.g. `https://studio.example.com`). Unset ⇒ only `localhost`/`127.0.0.1` origins are allowed; the server never advertises `*`. |
+| `STUDIO_PLUGINS_DIR` | `<root>/plugins` | Runtime plugin directory (`-plugins` flag). One `<id>/plugin.json` per plugin; see `plugins/README.md`. Adding a generator needs no rebuild. |
 | `STUDIO_DATABASE_URL` | *(required)* | Postgres connection string, e.g. `postgres://studio:studio@localhost:5544/studio?sslmode=disable`. The schema is applied on startup. |
 | `STUDIO_EXPORT_WORKERS` | `2` | Concurrent ffmpeg exports. Further exports queue (each is a full FFmpeg process). |
 | `STUDIO_PLUGIN_WORKERS` | `4` | Concurrent generator subprocesses (generate / re-render). |

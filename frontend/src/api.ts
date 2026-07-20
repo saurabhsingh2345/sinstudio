@@ -6,6 +6,8 @@ import type {
   JobEvent,
   LibraryEntry,
   LibrarySource,
+  PluginLoadError,
+  PluginState,
   RenderEntry,
 } from "./types";
 
@@ -56,6 +58,11 @@ export const api = {
       (r) => j<{ ok: boolean }>(r)
     ),
   generators: () => fetch("/api/generators").then((r) => j<GeneratorStatus[]>(r)),
+  plugins: () => fetch("/api/plugins").then((r) => j<PluginState>(r)),
+  reloadPlugins: () =>
+    fetch("/api/plugins/reload", { method: "POST" }).then((r) =>
+      j<{ generators: number; errors: PluginLoadError[] }>(r)
+    ),
   capabilities: () => fetch("/api/capabilities").then((r) => j<{ transcribe: boolean; transcribeError: string }>(r)),
 
   // Sibling-app supervisor (run/manage newaniAdv, funkycode, hyperframes).

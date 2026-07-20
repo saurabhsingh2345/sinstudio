@@ -24,14 +24,14 @@ type Transform struct {
 
 // Clip is a placed reference to an asset on a track.
 type Clip struct {
-	ID            string    `json:"id"`
-	AssetID       string    `json:"assetId"`
-	Start         float64   `json:"start"` // position on the timeline (seconds)
-	In            float64   `json:"in"`    // trim start within the source (seconds)
-	Out           float64   `json:"out"`   // trim end within the source (seconds)
-	Transform     Transform `json:"transform"`
-	Volume        float64   `json:"volume"` // 0..1, audio gain for this clip
-	Speed         float64   `json:"speed,omitempty"`   // playback rate (1 = normal); 0 treated as 1
+	ID            string      `json:"id"`
+	AssetID       string      `json:"assetId"`
+	Start         float64     `json:"start"` // position on the timeline (seconds)
+	In            float64     `json:"in"`    // trim start within the source (seconds)
+	Out           float64     `json:"out"`   // trim end within the source (seconds)
+	Transform     Transform   `json:"transform"`
+	Volume        float64     `json:"volume"`            // 0..1, audio gain for this clip
+	Speed         float64     `json:"speed,omitempty"`   // playback rate (1 = normal); 0 treated as 1
 	FadeIn        float64     `json:"fadeIn,omitempty"`  // seconds of fade-in
 	FadeOut       float64     `json:"fadeOut,omitempty"` // seconds of fade-out
 	TransitionIn  *Transition `json:"transitionIn,omitempty"`
@@ -194,7 +194,7 @@ type Asset struct {
 	Width     int     `json:"width"`
 	Height    int     `json:"height"`
 	HasAlpha  bool    `json:"hasAlpha"`
-	HasAudio  *bool   `json:"hasAudio,omitempty"` // nil = not yet probed; false = silent (no audio stream)
+	HasAudio  *bool   `json:"hasAudio,omitempty"`  // nil = not yet probed; false = silent (no audio stream)
 	Thumbnail string  `json:"thumbnail,omitempty"` // relative to the media root
 	Source    string  `json:"source"`              // import|newaniadv|hyperframes
 	CreatedAt string  `json:"createdAt"`

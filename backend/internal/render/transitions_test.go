@@ -421,7 +421,7 @@ func TestTitleRevealRuns(t *testing.T) {
 						ID: "t1", Start: 0, In: 0, Out: 3,
 						Transform: schema.Transform{Scale: 1, Opacity: 1},
 						FadeIn:    0.3, FadeOut: 0.3,
-						Title:     &schema.Title{Text: "Hello brave new world", Size: 64, Color: "#ffffff", Align: "center", PosY: 0.5, Reveal: mode},
+						Title: &schema.Title{Text: "Hello brave new world", Size: 64, Color: "#ffffff", Align: "center", PosY: 0.5, Reveal: mode},
 					}}},
 				},
 			}

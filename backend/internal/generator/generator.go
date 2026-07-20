@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"studio/internal/jobs"
 )
@@ -75,39 +76,64 @@ type Adapter struct {
 
 // Registry holds loaded adapters keyed by id.
 type Registry struct {
-	root     string // studio root (parent of backend/)
-	adapters map[string]Adapter
-	order    []string
+	root string // studio root (parent of backend/)
+
+	// Guards the loaded set, which Reload replaces while requests are reading it.
+	mu        sync.RWMutex
+	adapters  map[string]Adapter
+	order     []string
+	pluginDir string      // optional runtime plugin directory
+	errs      []LoadError // load failures from the last scan
 }
 
-// NewRegistry loads all embedded adapter manifests. root is the studio project
-// root, used to resolve each adapter's relative cwd.
+// NewRegistry loads the built-in adapter manifests. root is the studio project
+// root, used to resolve each adapter's relative cwd. Call SetPluginDir to layer
+// runtime plugins on top.
 func NewRegistry(root string) (*Registry, error) {
-	r := &Registry{root: root, adapters: map[string]Adapter{}}
-	entries, err := fs.ReadDir(adapterFS, "adapters")
+	adapters, order, err := loadBuiltin()
 	if err != nil {
 		return nil, err
 	}
+	return &Registry{root: root, adapters: adapters, order: order}, nil
+}
+
+// loadBuiltin reads the compiled-in manifests, in filename order.
+func loadBuiltin() (map[string]Adapter, []string, error) {
+	entries, err := fs.ReadDir(adapterFS, "adapters")
+	if err != nil {
+		return nil, nil, err
+	}
+	adapters := map[string]Adapter{}
+	var order []string
 	for _, e := range entries {
 		data, err := adapterFS.ReadFile("adapters/" + e.Name())
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		var a Adapter
 		if err := json.Unmarshal(data, &a); err != nil {
-			return nil, fmt.Errorf("adapter %s: %w", e.Name(), err)
+			return nil, nil, fmt.Errorf("adapter %s: %w", e.Name(), err)
 		}
-		r.adapters[a.ID] = a
-		r.order = append(r.order, a.ID)
+		adapters[a.ID] = a
+		order = append(order, a.ID)
 	}
-	return r, nil
+	return adapters, order, nil
 }
 
 // List returns adapters in load order, with availability annotated.
 func (r *Registry) List() []AdapterStatus {
-	out := make([]AdapterStatus, 0, len(r.order))
-	for _, id := range r.order {
-		a := r.adapters[id]
+	r.mu.RLock()
+	order := append([]string(nil), r.order...)
+	byID := make(map[string]Adapter, len(r.adapters))
+	for k, v := range r.adapters {
+		byID[k] = v
+	}
+	r.mu.RUnlock()
+
+	// Availability stats the filesystem, so it runs outside the lock.
+	out := make([]AdapterStatus, 0, len(order))
+	for _, id := range order {
+		a := byID[id]
 		out = append(out, AdapterStatus{Adapter: a, Available: r.available(a) == nil})
 	}
 	return out
@@ -121,6 +147,8 @@ type AdapterStatus struct {
 
 // Get returns an adapter by id.
 func (r *Registry) Get(id string) (Adapter, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	a, ok := r.adapters[id]
 	return a, ok
 }
@@ -144,7 +172,7 @@ func (r *Registry) available(a Adapter) error {
 // Generate writes inputContent to a temp file, runs the generator CLI in its
 // cwd producing outputPath, and streams stdout/stderr to the job as logs.
 func (r *Registry) Generate(ctx context.Context, j *jobs.Job, id, inputContent string, params map[string]string, outputPath string) error {
-	a, ok := r.adapters[id]
+	a, ok := r.Get(id)
 	if !ok {
 		return fmt.Errorf("unknown generator %q", id)
 	}

@@ -23,10 +23,10 @@ type AssetResolver func(assetID string) (string, bool)
 
 // Options tune a single export (preset geometry, container format, range).
 type Options struct {
-	Preset string  `json:"preset"` // "" (source) | shorts | square | 4k | portrait4k
-	Format string  `json:"format"` // "" (mp4) | mp4 | webm | gif | mov
-	From    float64 `json:"from"`    // range start seconds
-	To      float64 `json:"to"`      // range end seconds (0 = end)
+	Preset   string  `json:"preset"`   // "" (source) | shorts | square | 4k | portrait4k
+	Format   string  `json:"format"`   // "" (mp4) | mp4 | webm | gif | mov
+	From     float64 `json:"from"`     // range start seconds
+	To       float64 `json:"to"`       // range end seconds (0 = end)
 	FPS      int     `json:"fps"`      // override output fps (0 = doc fps)
 	FrameAt  float64 `json:"frameAt"`  // >0: render a single PNG frame at this time
 	Loudnorm bool    `json:"loudnorm"` // apply EBU R128 loudness normalization to the mix
