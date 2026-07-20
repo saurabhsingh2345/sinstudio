@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"studio/internal/generator"
 	"studio/internal/jobs"
 	"studio/internal/render"
 	"studio/internal/schema"
@@ -89,9 +91,10 @@ type task struct {
 
 	// Resolved at enqueue and valid only in this process. A durable queue would
 	// drop these and re-derive them in the worker from Payload.
-	assetID string
-	outPath string
-	plan    *render.Plan
+	assetID    string
+	outPath    string
+	retirePath string // previous media file to remove once the new one is written
+	plan       *render.Plan
 }
 
 // workQueue routes every long-running action through a bounded, lane-partitioned
@@ -286,20 +289,25 @@ func (q *workQueue) prepGenerate(ctx context.Context, t *task, p generatePayload
 	if err != nil {
 		return err
 	}
-	// A generator exposing a --format param writes that container, not its
-	// default OutputExt — name the file accordingly or ffprobe/browsers choke.
+	t.assetID = store.NewID("asset_")
+	t.outPath = filepath.Join(dir, t.assetID+"."+outputExt(adapter, p.Params))
+	return nil
+}
+
+// outputExt is the container a run will actually write. A generator exposing a
+// --format param writes that container rather than its default OutputExt, so the
+// filename has to follow or ffprobe and browsers choke on the mismatch.
+func outputExt(adapter generator.Adapter, params map[string]string) string {
 	ext := adapter.OutputExt
 	for _, spec := range adapter.Params {
 		if spec.Flag == "--format" {
-			if v := p.Params["--format"]; v != "" {
+			if v := params["--format"]; v != "" {
 				ext = v
 			}
 			break
 		}
 	}
-	t.assetID = store.NewID("asset_")
-	t.outPath = filepath.Join(dir, t.assetID+"."+ext)
-	return nil
+	return ext
 }
 
 func (q *workQueue) runGenerate(t *task, p generatePayload) (any, error) {
@@ -338,12 +346,25 @@ func (q *workQueue) prepRerender(ctx context.Context, t *task, p rerenderPayload
 	if err != nil {
 		return err
 	}
+	adapter, _ := q.srv.Gens.Get(p.Source)
 	for i := range doc.Assets {
-		if doc.Assets[i].ID == p.AssetID {
-			t.assetID = p.AssetID
-			t.outPath = q.srv.Store.Abs(doc.Assets[i].Path)
-			return nil
+		if doc.Assets[i].ID != p.AssetID {
+			continue
 		}
+		t.assetID = p.AssetID
+		cur := q.srv.Store.Abs(doc.Assets[i].Path)
+		// Re-render overwrites in place so every clip referencing the asset picks
+		// up the new media. But if the edit changed --format, the container changed
+		// too, and keeping the old filename would write (say) MOV bytes into a .mp4.
+		// Re-derive the extension and retarget when it differs.
+		want := "." + outputExt(adapter, p.Params)
+		if ext := filepath.Ext(cur); !strings.EqualFold(ext, want) {
+			t.outPath = strings.TrimSuffix(cur, ext) + want
+			t.retirePath = cur // the old container is replaced, not left behind
+		} else {
+			t.outPath = cur
+		}
+		return nil
 	}
 	return fmt.Errorf("unknown asset %q", p.AssetID)
 }
@@ -363,6 +384,13 @@ func (q *workQueue) runRerender(t *task, p rerenderPayload) (any, error) {
 	asset, err := q.srv.registerAsset(ctx, p.ProjID, t.assetID, t.outPath, p.Name, p.Source)
 	if err != nil {
 		return nil, err
+	}
+	// The container changed, so the render went to a new filename; drop the old
+	// one now that the replacement exists rather than orphaning it on disk.
+	if t.retirePath != "" && t.retirePath != t.outPath {
+		if err := os.Remove(t.retirePath); err != nil && !os.IsNotExist(err) {
+			job.Log("could not remove previous render: " + err.Error())
+		}
 	}
 	asset.GenInput = p.Input
 	asset.GenParams = p.Params

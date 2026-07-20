@@ -188,6 +188,22 @@ export interface ParamSpec {
   options?: string[];
 }
 
+// FieldSpec describes one editable property of a generator's input document.
+// It is a *view* over the document, not a model of it: the editor touches only
+// the paths named here and leaves everything else intact, so a generator can
+// carry properties Studio doesn't know about without them being destroyed.
+export interface FieldSpec {
+  path: string; // dot path, with one optional "[]" array hop: "scenes[].code"
+  label: string;
+  type: "string" | "text" | "number" | "bool" | "enum" | "array";
+  default?: unknown;
+  options?: string[];
+  hint?: string;
+  mono?: boolean; // render as a monospace code editor
+  fields?: FieldSpec[]; // for type "array": the shape of each item
+  itemOf?: string; // for type "array": singular label, e.g. "Scene"
+}
+
 export interface GeneratorStatus {
   id: string;
   name: string;
@@ -195,6 +211,11 @@ export interface GeneratorStatus {
   inputKind: string;
   outputExt: string;
   params: ParamSpec[];
+  // Empty when the generator publishes no schema: the document is then edited
+  // raw, in the format rawKind names.
+  fields?: FieldSpec[];
+  docRoot?: "object" | "array";
+  rawKind?: "json" | "text" | "html";
   available: boolean;
   buildHint?: string;
 }

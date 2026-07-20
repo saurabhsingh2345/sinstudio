@@ -71,19 +71,10 @@ import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
 import type { AppStatus, Asset, CaptionCue, Clip, EditDoc, GeneratorStatus, LibraryEntry, ParamSpec, Track } from "../../types";
 import { SAMPLES } from "../../generatorSamples";
-import {
-  FUNKY_TEMPLATES,
-  FUNKY_LANGS,
-  THROW_TEMPLATES,
-  DEFAULT_FUNKY_SCENE,
-  parseFunky,
-  serializeFunky,
-  type FunkyModel,
-  type FunkyScene,
-  type FunkyTemplateId,
-} from "../../funkycodeSchema";
 import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { api } from "../../api";
+import { PluginDocEditor } from "./PluginDocEditor";
+import { parseDoc, seedDoc, serializeDoc, type Doc } from "../../pluginDoc";
 import { toast } from "../../toast";
 import { revealedText } from "../../titleAnim";
 import { getPeaks } from "../../peaks";
@@ -916,6 +907,11 @@ function GenerateForm({
   gen: GeneratorStatus;
   onDone: (asset: Asset | null) => Promise<void> | void;
 }) {
+  const hasSchema = !!gen.fields?.length;
+  // With a schema, authoring starts from the schema's own defaults so a new clip
+  // is renderable immediately; the canned sample is only for raw-document
+  // generators, which have nothing else to go on.
+  const [doc, setDoc] = useState<Doc>(() => seedDoc(parseDoc(undefined, gen.docRoot), gen.fields ?? []));
   const [input, setInput] = useState(() => SAMPLES[gen.inputKind] ?? "");
   const [params, setParams] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -923,13 +919,14 @@ function GenerateForm({
   const setParam = (flag: string, v: string) => setParams((p) => ({ ...p, [flag]: v }));
 
   const run = async () => {
-    if (!input.trim()) {
+    const payload = hasSchema ? serializeDoc(doc) : input;
+    if (!payload.trim()) {
       toast.error("Input is empty.");
       return;
     }
     setBusy(true);
     try {
-      const { jobId } = await api.generate(projectId, gen.id, input, params);
+      const { jobId } = await api.generate(projectId, gen.id, payload, params);
       const data = await awaitJob(jobId);
       await onDone((data?.asset as Asset) ?? null);
     } catch (e) {
@@ -941,12 +938,16 @@ function GenerateForm({
 
   return (
     <div className="mt-2 space-y-2 rounded-md border hairline bg-panel/60 p-2">
-      <Textarea
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        spellCheck={false}
-        className="scrollbar-thin h-36 resize-y bg-panel-2 font-mono text-[11px] leading-snug"
-      />
+      {hasSchema ? (
+        <PluginDocEditor fields={gen.fields!} doc={doc} onChange={setDoc} />
+      ) : (
+        <Textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          spellCheck={false}
+          className="scrollbar-thin h-36 resize-y bg-panel-2 font-mono text-[11px] leading-snug"
+        />
+      )}
       {gen.params.length > 0 && (
         <div className="space-y-1.5">
           {gen.params.map((spec) => (
@@ -2509,46 +2510,59 @@ function fillHoldToEnd(trackId: string, clip: Clip) {
   useStudio.getState().updateClip(trackId, clip.id, { hold: hold || undefined });
 }
 
-// LivePluginSection surfaces a generated clip's original plugin parameters so it
-// stays editable and re-renderable in place. Only FunkyCode has a structured
-// editor today; other generators render nothing (they're still re-renderable via
-// the API, just no UI yet).
+// LivePluginSection keeps a generated clip editable: it surfaces the plugin
+// document that produced it, so properties can be changed and the clip
+// re-rendered in place rather than regenerated as a new one.
+//
+// The editor is driven by the field schema the generator publishes, so every
+// plugin — including ones added later — gets this with no code here. A generator
+// with no schema still gets a raw document editor rather than nothing.
 function LivePluginSection({ asset }: { asset: Asset }) {
-  if (asset.source === "funkycode" && asset.genInput) return <FunkyCodeEditor asset={asset} />;
-  return null;
+  const [gens, setGens] = useState<GeneratorStatus[]>([]);
+  useEffect(() => {
+    api.generators().then(setGens).catch(() => setGens([]));
+  }, []);
+  const gen = gens.find((g) => g.id === asset.source);
+
+  // Only clips produced by a known generator carry a source document. Clips
+  // imported from a plugin's own UI have no genInput and cannot be re-rendered.
+  if (!gen || asset.genInput === undefined) return null;
+  return <PluginLiveEditor asset={asset} gen={gen} />;
 }
 
-function FunkyCodeEditor({ asset }: { asset: Asset }) {
+function PluginLiveEditor({ asset, gen }: { asset: Asset; gen: GeneratorStatus }) {
   const projectId = useStudio((s) => s.doc?.id) ?? "";
-  const [model, setModel] = useState<FunkyModel>(() => parseFunky(asset.genInput, asset.genParams));
+  const hasSchema = !!gen.fields?.length;
+
+  const [doc, setDoc] = useState<Doc>(() => parseDoc(asset.genInput, gen.docRoot));
+  const [raw, setRaw] = useState(() => asset.genInput ?? "");
+  const [params, setParams] = useState<Record<string, string>>(() => ({ ...(asset.genParams ?? {}) }));
   const [busy, setBusy] = useState(false);
 
   // Re-seed the draft when the committed provenance changes (i.e. after a
   // re-render replaces the asset). Doesn't fire while editing, since only our own
   // re-render mutates genInput.
   useEffect(() => {
-    setModel(parseFunky(asset.genInput, asset.genParams));
+    setDoc(parseDoc(asset.genInput, gen.docRoot));
+    setRaw(asset.genInput ?? "");
+    setParams({ ...(asset.genParams ?? {}) });
   }, [asset.id, asset.genInput]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const patchScene = (i: number, patch: Partial<FunkyScene>) =>
-    setModel((m) => ({ ...m, scenes: m.scenes.map((s, j) => (j === i ? { ...s, ...patch } : s)) }));
-  const addScene = () => setModel((m) => ({ ...m, scenes: [...m.scenes, DEFAULT_FUNKY_SCENE()] }));
-  const removeScene = (i: number) =>
-    setModel((m) => ({ ...m, scenes: m.scenes.length > 1 ? m.scenes.filter((_, j) => j !== i) : m.scenes }));
-  const moveScene = (i: number, dir: -1 | 1) =>
-    setModel((m) => {
-      const j = i + dir;
-      if (j < 0 || j >= m.scenes.length) return m;
-      const scenes = [...m.scenes];
-      [scenes[i], scenes[j]] = [scenes[j], scenes[i]];
-      return { ...m, scenes };
-    });
-
   const rerender = async () => {
-    const { input, params } = serializeFunky(model);
-    if (!JSON.parse(input).scenes.length) {
-      toast.error("Add at least one scene with code.");
+    // With a schema we re-serialize the edited document, which preserves any key
+    // the schema doesn't describe. Without one the user edited the text directly.
+    const input = hasSchema ? serializeDoc(doc) : raw;
+    if (!input.trim()) {
+      toast.error("The plugin document is empty.");
       return;
+    }
+    if (!hasSchema && gen.rawKind !== "text" && gen.rawKind !== "html") {
+      try {
+        JSON.parse(input);
+      } catch (e) {
+        toast.error(`Invalid JSON: ${(e as Error).message}`);
+        return;
+      }
     }
     setBusy(true);
     try {
@@ -2569,7 +2583,7 @@ function FunkyCodeEditor({ asset }: { asset: Asset }) {
         }
       }
       if (next) useStudio.getState().updateAsset(next);
-      toast.success("Re-rendered FunkyCode clip.");
+      toast.success(`Re-rendered ${gen.name} clip.`);
     } catch (e) {
       toast.error(`Re-render failed: ${(e as Error).message}`);
     } finally {
@@ -2578,84 +2592,42 @@ function FunkyCodeEditor({ asset }: { asset: Asset }) {
   };
 
   return (
-    <Section label="FunkyCode · live">
+    <Section label={`${gen.name} · live`}>
       <div className="text-[10px] leading-relaxed text-muted-foreground">
         Edit the properties that generated this clip, then re-render it in place.
       </div>
-      <div className="grid grid-cols-2 gap-2">
-        <Field label="FPS"><NumInput value={model.fps} step={1} min={1} onChange={(v) => setModel((m) => ({ ...m, fps: v }))} /></Field>
-        <label className="flex items-end gap-2 pb-1 text-[11px] text-muted-foreground">
-          <input
-            type="checkbox"
-            checked={model.shorts}
-            onChange={(e) => setModel((m) => ({ ...m, shorts: e.target.checked }))}
-            className="h-3.5 w-3.5 accent-[var(--brand)]"
-          />
-          Vertical (1080×1920)
-        </label>
-      </div>
-      <div className="space-y-2">
-        {model.scenes.map((sc, i) => (
-          <div key={i} className="space-y-1.5 rounded-md border hairline bg-panel/60 p-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] font-medium">Scene {i + 1}</span>
-              <div className="flex items-center gap-1 text-[11px]">
-                <button title="Move up" disabled={i === 0} onClick={() => moveScene(i, -1)} className="px-1 text-muted-foreground hover:text-foreground disabled:opacity-30">▲</button>
-                <button title="Move down" disabled={i === model.scenes.length - 1} onClick={() => moveScene(i, 1)} className="px-1 text-muted-foreground hover:text-foreground disabled:opacity-30">▼</button>
-                <button title="Remove scene" disabled={model.scenes.length <= 1} onClick={() => removeScene(i)} className="px-1 text-muted-foreground hover:text-red-400 disabled:opacity-30">✕</button>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <label className="flex flex-col gap-1 text-[10px] text-muted-foreground">
-                Template
-                <select
-                  value={sc.template}
-                  onChange={(e) => patchScene(i, { template: e.target.value as FunkyTemplateId })}
-                  className="h-6 rounded border hairline bg-panel-2 px-1 text-[11px] text-foreground"
-                >
-                  {FUNKY_TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
-                </select>
-              </label>
-              <label className="flex flex-col gap-1 text-[10px] text-muted-foreground">
-                Language
-                <select
-                  value={sc.language}
-                  onChange={(e) => patchScene(i, { language: e.target.value })}
-                  className="h-6 rounded border hairline bg-panel-2 px-1 text-[11px] text-foreground"
-                >
-                  {FUNKY_LANGS.map((l) => <option key={l} value={l}>{l}</option>)}
-                </select>
-              </label>
-            </div>
-            <Textarea
-              value={sc.code}
-              onChange={(e) => patchScene(i, { code: e.target.value })}
-              spellCheck={false}
-              placeholder="code…"
-              className="scrollbar-thin h-28 resize-y bg-panel-2 font-mono text-[11px] leading-snug"
+
+      {hasSchema ? (
+        <PluginDocEditor fields={gen.fields!} doc={doc} onChange={setDoc} />
+      ) : (
+        <Textarea
+          className="h-40 resize-y font-mono text-[11px]"
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          spellCheck={false}
+        />
+      )}
+
+      {!!gen.params.length && (
+        <div className="space-y-1 border-t hairline pt-2">
+          {gen.params.map((spec) => (
+            <ParamControl
+              key={spec.flag}
+              spec={spec}
+              value={params[spec.flag] ?? spec.default ?? ""}
+              onChange={(v) => setParams((p) => ({ ...p, [spec.flag]: v }))}
             />
-            <Textarea
-              value={sc.output}
-              onChange={(e) => patchScene(i, { output: e.target.value })}
-              spellCheck={false}
-              placeholder="output (optional)…"
-              className="scrollbar-thin h-14 resize-y bg-panel-2 font-mono text-[11px] leading-snug"
-            />
-            {THROW_TEMPLATES.includes(sc.template) && (
-              <Field label="Throw count"><NumInput value={sc.throwCount} step={1} min={0} onChange={(v) => patchScene(i, { throwCount: v })} /></Field>
-            )}
-          </div>
-        ))}
-      </div>
-      <Button size="sm" variant="ghost" className="h-7 w-full text-xs" onClick={addScene}>+ Add scene</Button>
-      <Button
-        size="sm"
-        className="h-7 w-full bg-brand text-xs text-brand-foreground hover:bg-brand/90 disabled:opacity-40"
-        disabled={busy}
+          ))}
+        </div>
+      )}
+
+      <button
         onClick={rerender}
+        disabled={busy}
+        className="w-full rounded-md bg-brand px-3 py-1.5 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-50"
       >
-        <Wand2 className="mr-1 h-3.5 w-3.5" /> {busy ? "Re-rendering… (see Jobs)" : "Re-render clip"}
-      </Button>
+        {busy ? "Re-rendering…" : "Re-render clip"}
+      </button>
     </Section>
   );
 }

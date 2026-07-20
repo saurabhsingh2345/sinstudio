@@ -30,6 +30,29 @@ type ParamSpec struct {
 	Options []string `json:"options,omitempty"` // for enum
 }
 
+// FieldSpec describes one editable property of a generator's *input document*
+// (as opposed to ParamSpec, which describes a CLI flag). A generator that
+// publishes fields gets a structured editor in Studio for free — both when
+// authoring a new clip and when re-editing an existing one — with no
+// per-generator UI code. That is what makes the plugin count scalable.
+//
+// The fields are a *view* over the document, deliberately not a full schema of
+// it: the editor reads and writes only the paths named here and leaves every
+// other key untouched. So a generator can add a property Studio has never heard
+// of without its clips being damaged the next time someone edits them. Being an
+// incomplete description is the point, not a limitation.
+type FieldSpec struct {
+	Path    string      `json:"path"`              // dot path into the document, e.g. "fps" or "scenes[].code"
+	Label   string      `json:"label"`             // human label
+	Type    string      `json:"type"`              // string|text|number|bool|enum|array
+	Default any         `json:"default,omitempty"` // value for a newly-created item
+	Options []string    `json:"options,omitempty"` // for enum
+	Hint    string      `json:"hint,omitempty"`    // help text under the control
+	Mono    bool        `json:"mono,omitempty"`    // render text in a monospace editor (code)
+	Fields  []FieldSpec `json:"fields,omitempty"`  // for type "array": the shape of each item
+	ItemOf  string      `json:"itemOf,omitempty"`  // for type "array": label of one item, e.g. "Scene"
+}
+
 // Adapter is a generator manifest.
 type Adapter struct {
 	ID          string      `json:"id"`
@@ -42,6 +65,9 @@ type Adapter struct {
 	InputMode   string      `json:"inputMode"`   // "file" (default) | "dir" (write input as <tmpdir>/index.html, pass the dir)
 	OutputExt   string      `json:"outputExt"`   // e.g. "mp4"
 	Params      []ParamSpec `json:"params"`      // exposed flags
+	Fields      []FieldSpec `json:"fields"`      // editable properties of the input document (empty = raw editor)
+	DocRoot     string      `json:"docRoot"`     // "object" (default) or "array": shape of the input document
+	RawKind     string      `json:"rawKind"`     // when no fields: "json" (default) | "text" | "html"
 	SamplePath  string      `json:"samplePath"`  // optional sample input file (relative to cwd)
 	BuildHint   string      `json:"buildHint"`   // shown if the CLI is missing
 	ProbeBinary string      `json:"probeBinary"` // optional file that must exist under cwd (e.g. dist cli)

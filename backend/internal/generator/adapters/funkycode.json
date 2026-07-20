@@ -3,14 +3,92 @@
   "name": "FunkyCode",
   "description": "Cinematic code-typing animations (deterministic headless-Chromium canvas capture).",
   "cwd": "../funkycode",
-  "command": ["node", "scripts/render-client.mjs", "{input}", "{output}"],
+  "command": [
+    "node",
+    "scripts/render-client.mjs",
+    "{input}",
+    "{output}"
+  ],
   "inputKind": "funkyScenes",
   "inputExt": ".json",
   "outputExt": "mp4",
   "probeBinary": "scripts/render-client.mjs",
   "buildHint": "Run `npm install` in funkycode (adds playwright + esbuild + tsx).",
   "params": [
-    { "flag": "--fps", "label": "FPS", "type": "string", "default": "30" },
-    { "flag": "--shorts", "label": "Vertical (1080x1920)", "type": "bool", "default": "" }
+    {
+      "flag": "--fps",
+      "label": "FPS",
+      "type": "string",
+      "default": "30"
+    },
+    {
+      "flag": "--shorts",
+      "label": "Vertical (1080x1920)",
+      "type": "bool",
+      "default": ""
+    }
+  ],
+  "docRoot": "object",
+  "fields": [
+    {
+      "path": "scenes[]",
+      "label": "Scenes",
+      "type": "array",
+      "itemOf": "Scene",
+      "fields": [
+        {
+          "path": "code",
+          "label": "Code",
+          "type": "text",
+          "mono": true,
+          "default": "",
+          "hint": "The snippet that gets typed out."
+        },
+        {
+          "path": "language",
+          "label": "Language",
+          "type": "enum",
+          "default": "python",
+          "options": [
+            "python",
+            "javascript",
+            "typescript",
+            "jsx",
+            "tsx",
+            "bash",
+            "json",
+            "html",
+            "css"
+          ]
+        },
+        {
+          "path": "template",
+          "label": "Template",
+          "type": "enum",
+          "default": "panel",
+          "options": [
+            "panel",
+            "spotlight",
+            "paper",
+            "liverun",
+            "liverundark"
+          ],
+          "hint": "The template is the theme; liverun/liverundark also show output."
+        },
+        {
+          "path": "output",
+          "label": "Output",
+          "type": "text",
+          "default": "",
+          "hint": "Shown by the liverun templates after the code runs."
+        },
+        {
+          "path": "throwCount",
+          "label": "Throw count",
+          "type": "number",
+          "default": 3
+        }
+      ]
+    }
   ]
 }
