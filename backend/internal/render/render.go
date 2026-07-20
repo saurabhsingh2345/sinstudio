@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"studio/internal/jobs"
 	"studio/internal/schema"
@@ -1033,7 +1034,15 @@ func Run(ctx context.Context, j *jobs.Job, plan *Plan) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	// Both pipes must be drained to EOF before Wait: exec closes them there, and
+	// Wait returning is no guarantee that these goroutines have finished writing.
+	// Reading errBuf without that guarantee is a data race, and the practical
+	// symptom is the worst possible one — a truncated ffmpeg error at exactly the
+	// moment you need the whole thing to diagnose a failed export.
+	var readers sync.WaitGroup
+	readers.Add(2)
 	go func() {
+		defer readers.Done()
 		sc := bufio.NewScanner(stdout)
 		for sc.Scan() {
 			line := sc.Text()
@@ -1048,11 +1057,13 @@ func Run(ctx context.Context, j *jobs.Job, plan *Plan) error {
 	}()
 	var errBuf strings.Builder
 	go func() {
+		defer readers.Done()
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
 			errBuf.WriteString(sc.Text() + "\n")
 		}
 	}()
+	readers.Wait()
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("ffmpeg: %w: %s", err, strings.TrimSpace(errBuf.String()))
 	}

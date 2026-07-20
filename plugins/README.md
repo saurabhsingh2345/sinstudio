@@ -102,3 +102,45 @@ to the manifest later without migrating anything.
 Omit `fields` entirely and the document is edited raw — say which format with
 `"rawKind": "json" | "text" | "html"`. That is the right answer when the input
 isn't data (HyperFrames takes HTML) or is just a string (Kokoro takes a script).
+
+## Keeping clips editable when authored outside Studio
+
+A clip generated through Studio carries the document that produced it, so it can
+be re-edited from the timeline. A clip that merely *arrives* as a finished file —
+rendered in a plugin's own UI, dropped in a watch folder, posted to the inbox —
+has no document, and is dead media: placeable, never adjustable.
+
+Fix it by writing a sidecar next to the render:
+
+```
+my-clip.mp4
+my-clip.studio.json
+```
+
+```json
+{
+  "generatorId": "funkycode",
+  "input": "{\"scenes\":[{\"code\":\"print(1)\"}]}",
+  "params": { "--fps": "30" }
+}
+```
+
+`input` is the exact document your CLI consumes, as a string. Studio attaches it
+on import and the clip is live: click it on the timeline and the property editor
+opens, same as if it had been generated here.
+
+Posting to `/api/ingest` works the same way — send the document as a `studio`
+form field alongside `file`:
+
+```js
+const fd = new FormData();
+fd.append("file", blob, "my-clip.mp4");
+fd.append("source", "funkycode");
+fd.append("studio", JSON.stringify({ generatorId: "funkycode", input: doc, params }));
+await fetch("http://localhost:8788/api/ingest?projectId=" + projectId, { method: "POST", body: fd });
+```
+
+Provenance never blocks an import. A malformed sidecar, or one naming a generator
+Studio doesn't have, is reported in the response — the clip still lands, just as
+plain media. The media is the valuable part; losing it because its metadata was
+wrong would be the worse trade.

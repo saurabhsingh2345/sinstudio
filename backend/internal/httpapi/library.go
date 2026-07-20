@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"studio/internal/store"
@@ -81,12 +82,16 @@ func (s *Server) libraryImport(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err)
 		return
 	}
-	err = s.Store.AddAsset(r.Context(), projID, *asset)
-	if err != nil {
+	// A plugin that wrote a sidecar next to its render gets a live clip rather
+	// than dead media — this is the path clips authored in a plugin's own UI
+	// arrive by. Read it from the ORIGINAL location: the sidecar sits beside the
+	// file the plugin wrote, not beside our copy.
+	provErr := s.adoptProvenance(asset, body.Path)
+	if err := s.Store.AddAsset(r.Context(), projID, *asset); err != nil {
 		httpErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"asset": asset})
+	writeJSON(w, 200, map[string]any{"asset": asset, "provenanceError": provErr})
 }
 
 // ingest is the universal "Send to Studio" target: any product POSTs a finished
@@ -114,6 +119,24 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	if src == "" {
 		src = "external"
 	}
+	// Optional provenance, so a clip posted by a plugin stays editable. Parsed
+	// before anything is written so a malformed one is reported, not silently
+	// dropped — but it never blocks the upload: the media is the valuable part.
+	var (
+		prov    *Provenance
+		provErr string
+	)
+	if raw := strings.TrimSpace(r.FormValue("studio")); raw != "" {
+		var p Provenance
+		if err := json.Unmarshal([]byte(raw), &p); err != nil {
+			provErr = "studio field: " + err.Error()
+		} else if p.GeneratorID == "" {
+			provErr = "studio field: missing generatorId"
+		} else {
+			prov = &p
+		}
+	}
+
 	stamp := time.Now().UTC().Format("20060102-150405")
 	name := fmt.Sprintf("%s-%s-%s", src, stamp, filepath.Base(header.Filename))
 	dst := filepath.Join(inbox, name)
@@ -128,6 +151,14 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out.Close()
+
+	// Keep the provenance next to the inbox copy too, so importing this clip
+	// from the library later is just as live as importing it now.
+	if prov != nil {
+		if data, err := json.Marshal(prov); err == nil {
+			_ = os.WriteFile(provenancePath(dst), data, 0o644)
+		}
+	}
 
 	// Optional direct import into a project. The clip is already safe in the
 	// inbox, so an import failure is reported alongside the inbox location
@@ -150,11 +181,16 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name, "importError": err.Error()})
 			return
 		}
+		if prov != nil {
+			if err := s.applyProvenance(asset, prov); err != nil {
+				provErr = err.Error()
+			}
+		}
 		if err := s.Store.AddAsset(r.Context(), projID, *asset); err != nil {
 			writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name, "importError": err.Error()})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "asset": asset, "inbox": s.Store.Rel(dst)})
+		writeJSON(w, 200, map[string]any{"ok": true, "asset": asset, "inbox": s.Store.Rel(dst), "provenanceError": provErr})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name})

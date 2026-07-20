@@ -2617,10 +2617,21 @@ function LivePluginSection({ asset }: { asset: Asset }) {
   }, []);
   const gen = gens.find((g) => g.id === asset.source);
 
-  // Only clips produced by a known generator carry a source document. Clips
-  // imported from a plugin's own UI have no genInput and cannot be re-rendered.
-  if (!gen || asset.genInput === undefined) return null;
-  return <PluginLiveEditor asset={asset} gen={gen} />;
+  if (gen && asset.genInput !== undefined) return <PluginLiveEditor asset={asset} gen={gen} />;
+
+  // Imported media with no source document. Say so: rendering nothing here looks
+  // identical to a broken inspector, and the reason is actionable — a plugin can
+  // ship a .studio.json sidecar and its clips arrive editable.
+  if (asset.source && asset.source !== "import" && asset.source !== "library") return null;
+  return (
+    <Section label="Plugin">
+      <div className="text-[10px] leading-relaxed text-muted-foreground">
+        This clip was imported as finished media, so its properties can't be edited here —
+        Studio never saw the document that produced it. Clips generated in Studio, or
+        imported with a <code className="font-mono">.studio.json</code> sidecar, stay editable.
+      </div>
+    </Section>
+  );
 }
 
 function PluginLiveEditor({ asset, gen }: { asset: Asset; gen: GeneratorStatus }) {
