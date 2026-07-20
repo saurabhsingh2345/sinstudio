@@ -237,7 +237,11 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	}
 	if opts.FrameAt < 0 || opts.FrameAt >= dur {
 		if opts.FrameAt >= dur {
-			opts.FrameAt = dur - 0.001 // clamp a past-the-end frame grab to the last frame
+			// Clamp a past-the-end frame grab back onto the LAST REAL FRAME. Backing
+			// off by a hair (dur-0.001) lands between the final frame and the end of
+			// the stream, so `-ss` finds nothing to decode and ffmpeg writes an empty
+			// file — which is what an all-disabled/empty timeline used to produce.
+			opts.FrameAt = math.Max(0, dur-1.0/float64(fps))
 		} else {
 			opts.FrameAt = 0
 		}
