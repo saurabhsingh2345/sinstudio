@@ -7,6 +7,7 @@ package jobs
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"sync"
 	"time"
 
@@ -43,6 +44,19 @@ type Job struct {
 	m       *Manager
 	ctx     context.Context
 	cancel  context.CancelFunc
+	ended   time.Time // set on the terminal transition; zero while live
+}
+
+// Retention of finished jobs. Live jobs are never evicted. Finished ones stay
+// long enough for a reconnecting client to poll their terminal state, then are
+// dropped so a long-running server's registry doesn't grow without bound.
+const (
+	terminalCap = 200
+	retainFor   = time.Hour
+)
+
+func isTerminal(status string) bool {
+	return status == "done" || status == "error" || status == "canceled"
 }
 
 // Context returns the job's context. Worker subprocesses should run under it so
@@ -157,6 +171,30 @@ func (m *Manager) Get(id string) (Job, bool) {
 	return *j, true
 }
 
+// reapLocked evicts finished jobs past the retention window or the cap (newest
+// kept first). The caller must hold m.mu.
+func (m *Manager) reapLocked() {
+	cutoff := time.Now().Add(-retainFor)
+	finished := make([]*Job, 0, len(m.jobs))
+	for id, j := range m.jobs {
+		if !isTerminal(j.Status) {
+			continue
+		}
+		if j.ended.Before(cutoff) {
+			delete(m.jobs, id)
+			continue
+		}
+		finished = append(finished, j)
+	}
+	if len(finished) <= terminalCap {
+		return
+	}
+	sort.Slice(finished, func(a, b int) bool { return finished[a].ended.After(finished[b].ended) })
+	for _, j := range finished[terminalCap:] {
+		delete(m.jobs, j.ID)
+	}
+}
+
 // Cancel requests cancellation of a running job (kills its subprocess). Returns
 // false if the id is unknown.
 func (m *Manager) Cancel(id string) bool {
@@ -205,7 +243,8 @@ func (j *Job) Done(data any) {
 		j.cancel() // release context resources
 	}
 	j.m.mu.Lock()
-	j.Status, j.Pct = "done", 1
+	j.Status, j.Pct, j.ended = "done", 1, time.Now()
+	j.m.reapLocked()
 	j.m.mu.Unlock()
 	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventDone, Status: "done", Progress: 1, Data: data})
 }
@@ -232,7 +271,9 @@ func (j *Job) Fail(err error) {
 	j.m.mu.Lock()
 	j.Status = status
 	j.Message = msg
+	j.ended = time.Now()
 	pct := j.Pct
+	j.m.reapLocked()
 	j.m.mu.Unlock()
 	j.m.broadcast(Event{JobID: j.ID, Kind: j.Kind, Type: EventError, Status: status, Progress: pct, Message: msg})
 }

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"studio/internal/generator"
 	"studio/internal/schema"
 )
 
@@ -55,6 +56,25 @@ func TestExportEnqueueValidation(t *testing.T) {
 	// Retry of an unknown job → 404.
 	if w := do(h, "POST", "/api/jobs/nope/retry", "", nil); w.Code != 404 {
 		t.Fatalf("retry unknown = %d, want 404", w.Code)
+	}
+}
+
+// TestGenerateEnqueueValidation pins the fail-fast contract for the plugin lane:
+// a bad generator id must 400 the HTTP call, not enqueue a job that fails minutes
+// later. The check lives in the queue's prep step now, so it's worth guarding.
+func TestGenerateEnqueueValidation(t *testing.T) {
+	s := testServer(t, "")
+	reg, err := generator.NewRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	s.Gens = reg
+	h := s.Routes()
+	id := createTitleProject(t, s)
+
+	w := do(h, "POST", "/api/projects/"+id+"/generate", "", map[string]any{"generatorId": "nope"})
+	if w.Code != 400 {
+		t.Fatalf("unknown generator = %d, want 400: %s", w.Code, w.Body.String())
 	}
 }
 

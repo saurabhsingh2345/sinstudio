@@ -25,6 +25,17 @@ import (
 	"studio/internal/transcribe"
 )
 
+// envInt reads a positive integer from the environment, falling back to def when
+// unset or unparseable.
+func envInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
 func main() {
 	addr := flag.String("addr", ":8787", "listen address")
 	root := flag.String("root", "..", "studio project root (parent of backend/); used to locate sibling generators")
@@ -91,12 +102,11 @@ func main() {
 	if v := strings.TrimSpace(os.Getenv("STUDIO_ALLOWED_ORIGINS")); v != "" {
 		origins = strings.Split(v, ",")
 	}
-	exportWorkers := 2
-	if v := strings.TrimSpace(os.Getenv("STUDIO_EXPORT_WORKERS")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			exportWorkers = n
-		}
-	}
+	// Per-lane worker concurrency. Each lane is bounded separately so a long
+	// export can't starve clip generation; tune per machine.
+	exportWorkers := envInt("STUDIO_EXPORT_WORKERS", 2)
+	pluginWorkers := envInt("STUDIO_PLUGIN_WORKERS", 4)
+	transcribeWorkers := envInt("STUDIO_TRANSCRIBE_WORKERS", 1)
 
 	jobMgr := jobs.NewManager()
 	srv := &httpapi.Server{
@@ -108,7 +118,10 @@ func main() {
 		FrontDir:       front,
 		Auth:           auth,
 		AllowedOrigins: origins,
-		ExportWorkers:  exportWorkers,
+
+		ExportWorkers:     exportWorkers,
+		PluginWorkers:     pluginWorkers,
+		TranscribeWorkers: transcribeWorkers,
 	}
 
 	log.Printf("studio backend on %s", *addr)
@@ -133,6 +146,7 @@ func main() {
 	} else {
 		log.Printf("  cors       localhost dev origins only")
 	}
+	log.Printf("  workers    render=%d plugin=%d transcribe=%d", exportWorkers, pluginWorkers, transcribeWorkers)
 
 	// Graceful shutdown: on SIGINT/SIGTERM, stop accepting connections, cancel
 	// in-flight jobs, and stop every supervised sibling app so nothing is orphaned.

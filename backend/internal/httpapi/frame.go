@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"os/exec"
@@ -12,10 +13,30 @@ import (
 	"studio/internal/store"
 )
 
+// framePreviewSlots bounds concurrent preview renders. Scrubbing fires a request
+// per seek, and each one is a full FFmpeg process; unbounded, a fast scrub (or a
+// few editors scrubbing at once) buries the machine and starves real exports.
+// Preview stays synchronous — the client wants a frame back, not a job id — so
+// the bound is a semaphore rather than the work queue.
+var framePreviewSlots = make(chan struct{}, 2)
+
+// framePreviewTimeout keeps a wedged FFmpeg from holding a slot forever.
+const framePreviewTimeout = 60 * time.Second
+
 // frame renders a single PNG frame of the composited timeline at ?t= (seconds),
 // using the same FFmpeg filtergraph as export — a ground-truth "what will the
 // export look like here" check against the approximate canvas preview.
 func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
+	// Wait for a slot, but give up if the client already navigated away — an
+	// abandoned scrub shouldn't consume a slot it will never read from.
+	select {
+	case framePreviewSlots <- struct{}{}:
+		defer func() { <-framePreviewSlots }()
+	case <-r.Context().Done():
+		httpErr(w, 503, r.Context().Err())
+		return
+	}
+
 	doc, err := s.Store.GetProject(r.PathValue("id"))
 	if err != nil {
 		httpErr(w, 404, err)
@@ -55,7 +76,9 @@ func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err)
 		return
 	}
-	if b, err := exec.CommandContext(r.Context(), "ffmpeg", plan.Args...).CombinedOutput(); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), framePreviewTimeout)
+	defer cancel()
+	if b, err := exec.CommandContext(ctx, "ffmpeg", plan.Args...).CombinedOutput(); err != nil {
 		httpErr(w, 500, &ffmpegError{string(b)})
 		return
 	}

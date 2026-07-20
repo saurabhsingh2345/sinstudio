@@ -53,6 +53,33 @@ func TestJobCancel(t *testing.T) {
 	}
 }
 
+// TestJobRetention confirms the registry evicts finished jobs past the cap while
+// never dropping a live one, so a long-running server doesn't grow without bound
+// but an in-flight export is always still addressable (status, cancel).
+func TestJobRetention(t *testing.T) {
+	m := NewManager()
+	live := m.New("export", 0)
+
+	for i := 0; i < terminalCap+50; i++ {
+		m.New("generate", 0).Done(nil)
+	}
+	// Finished after all the churn — a client polling a just-completed job must
+	// still find it.
+	recent := m.New("generate", 0)
+	recent.Done(nil)
+
+	if _, ok := m.Get(live.ID); !ok {
+		t.Fatal("live job was evicted")
+	}
+	if _, ok := m.Get(recent.ID); !ok {
+		t.Fatal("just-finished job was evicted")
+	}
+	// terminalCap finished + the one live job.
+	if n := len(m.List()); n > terminalCap+1 {
+		t.Fatalf("registry kept %d jobs, want <= %d", n, terminalCap+1)
+	}
+}
+
 // TestJobTimeout confirms a timeout deadline fires and Fail labels it timed out.
 func TestJobTimeout(t *testing.T) {
 	m := NewManager()

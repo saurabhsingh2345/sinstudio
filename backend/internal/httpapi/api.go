@@ -28,9 +28,6 @@ import (
 // can't fill the disk. 4 GiB covers long 4K clips with headroom.
 const maxUploadBytes = 4 << 30
 
-// exportTimeout bounds a single export render.
-const exportTimeout = 30 * time.Minute
-
 // Server bundles the backend dependencies.
 type Server struct {
 	Store          *store.Store
@@ -41,22 +38,33 @@ type Server struct {
 	FrontDir       string   // optional built frontend to serve (SPA)
 	Auth           *Auth    // optional shared-token gate (nil/empty = open)
 	AllowedOrigins []string // CORS allowlist ("" entry or empty = localhost dev only)
-	ExportWorkers  int      // export queue concurrency (default 2)
 
-	exports     *exportQueue
-	exportsOnce sync.Once
+	// Per-lane worker concurrency; see the lane constants in queue.go.
+	ExportWorkers     int // ffmpeg exports (default 2)
+	PluginWorkers     int // generator subprocesses (default 4)
+	TranscribeWorkers int // whisper (default 1)
+
+	work     *workQueue
+	workOnce sync.Once
 }
 
-// exportQueueRef lazily builds the bounded export queue on first use.
-func (s *Server) exportQueue() *exportQueue {
-	s.exportsOnce.Do(func() {
-		w := s.ExportWorkers
-		if w < 1 {
-			w = 2
-		}
-		s.exports = newExportQueue(s, w)
+// queue lazily builds the bounded work queue on first use.
+func (s *Server) queue() *workQueue {
+	s.workOnce.Do(func() {
+		s.work = newWorkQueue(s, map[string]int{
+			laneRender:     orDefault(s.ExportWorkers, 2),
+			lanePlugin:     orDefault(s.PluginWorkers, 4),
+			laneTranscribe: orDefault(s.TranscribeWorkers, 1),
+		})
 	})
-	return s.exports
+	return s.work
+}
+
+func orDefault(n, def int) int {
+	if n < 1 {
+		return def
+	}
+	return n
 }
 
 // Routes builds the HTTP handler.
@@ -107,7 +115,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
-	mux.HandleFunc("POST /api/jobs/{id}/retry", s.retryExport)
+	mux.HandleFunc("POST /api/jobs/{id}/retry", s.retryJob)
 
 	// Media files (assets, thumbs, renders).
 	mux.Handle("GET /media/", http.StripPrefix("/media/",
@@ -179,7 +187,7 @@ func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
 		if a.HasAudio != nil || (a.Kind != "video" && a.Kind != "audio") {
 			continue
 		}
-		if info, err := media.Probe(r.Context(), s.Store.Abs(a.Path)); err == nil {
+		if info, err := probeCached(r.Context(), s.Store.Abs(a.Path)); err == nil {
 			has := info.HasAudio
 			a.HasAudio = &has
 		}
@@ -303,53 +311,17 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err)
 		return
 	}
-	adapter, ok := s.Gens.Get(body.GeneratorID)
-	if !ok {
-		httpErr(w, 400, fmt.Errorf("unknown generator %q", body.GeneratorID))
+	jobID, err := s.queue().Enqueue(generatePayload{
+		ProjID:      projID,
+		GeneratorID: body.GeneratorID,
+		Input:       body.Input,
+		Params:      body.Params,
+	})
+	if err != nil {
+		httpErr(w, 400, err)
 		return
 	}
-
-	job := s.Jobs.New("generate", 15*time.Minute)
-	dir, _ := s.Store.AssetsDir(projID)
-	assetID := store.NewID("asset_")
-	// A generator exposing a --format param writes that container, not its
-	// default OutputExt — name the file accordingly or ffprobe/browsers choke.
-	ext := adapter.OutputExt
-	for _, spec := range adapter.Params {
-		if spec.Flag == "--format" {
-			if v := body.Params["--format"]; v != "" {
-				ext = v
-			}
-			break
-		}
-	}
-	out := filepath.Join(dir, assetID+"."+ext)
-
-	go func() {
-		ctx := job.Context()
-		job.Progress(0.05, "starting "+adapter.Name)
-		if err := s.Gens.Generate(ctx, job, body.GeneratorID, body.Input, body.Params, out); err != nil {
-			job.Fail(err)
-			return
-		}
-		job.Progress(0.9, "registering clip")
-		asset, err := s.registerAsset(ctx, projID, assetID, out, adapter.Name+" clip", body.GeneratorID)
-		if err != nil {
-			job.Fail(err)
-			return
-		}
-		// Keep the generation "live": remember the input + params so the clip can
-		// be re-rendered later from the studio inspector.
-		asset.GenInput = body.Input
-		asset.GenParams = body.Params
-		if _, err := s.Store.AddAsset(projID, *asset); err != nil {
-			job.Fail(err)
-			return
-		}
-		job.Done(map[string]any{"asset": asset})
-	}()
-
-	writeJSON(w, 202, map[string]any{"jobId": job.ID})
+	writeJSON(w, 202, map[string]any{"jobId": jobID})
 }
 
 // rerender regenerates an existing generated asset in place: it re-runs the
@@ -384,41 +356,20 @@ func (s *Server) rerender(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 404, fmt.Errorf("unknown asset %q", body.AssetID))
 		return
 	}
-	adapter, ok := s.Gens.Get(asset.Source)
-	if !ok {
-		httpErr(w, 400, fmt.Errorf("asset %q was not produced by a known generator", body.AssetID))
+
+	jobID, err := s.queue().Enqueue(rerenderPayload{
+		ProjID:  projID,
+		AssetID: asset.ID,
+		Source:  asset.Source,
+		Name:    asset.Name,
+		Input:   body.Input,
+		Params:  body.Params,
+	})
+	if err != nil {
+		httpErr(w, 400, err)
 		return
 	}
-	// Overwrite the existing media file in place — same path (and extension), so
-	// the asset's Path stays valid and no orphan file is left behind.
-	out := s.Store.Abs(asset.Path)
-	assetID := asset.ID
-	name := asset.Name
-
-	job := s.Jobs.New("rerender", 15*time.Minute)
-	go func() {
-		ctx := job.Context()
-		job.Progress(0.05, "re-rendering "+adapter.Name)
-		if err := s.Gens.Generate(ctx, job, asset.Source, body.Input, body.Params, out); err != nil {
-			job.Fail(err)
-			return
-		}
-		job.Progress(0.9, "updating clip")
-		newAsset, err := s.registerAsset(ctx, projID, assetID, out, name, asset.Source)
-		if err != nil {
-			job.Fail(err)
-			return
-		}
-		newAsset.GenInput = body.Input
-		newAsset.GenParams = body.Params
-		if _, err := s.Store.UpdateAsset(projID, *newAsset); err != nil {
-			job.Fail(err)
-			return
-		}
-		job.Done(map[string]any{"asset": newAsset})
-	}()
-
-	writeJSON(w, 202, map[string]any{"jobId": job.ID})
+	writeJSON(w, 202, map[string]any{"jobId": jobID})
 }
 
 // ---- transcription ----
@@ -448,24 +399,12 @@ func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := s.Jobs.New("transcribe", 30*time.Minute)
-	go func() {
-		ctx := job.Context()
-		job.Progress(0.1, "extracting audio")
-		work, err := os.MkdirTemp("", "studio-transcribe-*") // isolated scratch (avoids clobbering concurrent jobs)
-		if err != nil {
-			job.Fail(err)
-			return
-		}
-		defer os.RemoveAll(work)
-		cues, err := transcribe.Transcribe(ctx, s.Store.Abs(srcRel), work)
-		if err != nil {
-			job.Fail(err)
-			return
-		}
-		job.Done(map[string]any{"cues": cues})
-	}()
-	writeJSON(w, 202, map[string]any{"jobId": job.ID})
+	jobID, err := s.queue().Enqueue(transcribePayload{ProjID: projID, SrcRel: srcRel})
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 202, map[string]any{"jobId": jobID})
 }
 
 // ---- export ----
@@ -480,8 +419,8 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	var opts render.Options
 	_ = json.NewDecoder(r.Body).Decode(&opts) // body optional
 
-	// Route through the bounded export queue (compiles now, fails fast on bad opts).
-	jobID, err := s.exportQueue().Enqueue(projID, doc, opts)
+	// Route through the bounded render lane (compiles now, fails fast on bad opts).
+	jobID, err := s.queue().Enqueue(exportPayload{ProjID: projID, Doc: doc, Opts: opts})
 	if err != nil {
 		httpErr(w, 400, err)
 		return
@@ -489,9 +428,10 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 202, map[string]any{"jobId": jobID})
 }
 
-// retryExport re-runs a previously-submitted export as a fresh queued job.
-func (s *Server) retryExport(w http.ResponseWriter, r *http.Request) {
-	jobID, err := s.exportQueue().Retry(r.PathValue("id"))
+// retryJob re-runs a previously-submitted task as a fresh queued job, with the
+// same inputs. Works for any queued kind, not just exports.
+func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
+	jobID, err := s.queue().Retry(r.PathValue("id"))
 	if err != nil {
 		httpErr(w, 404, err)
 		return
