@@ -55,9 +55,25 @@ func main() {
 	if media == "" {
 		media = filepath.Join(absRoot, "media")
 	}
-	st, err := store.New(media)
+	dbURL := strings.TrimSpace(os.Getenv("STUDIO_DATABASE_URL"))
+	if dbURL == "" {
+		log.Fatal("STUDIO_DATABASE_URL is required (e.g. postgres://studio:studio@localhost:5544/studio?sslmode=disable); " +
+			"`docker compose up -d postgres` starts one")
+	}
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	st, err := store.New(dbCtx, dbURL, media)
+	dbCancel()
 	if err != nil {
 		log.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	// Adopt any pre-Postgres timeline.json documents. Idempotent and
+	// non-destructive — the JSON files stay put as a backup.
+	if n, err := st.ImportLegacy(context.Background()); err != nil {
+		log.Fatalf("import legacy projects: %v", err)
+	} else if n > 0 {
+		log.Printf("imported %d legacy project(s) from timeline.json", n)
 	}
 
 	reg, err := generator.NewRegistry(absRoot)

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -133,23 +134,23 @@ func (q *workQueue) worker(ch chan *task) {
 // handler that doesn't match its inputs. Validation happens here rather than in
 // the worker so a bad request fails the HTTP call with a 4xx instead of
 // surfacing minutes later as a failed job.
-func (q *workQueue) Enqueue(payload any) (string, error) {
+func (q *workQueue) Enqueue(ctx context.Context, payload any) (string, error) {
 	t := &task{Payload: payload}
 	var timeout time.Duration
 
 	switch p := payload.(type) {
 	case exportPayload:
-		if err := q.prepExport(t, p); err != nil {
+		if err := q.prepExport(ctx, t, p); err != nil {
 			return "", err
 		}
 		t.Kind, t.Lane, timeout = kindExport, laneRender, exportTimeout
 	case generatePayload:
-		if err := q.prepGenerate(t, p); err != nil {
+		if err := q.prepGenerate(ctx, t, p); err != nil {
 			return "", err
 		}
 		t.Kind, t.Lane, timeout = kindGenerate, lanePlugin, generateTimeout
 	case rerenderPayload:
-		if err := q.prepRerender(t, p); err != nil {
+		if err := q.prepRerender(ctx, t, p); err != nil {
 			return "", err
 		}
 		t.Kind, t.Lane, timeout = kindRerender, lanePlugin, generateTimeout
@@ -173,14 +174,14 @@ func (q *workQueue) Enqueue(payload any) (string, error) {
 // Re-running Enqueue (rather than replaying the resolved task) means a retried
 // export gets a new output path and a retried generate a new asset, while a
 // retried re-render still targets its original asset.
-func (q *workQueue) Retry(jobID string) (string, error) {
+func (q *workQueue) Retry(ctx context.Context, jobID string) (string, error) {
 	q.mu.Lock()
 	t, ok := q.tasks[jobID]
 	q.mu.Unlock()
 	if !ok {
 		return "", fmt.Errorf("unknown or expired job")
 	}
-	return q.Enqueue(t.Payload)
+	return q.Enqueue(ctx, t.Payload)
 }
 
 // remember stores a task's inputs for Retry, evicting oldest-first past the cap.
@@ -232,7 +233,7 @@ func (q *workQueue) run(t *task) {
 
 // prepExport allocates the output path and compiles the filtergraph, so bad
 // options (e.g. an out-of-range trim) fail the enqueue call.
-func (q *workQueue) prepExport(t *task, p exportPayload) error {
+func (q *workQueue) prepExport(ctx context.Context, t *task, p exportPayload) error {
 	resolve := func(assetID string) (string, bool) {
 		for _, a := range p.Doc.Assets {
 			if a.ID == assetID {
@@ -268,7 +269,7 @@ func (q *workQueue) runExport(t *task, p exportPayload) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := q.srv.Store.AddAsset(p.ProjID, *asset); err != nil {
+	if err := q.srv.Store.AddAsset(job.Context(), p.ProjID, *asset); err != nil {
 		return nil, err
 	}
 	return map[string]any{"asset": asset, "url": "/media/" + q.srv.Store.Rel(t.outPath)}, nil
@@ -276,7 +277,7 @@ func (q *workQueue) runExport(t *task, p exportPayload) (any, error) {
 
 // ---- generation ----
 
-func (q *workQueue) prepGenerate(t *task, p generatePayload) error {
+func (q *workQueue) prepGenerate(ctx context.Context, t *task, p generatePayload) error {
 	adapter, ok := q.srv.Gens.Get(p.GeneratorID)
 	if !ok {
 		return fmt.Errorf("unknown generator %q", p.GeneratorID)
@@ -321,7 +322,7 @@ func (q *workQueue) runGenerate(t *task, p generatePayload) (any, error) {
 	// re-rendered later from the studio inspector.
 	asset.GenInput = p.Input
 	asset.GenParams = p.Params
-	if _, err := q.srv.Store.AddAsset(p.ProjID, *asset); err != nil {
+	if err := q.srv.Store.AddAsset(ctx, p.ProjID, *asset); err != nil {
 		return nil, err
 	}
 	return map[string]any{"asset": asset}, nil
@@ -329,11 +330,11 @@ func (q *workQueue) runGenerate(t *task, p generatePayload) (any, error) {
 
 // prepRerender resolves the existing asset's media path — re-render overwrites it
 // in place so the asset's Path stays valid and no orphan file is left behind.
-func (q *workQueue) prepRerender(t *task, p rerenderPayload) error {
+func (q *workQueue) prepRerender(ctx context.Context, t *task, p rerenderPayload) error {
 	if _, ok := q.srv.Gens.Get(p.Source); !ok {
 		return fmt.Errorf("asset %q was not produced by a known generator", p.AssetID)
 	}
-	doc, err := q.srv.Store.GetProject(p.ProjID)
+	doc, err := q.srv.Store.GetProject(ctx, p.ProjID)
 	if err != nil {
 		return err
 	}
@@ -365,7 +366,7 @@ func (q *workQueue) runRerender(t *task, p rerenderPayload) (any, error) {
 	}
 	asset.GenInput = p.Input
 	asset.GenParams = p.Params
-	if _, err := q.srv.Store.UpdateAsset(p.ProjID, *asset); err != nil {
+	if err := q.srv.Store.UpdateAsset(ctx, p.ProjID, *asset); err != nil {
 		return nil, err
 	}
 	return map[string]any{"asset": asset}, nil

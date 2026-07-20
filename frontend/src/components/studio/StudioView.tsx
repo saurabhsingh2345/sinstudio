@@ -287,6 +287,8 @@ function TopBar({
 }) {
   const saving = useStudio((s) => s.saving);
   const dirty = useStudio((s) => s.dirty);
+  const conflict = useStudio((s) => s.conflict);
+  const resolveConflict = useStudio((s) => s.resolveConflict);
   const undo = useStudio((s) => s.undo);
   const redo = useStudio((s) => s.redo);
   const mutate = useStudio((s) => s.mutate);
@@ -300,7 +302,7 @@ function TopBar({
     });
   };
 
-  const status = saving ? "Saving…" : dirty ? "Unsaved" : "Saved";
+  const status = conflict ? "Conflict" : saving ? "Saving…" : dirty ? "Unsaved" : "Saved";
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b hairline bg-panel/80 px-3 backdrop-blur">
@@ -317,10 +319,30 @@ function TopBar({
         </div>
         <div className="text-sm font-medium">{doc.name}</div>
         <div className="ml-1 flex items-center gap-1.5 rounded-full border hairline bg-panel-2 px-2 py-0.5 text-[11px] text-muted-foreground">
-          <span className={cn("h-1.5 w-1.5 rounded-full", saving ? "bg-amber-400" : dirty ? "bg-muted-foreground" : "bg-signal")} />
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              conflict ? "bg-red-500" : saving ? "bg-amber-400" : dirty ? "bg-muted-foreground" : "bg-signal"
+            )}
+          />
           {status} · v{doc.version}
         </div>
       </div>
+
+      {/* Someone else saved this project while it was open. Autosave has stopped
+          rather than overwrite their work; the local doc is kept until the user
+          chooses to discard it. */}
+      {conflict && (
+        <div className="flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-[11px] text-red-200">
+          <span>Someone else saved this project. Your changes are not being saved.</span>
+          <button
+            onClick={resolveConflict}
+            className="rounded border border-red-400/50 px-1.5 py-0.5 font-medium hover:bg-red-500/20"
+          >
+            Reload theirs
+          </button>
+        </div>
+      )}
 
       <div className="mx-2 h-5 w-px bg-hairline" />
 

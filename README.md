@@ -6,22 +6,28 @@ generate/import clips → arrange on a multi-track timeline → add music, a
 transcript/caption track, and background layers → **export an MP4 server-side
 with FFmpeg**.
 
-- **Backend:** Go (stdlib HTTP + SSE, filesystem project store, FFmpeg/ffprobe orchestration).
+- **Backend:** Go (stdlib HTTP + SSE, Postgres project store, FFmpeg/ffprobe orchestration).
 - **Frontend:** React + Vite + TypeScript (custom multi-track timeline, layered preview).
-- **Render authority:** the edit is a declarative `timeline.json`; the browser previews it
+- **Render authority:** the edit is a declarative document; the browser previews it
   approximately, and Go compiles the *same* document into a deterministic FFmpeg filtergraph
   for the final export.
+- **Concurrency:** the timeline is saved under an optimistic-concurrency revision, and the
+  asset library is a separate table written by background jobs — so a finishing export can
+  never be overwritten by an editor's autosave.
 
 ```
 studio/
   backend/    Go API + generator orchestration + FFmpeg export
   frontend/   React editor (timeline, preview, assets, transcript, inspector)
-  media/      per-project data: assets, thumbs, renders, timeline.json  (gitignored)
+  media/      per-project media: assets, thumbs, renders, luts  (gitignored)
 ```
 
 ## Prerequisites
 
 - **Go** 1.26+, **Node** 20+, **FFmpeg + ffprobe** on `PATH` (used for probing, thumbnails, export).
+- **Postgres** — `./dev.sh` starts one via `docker compose up -d postgres` (host port **5544**).
+  Projects still living in `media/projects/*/timeline.json` are adopted automatically on first
+  start; the JSON files are left untouched as a backup.
 - The sibling generators live next to `studio/`:
   - `newaniAdv` — works out of the box (`npx tsx`).
   - `hyper/hyperframes` — build its CLI once: `cd ../hyper/hyperframes && bun install && bun run build`.
@@ -72,7 +78,10 @@ docker run -p 8787:8787 -e STUDIO_TOKEN=change-me -v studio-media:/data studio
 | --- | --- | --- |
 | `STUDIO_TOKEN` | *(unset)* | When set, the API and `/media` require a login. Browsers sign in once at the token screen (httpOnly session cookie); programmatic clients may send `Authorization: Bearer <token>`. **Unset = open**, intended for localhost only. |
 | `STUDIO_ALLOWED_ORIGINS` | *(unset)* | Comma-separated CORS allowlist (e.g. `https://studio.example.com`). Unset ⇒ only `localhost`/`127.0.0.1` origins are allowed; the server never advertises `*`. |
-| `STUDIO_EXPORT_WORKERS` | `2` | How many exports render concurrently. Exports beyond this queue up (each is a full FFmpeg process). |
+| `STUDIO_DATABASE_URL` | *(required)* | Postgres connection string, e.g. `postgres://studio:studio@localhost:5544/studio?sslmode=disable`. The schema is applied on startup. |
+| `STUDIO_EXPORT_WORKERS` | `2` | Concurrent ffmpeg exports. Further exports queue (each is a full FFmpeg process). |
+| `STUDIO_PLUGIN_WORKERS` | `4` | Concurrent generator subprocesses (generate / re-render). |
+| `STUDIO_TRANSCRIBE_WORKERS` | `1` | Concurrent whisper transcriptions. |
 
 > ⚠️ The app supervises local dev-servers and reads/writes media. **Never expose
 > it to the public internet without `STUDIO_TOKEN` set** (and TLS in front).
@@ -119,8 +128,10 @@ The export dialog (and `POST /api/projects/{id}/export`) accepts:
 - **format:** `mp4` (H.264) · `webm` (VP9) · `gif` · `mov` (ProRes)
 - **from / to:** export a time range only
 
-Exports run through a **bounded queue** (`STUDIO_EXPORT_WORKERS`, default 2) so many
-requests don't thrash the machine. The **Renders** panel shows queued/rendering jobs
+Every long-running action — export, generate, re-render, transcribe — runs through a
+**bounded work queue**, partitioned into lanes by the tooling it needs (`render` /
+`plugin` / `transcribe`) so a 20-minute export can't starve a quick clip generation.
+Each lane's concurrency is set independently (see the table above). The **Renders** panel shows queued/rendering jobs
 (with cancel), a **retry** for failed ones, and a **history** of finished exports with
 re-download/delete.
 

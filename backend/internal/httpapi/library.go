@@ -44,7 +44,7 @@ func (s *Server) listLibrary(w http.ResponseWriter, r *http.Request) {
 // libraryImport copies a discovered clip into a project as an asset.
 func (s *Server) libraryImport(w http.ResponseWriter, r *http.Request) {
 	projID := r.PathValue("id")
-	if _, err := s.Store.GetProject(projID); err != nil {
+	if _, err := s.Store.GetProject(r.Context(), projID); err != nil {
 		httpErr(w, 404, err)
 		return
 	}
@@ -81,12 +81,12 @@ func (s *Server) libraryImport(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err)
 		return
 	}
-	doc, err := s.Store.AddAsset(projID, *asset)
+	err = s.Store.AddAsset(r.Context(), projID, *asset)
 	if err != nil {
 		httpErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"asset": asset, "version": doc.Version})
+	writeJSON(w, 200, map[string]any{"asset": asset})
 }
 
 // ingest is the universal "Send to Studio" target: any product POSTs a finished
@@ -133,7 +133,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	// inbox, so an import failure is reported alongside the inbox location
 	// rather than silently swallowed.
 	if projID := r.URL.Query().Get("projectId"); projID != "" {
-		if _, err := s.Store.GetProject(projID); err != nil {
+		if _, err := s.Store.GetProject(r.Context(), projID); err != nil {
 			httpErr(w, 404, fmt.Errorf("project %s: %w", projID, err))
 			return
 		}
@@ -150,7 +150,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name, "importError": err.Error()})
 			return
 		}
-		if _, err := s.Store.AddAsset(projID, *asset); err != nil {
+		if err := s.Store.AddAsset(r.Context(), projID, *asset); err != nil {
 			writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name, "importError": err.Error()})
 			return
 		}

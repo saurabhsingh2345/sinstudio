@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { api } from "./api";
+import { api, ConflictError } from "./api";
 import type { Asset, CaptionCue, Clip, EditDoc, Keyframe, Track, TitleAnim, TitleReveal } from "./types";
 import { newId, clipPlayDur } from "./types";
 import { buildTitleAnim } from "./titleAnim";
@@ -9,6 +9,9 @@ interface StudioState {
   doc: EditDoc | null;
   saving: boolean;
   dirty: boolean;
+  // Set when the server rejected a save because someone else got there first.
+  // The editor keeps the local doc so nothing is lost until the user chooses.
+  conflict: { current: EditDoc } | null;
   past: EditDoc[];
   future: EditDoc[];
 
@@ -31,6 +34,8 @@ interface StudioState {
   commitTransient: () => void;
   undo: () => void;
   redo: () => void;
+  // Discard local edits and adopt the server's document after a conflict.
+  resolveConflict: () => void;
 
   addAsset: (a: Asset) => void;
   updateAsset: (a: Asset) => void;
@@ -100,11 +105,17 @@ let clipboard: { trackId: string; clip: Clip }[] = [];
 // Non-null while a transient gesture (drag/trim) is open: the pre-gesture doc
 // snapshot that will be pushed to history once on commit.
 let txnSnapshot: EditDoc | null = null;
+// Monotonic count of local edits. Only used to tell whether a transient gesture
+// actually changed anything; doc.version can't serve that role now that it is
+// the server-assigned revision.
+let editSeq = 0;
+let snapSeq = 0;
 
 export const useStudio = create<StudioState>((set, get) => ({
   doc: null,
   saving: false,
   dirty: false,
+  conflict: null,
   past: [],
   future: [],
   selClip: null,
@@ -118,42 +129,68 @@ export const useStudio = create<StudioState>((set, get) => ({
   load: async (id) => {
     const doc = await api.getProject(id);
     clearPeaks(); // drop cached waveforms from any previously-open project
-    set({ doc, dirty: false, past: [], future: [], selClip: null, selClips: [], selCue: null, playhead: 0 });
+    set({ doc, dirty: false, conflict: null, past: [], future: [], selClip: null, selClips: [], selCue: null, playhead: 0 });
   },
 
   save: async () => {
     const doc = get().doc;
-    if (!doc) return;
+    if (!doc || get().conflict) return; // don't keep retrying into a known conflict
     set({ saving: true });
     try {
       const { version } = await api.saveProject(doc);
-      // Merge the server version into the CURRENT doc, not the pre-await snapshot:
-      // edits made during the in-flight save must not be clobbered. Only clear the
-      // dirty flag if nothing changed while we were saving.
+      // Adopt the server's revision on the CURRENT doc, not the pre-await
+      // snapshot: edits made during the in-flight save must not be clobbered.
+      // Only clear the dirty flag if nothing changed while we were saving.
       set((s) => {
         if (!s.doc) return { saving: false };
         const unchanged = s.doc === doc;
         return {
           saving: false,
           dirty: unchanged ? false : s.dirty,
-          doc: { ...s.doc, version: Math.max(s.doc.version || 0, version) },
+          doc: { ...s.doc, version },
         };
       });
     } catch (e) {
+      if (e instanceof ConflictError) {
+        // Someone else saved this timeline first. Keep the local doc untouched so
+        // no work is lost, and let the UI ask what to do.
+        set({ saving: false, conflict: { current: e.current } });
+        return;
+      }
       set({ saving: false });
       console.error("save failed", e);
     }
   },
 
-  // mutate applies fn to a cloned doc, bumps version, records history, autosaves.
-  // During a transient gesture, history is not touched (beginTransient captured
-  // the one snapshot; commitTransient will push it).
+  resolveConflict: () => {
+    const c = get().conflict;
+    if (!c) return;
+    clearPeaks();
+    set({
+      doc: c.current,
+      conflict: null,
+      dirty: false,
+      past: [],
+      future: [],
+      selClip: null,
+      selClips: [],
+      selCue: null,
+    });
+  },
+
+  // mutate applies fn to a cloned doc, records history, autosaves. During a
+  // transient gesture, history is not touched (beginTransient captured the one
+  // snapshot; commitTransient will push it).
+  //
+  // Note it does NOT touch doc.version: that is the server's revision, sent back
+  // as the base for optimistic concurrency. Bumping it locally would make every
+  // save look stale and 409 immediately.
   mutate: (fn) => {
     const cur = get().doc;
     if (!cur) return;
     const doc: EditDoc = structuredClone(cur);
     fn(doc);
-    doc.version = (doc.version || 0) + 1;
+    editSeq++;
     if (txnSnapshot) {
       set({ doc, dirty: true, future: [] });
     } else {
@@ -167,15 +204,20 @@ export const useStudio = create<StudioState>((set, get) => ({
   beginTransient: () => {
     if (txnSnapshot) return; // already open
     const d = get().doc;
-    if (d) txnSnapshot = structuredClone(d);
+    if (d) {
+      txnSnapshot = structuredClone(d);
+      snapSeq = editSeq;
+    }
   },
 
   commitTransient: () => {
     const snap = txnSnapshot;
     txnSnapshot = null;
     if (!snap) return;
-    // Only record history if the gesture actually changed something.
-    if (get().doc && get().doc!.version !== snap.version) {
+    // Only record history if the gesture actually changed something. This used
+    // to compare doc.version, which is now the server's revision and no longer
+    // moves on local edits.
+    if (get().doc && editSeq !== snapSeq) {
       set((s) => ({ past: [...s.past, snap].slice(-60), future: [] }));
     }
   },
@@ -230,12 +272,21 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
     }),
 
-  // removeAsset drops an asset and any clips that reference it.
-  removeAsset: (assetId) =>
+  // removeAsset drops the asset's clips from the timeline (a document edit) AND
+  // deletes the asset itself (a separate resource now). Filtering it out of
+  // d.assets alone would no longer persist: the server owns the asset set and
+  // ignores it in a document save.
+  removeAsset: (assetId) => {
+    const id = get().doc?.id;
     get().mutate((d) => {
       d.assets = d.assets.filter((a) => a.id !== assetId);
       for (const t of d.tracks) if (t.clips) t.clips = t.clips.filter((c) => c.assetId !== assetId);
-    }),
+    });
+    if (id) {
+      // Soft delete server-side; the media file is deliberately left on disk.
+      api.deleteAsset(id, assetId).catch((e) => console.error("delete asset failed", e));
+    }
+  },
 
   addClip: (trackId, assetId, start) =>
     get().mutate((d) => {

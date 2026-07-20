@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
@@ -30,13 +31,13 @@ func titleDoc() *schema.EditDoc {
 // createTitleProject makes a project and stores a renderable title timeline.
 func createTitleProject(t *testing.T, s *Server) string {
 	t.Helper()
-	p, err := s.Store.CreateProject("Export Test")
+	p, err := s.Store.CreateProject(context.Background(), "Export Test")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
 	doc := titleDoc()
 	doc.ID = p.ID
-	if err := s.Store.SaveProject(doc); err != nil {
+	if _, err := s.Store.SaveProject(context.Background(), doc, p.Version); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	return p.ID

@@ -1,20 +1,52 @@
-# Run Studio as a single container. Set STUDIO_TOKEN (and optionally
+# Run Studio and its database. Set STUDIO_TOKEN (and optionally
 # STUDIO_ALLOWED_ORIGINS) in a .env file or the environment before `up`.
 #
 #   STUDIO_TOKEN=change-me docker compose up --build
 #
+# For local backend development against the same database, start Postgres alone:
+#
+#   docker compose up -d postgres
+#   export STUDIO_DATABASE_URL=postgres://studio:studio@localhost:5544/studio?sslmode=disable
+#
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      - POSTGRES_USER=studio
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-studio}
+      - POSTGRES_DB=studio
+    ports:
+      # Host 5544, deliberately not 5432/5433: a natively-installed Postgres
+      # holds 5432 on this machine and silently wins the localhost binding over
+      # Docker's, and 5433 is taken by another project's container.
+      - "5544:5432"
+    volumes:
+      - studio-db:/var/lib/postgresql/data
+    healthcheck:
+      # The app applies its schema on startup, so it must not connect before
+      # Postgres is actually accepting queries.
+      test: ["CMD-SHELL", "pg_isready -U studio -d studio"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
   studio:
     build: .
     image: studio:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8787:8787"
     environment:
       - STUDIO_TOKEN=${STUDIO_TOKEN:-}
       - STUDIO_ALLOWED_ORIGINS=${STUDIO_ALLOWED_ORIGINS:-}
+      - STUDIO_DATABASE_URL=postgres://studio:${POSTGRES_PASSWORD:-studio}@postgres:5432/studio?sslmode=disable
     volumes:
       - studio-media:/data
     restart: unless-stopped
 
 volumes:
   studio-media:
+  studio-db:

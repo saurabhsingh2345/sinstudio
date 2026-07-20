@@ -37,7 +37,7 @@ func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	doc, err := s.Store.GetProject(r.PathValue("id"))
+	doc, err := s.Store.GetProject(r.Context(), r.PathValue("id"))
 	if err != nil {
 		httpErr(w, 404, err)
 		return

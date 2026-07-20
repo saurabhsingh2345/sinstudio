@@ -15,7 +15,7 @@ const maxLUTBytes = 32 << 20 // .cube files are small; cap to be safe
 // listLUTs returns the .cube color LUTs uploaded to a project.
 func (s *Server) listLUTs(w http.ResponseWriter, r *http.Request) {
 	projID := r.PathValue("id")
-	if _, err := s.Store.GetProject(projID); err != nil {
+	if _, err := s.Store.GetProject(r.Context(), projID); err != nil {
 		httpErr(w, 404, err)
 		return
 	}
@@ -38,7 +38,7 @@ func (s *Server) listLUTs(w http.ResponseWriter, r *http.Request) {
 // uploadLUT accepts a .cube file and stores it in the project's luts dir.
 func (s *Server) uploadLUT(w http.ResponseWriter, r *http.Request) {
 	projID := r.PathValue("id")
-	if _, err := s.Store.GetProject(projID); err != nil {
+	if _, err := s.Store.GetProject(r.Context(), projID); err != nil {
 		httpErr(w, 404, err)
 		return
 	}
@@ -83,7 +83,7 @@ func (s *Server) uploadLUT(w http.ResponseWriter, r *http.Request) {
 // deleteLUT removes a project LUT (base-sanitized, must be a .cube).
 func (s *Server) deleteLUT(w http.ResponseWriter, r *http.Request) {
 	projID := r.PathValue("id")
-	if _, err := s.Store.GetProject(projID); err != nil {
+	if _, err := s.Store.GetProject(r.Context(), projID); err != nil {
 		httpErr(w, 404, err)
 		return
 	}
