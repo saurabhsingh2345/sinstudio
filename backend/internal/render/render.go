@@ -284,7 +284,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			// renders without them; a malformed sidecar must not fail the export.
 			continue
 		}
-		plan, err := buildCursorFX(v.cursorFX, track, srtDir, i, w, h, v.start, v.end)
+		plan, err := buildCursorFX(v.cursorFX, track, srtDir, i, v, w, h)
 		if err != nil {
 			return nil, err
 		}
@@ -428,6 +428,12 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				// and spotlight are fixed and only move.
 				if seg.scaleExpr != "" {
 					fmt.Fprintf(&fc, ",scale=w='max(2,%s)':h='max(2,%s)':eval=frame:flags=bicubic", seg.scaleExpr, seg.scaleExpr)
+				}
+				// A named scale filter so sendcmd can grow the overlay in step
+				// with the clip's zoom; it starts at the authored size, which is
+				// already correct for an unzoomed clip.
+				if seg.scaleName != "" {
+					fmt.Fprintf(&fc, ",scale@%s=w=%d:h=%d:flags=bicubic", seg.scaleName, seg.baseW, seg.baseH)
 				}
 				if seg.fadeDur > 0 {
 					fmt.Fprintf(&fc, ",fade=t=out:st=%.3f:d=%.3f:alpha=1", seg.fadeStart, seg.fadeDur)

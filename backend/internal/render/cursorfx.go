@@ -66,6 +66,10 @@ type cursorSegment struct {
 	x, y      string // overlay position expressions
 	enable    string // enable='...' window
 	scaleExpr string // optional animated scale, in timeline time
+	// A named scale filter whose w/h sendcmd drives, so the overlay grows with
+	// the clip it marks. Empty leaves the image at its authored size.
+	scaleName    string
+	baseW, baseH int
 	// Alpha ramp for a click ring, as a fade rather than a geq expression:
 	// geq evaluates per pixel per frame, which is the most expensive way to
 	// do the cheapest thing here.
@@ -206,20 +210,22 @@ func sendcmdEscape(s string) string {
 }
 
 // buildCursorFX compiles a clip's cursor effects into PNGs plus a sendcmd
-// script. Coordinates in the track are in the *recording's* pixel space, so
-// everything is scaled into canvas space here — a 4K capture placed on a 1080p
-// canvas has to have its pointer path scaled with it.
+// script.
 //
-// start is the clip's position on the timeline: sendcmd times are absolute
-// filtergraph time, while sample times are relative to the clip's first frame.
+// Track coordinates are in the recording's own pixel space, and the recording
+// is drawn wherever the clip's transform puts it — which moves and grows over
+// time once anything is keyframed. Every sample is therefore mapped through the
+// clip's box at its own instant (see cursorCommands), not through a fixed
+// canvas ratio.
 func buildCursorFX(
 	fx *schema.CursorFX,
 	track *cursor.Track,
 	dir string,
 	idx int,
+	v *visual,
 	canvasW, canvasH int,
-	start, end float64,
 ) (*cursorPlan, error) {
+	start, end := v.start, v.end
 	if fx == nil || track == nil || len(track.Samples) == 0 {
 		return nil, nil
 	}
@@ -230,14 +236,6 @@ func buildCursorFX(
 		smoothed := *track
 		smoothed.Samples = smoothPath(track.Samples, p.Smoothing)
 		track = &smoothed
-	}
-	sx := 1.0
-	sy := 1.0
-	if track.Video.Width > 0 {
-		sx = float64(canvasW) / float64(track.Video.Width)
-	}
-	if track.Video.Height > 0 {
-		sy = float64(canvasH) / float64(track.Video.Height)
 	}
 	dur := end - start
 
@@ -267,7 +265,7 @@ func buildCursorFX(
 			y:      fmt.Sprintf("%d", -canvasH/2),
 			enable: fmt.Sprintf("between(t,%.3f,%.3f)", start, end),
 		})
-		cmds = append(cmds, cursorCommands(track, name, sx, sy, start, dur, canvasW, canvasH)...)
+		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, dur, canvasW, canvasH, 0, 0)...)
 	}
 
 	if hl := fx.Highlight; hl != nil {
@@ -291,7 +289,10 @@ func buildCursorFX(
 			y:      fmt.Sprintf("%d", -size/2),
 			enable: fmt.Sprintf("between(t,%.3f,%.3f)", start, end),
 		})
-		cmds = append(cmds, cursorCommands(track, name, sx, sy, start, dur, size/2, size/2)...)
+		seg := &plan.segments[len(plan.segments)-1]
+		seg.scaleName = name
+		seg.baseW, seg.baseH = size, size
+		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, dur, size/2, size/2, size, size)...)
 	}
 
 	// Click rings need no sendcmd: a click happens at one point, so each ring is
@@ -319,9 +320,18 @@ func buildCursorFX(
 					continue
 				}
 				cx, cy := track.At(ct)
-				px := float64(cx) * sx
-				py := float64(cy) * sy
 				at := start + ct
+				// A ring lives under half a second, so the clip's zoom at the
+				// moment of the click is a fair constant for its whole life —
+				// no need to command it per frame like the tracking overlays.
+				left, top, cw, ch := clipBoxAt(v, canvasW, canvasH, at)
+				z := 1.0
+				if canvasW > 0 {
+					z = cw / float64(canvasW)
+				}
+				px := left + float64(cx)/math.Max(1, float64(track.Video.Width))*cw
+				py := top + float64(cy)/math.Max(1, float64(track.Video.Height))*ch
+				ringSize := int(float64(size) * z)
 				// Grow from a quarter size to full over the ring's life while
 				// fading out — the shape a click reads as. Both run on timeline
 				// time, which is why the still's PTS is shifted to the clip.
@@ -329,7 +339,7 @@ func buildCursorFX(
 				plan.segments = append(plan.segments, cursorSegment{
 					png:       p,
 					name:      fmt.Sprintf("ring%d_%d", idx, i),
-					scaleExpr: fmt.Sprintf("%d*(0.25+0.75*%s)", size, prog),
+					scaleExpr: fmt.Sprintf("%d*(0.25+0.75*%s)", maxInt(2, ringSize), prog),
 					fadeStart: at,
 					fadeDur:   rd,
 					x:         fmt.Sprintf("%.1f-w/2", px),
@@ -351,7 +361,7 @@ func buildCursorFX(
 			size = defPointerSize
 		}
 		pp := filepath.Join(dir, fmt.Sprintf("cur-%d-ptr.png", idx))
-		hotX, hotY, err := writePointerPNG(pp, p.Style, size, hexColor(p.Color, defPointerColor), p.Opacity)
+		ptrW, ptrH, hotX, hotY, err := writePointerPNG(pp, p.Style, size, hexColor(p.Color, defPointerColor), p.Opacity)
 		if err != nil {
 			return nil, err
 		}
@@ -363,7 +373,10 @@ func buildCursorFX(
 			y:      fmt.Sprintf("%d", -hotY),
 			enable: fmt.Sprintf("between(t,%.3f,%.3f)", start, end),
 		})
-		cmds = append(cmds, cursorCommands(track, name, sx, sy, start, dur, hotX, hotY)...)
+		seg := &plan.segments[len(plan.segments)-1]
+		seg.scaleName = name
+		seg.baseW, seg.baseH = ptrW, ptrH
+		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, dur, hotX, hotY, ptrW, ptrH)...)
 	}
 
 	plan.cmds = cmds
@@ -374,25 +387,61 @@ func buildCursorFX(
 }
 
 // cursorCommands emits one sendcmd entry per sample, positioning a named
-// overlay so its centre (offX/offY from its top-left) sits on the pointer.
-func cursorCommands(track *cursor.Track, name string, sx, sy, start, dur float64, offX, offY int) []string {
+// overlay so its hotspot (offX/offY from its top-left, at unit scale) sits on
+// the pointer.
+//
+// Every sample is transformed through the clip's OWN box at that instant. The
+// overlays composite onto the canvas, but the pointer's coordinates are in the
+// recording's frame — and that frame moves and grows whenever the clip is
+// zoomed or panned, which is exactly what auto-zoom does. Positioning in flat
+// canvas space instead leaves every highlight sitting on whatever content
+// happens to have slid under it.
+//
+// Sizes ride along too: content magnified 2x should carry a cursor and
+// highlight magnified with it, or they shrink relative to what they mark.
+func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dur float64, hotX, hotY int, sizeW, sizeH int) []string {
 	out := make([]string, 0, len(track.Samples))
-	var lastX, lastY int
+	var lastX, lastY, lastW int
 	var have bool
 	for _, s := range track.Samples {
 		ts := float64(s.T) / 1000
 		if ts < 0 || ts > dur {
 			continue
 		}
-		x := int(float64(s.X)*sx) - offX
-		y := int(float64(s.Y)*sy) - offY
-		// The sampler's heartbeat repeats a stationary position every 250ms;
-		// re-issuing an unchanged command just makes the script bigger.
-		if have && x == lastX && y == lastY {
+		left, top, cw, ch := clipBoxAt(v, w, h, v.start+ts)
+		fx := 0.0
+		fy := 0.0
+		if track.Video.Width > 0 {
+			fx = float64(s.X) / float64(track.Video.Width)
+		}
+		if track.Video.Height > 0 {
+			fy = float64(s.Y) / float64(track.Video.Height)
+		}
+		// Zoom factor relative to a canvas-filling clip, so a 1:1 clip leaves
+		// the overlays at their authored size.
+		z := 1.0
+		if w > 0 {
+			z = cw / float64(w)
+		}
+		px := left + fx*cw
+		py := top + fy*ch
+		x := int(px - float64(hotX)*z)
+		y := int(py - float64(hotY)*z)
+
+		var cmds string
+		sw := int(float64(sizeW) * z)
+		sh := int(float64(sizeH) * z)
+		if sizeW > 0 && sw != lastW {
+			cmds = fmt.Sprintf(", scale@%s w %d, scale@%s h %d",
+				sendcmdEscape(name), maxInt(2, sw), sendcmdEscape(name), maxInt(2, sh))
+			lastW = sw
+		} else if have && x == lastX && y == lastY {
+			// The sampler's heartbeat repeats a stationary position every 250ms;
+			// re-issuing an unchanged command just makes the script bigger.
 			continue
 		}
-		out = append(out, fmt.Sprintf("%.3f overlay@%s x %d, overlay@%s y %d;",
-			start+ts, sendcmdEscape(name), x, sendcmdEscape(name), y))
+		out = append(out, fmt.Sprintf("%.3f overlay@%s x %d, overlay@%s y %d%s;",
+			v.start+ts, sendcmdEscape(name), x, sendcmdEscape(name), y, cmds))
 		lastX, lastY, have = x, y, true
 	}
 	return out

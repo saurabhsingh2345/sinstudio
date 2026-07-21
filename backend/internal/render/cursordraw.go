@@ -49,7 +49,7 @@ func rasterize(w, h int, pts [][2]float64, scale, offX, offY float64) *image.Alp
 
 // writePointerPNG draws the cursor and returns its hotspot — the point in the
 // image that sits exactly on the recorded coordinate.
-func writePointerPNG(path, style string, size int, c color.NRGBA, opacity float64) (hotX, hotY int, err error) {
+func writePointerPNG(path, style string, size int, c color.NRGBA, opacity float64) (imgW, imgH, hotX, hotY int, err error) {
 	if size < 8 {
 		size = 8
 	}
@@ -86,7 +86,7 @@ func writePointerPNG(path, style string, size int, c color.NRGBA, opacity float6
 				img.SetNRGBA(x, y, color.NRGBA{col.R, col.G, col.B, uint8(a * op * 255)})
 			}
 		}
-		return size / 2, size / 2, encodePNG(path, img)
+		return size, size, size / 2, size / 2, encodePNG(path, img)
 	}
 
 	// Arrow. The outline is the fill dilated in every direction rather than a
@@ -142,7 +142,7 @@ func writePointerPNG(path, style string, size int, c color.NRGBA, opacity float6
 		}
 	}
 	// The tip is the fill's origin, which the stroke inset pushed in.
-	return st, st, encodePNG(path, img)
+	return w, h, st, st, encodePNG(path, img)
 }
 
 // smoothPath irons jitter out of a recorded pointer path.

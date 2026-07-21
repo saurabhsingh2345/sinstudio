@@ -70,7 +70,7 @@ func TestPointerStylesRender(t *testing.T) {
 		t.Run("style="+style, func(t *testing.T) {
 			dir := t.TempDir()
 			p := filepath.Join(dir, "ptr.png")
-			hx, hy, err := writePointerPNG(p, style, 40, color.NRGBA{255, 255, 255, 255}, 1)
+			_, _, hx, hy, err := writePointerPNG(p, style, 40, color.NRGBA{255, 255, 255, 255}, 1)
 			if err != nil {
 				t.Fatalf("draw: %v", err)
 			}
