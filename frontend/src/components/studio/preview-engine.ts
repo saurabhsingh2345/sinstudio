@@ -1,7 +1,7 @@
 // preview-engine — pure compositing math shared by the studio preview. Extracted
 // from the original Preview.tsx so the new PreviewStage renders frames that match
 // the exported render. Keep in sync with backend/internal/render.
-import { clipPlayDur, type Clip, type Track } from "../../types";
+import { anchorFrac, clipPlayDur, type Clip, type Track } from "../../types";
 import { ease } from "../../ease";
 import { peaksNow } from "../../peaks";
 
@@ -28,8 +28,9 @@ export function kfValue(keys: { t: number; value: number; ease?: string }[], loc
   return last.value;
 }
 
-// clipBox computes a clip's on-stage rectangle + opacity at time t, folding in
-// keyframes and transitions so the preview matches the exported render.
+// clipBox computes a clip's on-stage rectangle, rotation and opacity at time t,
+// folding in keyframes and transitions so the preview matches the exported
+// render.
 export function clipBox(clip: Clip, t: number, stageW: number, stageH: number, W: number, H: number) {
   const dur = clipPlayDur(clip);
   const start = clip.start;
@@ -41,10 +42,13 @@ export function clipBox(clip: Clip, t: number, stageW: number, stageH: number, W
   const vw = stageW * scaleMul;
   const vh = stageH * scaleMul;
 
+  // The anchor is the point scaling holds fixed: the box sits at a*(stage-box),
+  // which is the familiar (stage-box)/2 when the anchor is centered.
+  const [ax, ay] = anchorFrac(clip.transform);
   const offX = kf.x?.length ? kfValue(kf.x, localT) : clip.transform.x;
   const offY = kf.y?.length ? kfValue(kf.y, localT) : clip.transform.y;
-  let left = (stageW - vw) / 2 + (offX / W) * stageW;
-  let top = (stageH - vh) / 2 + (offY / H) * stageH;
+  let left = ax * (stageW - vw) + (offX / W) * stageW;
+  let top = ay * (stageH - vh) + (offY / H) * stageH;
 
   const slide = (tr: { type: string; duration: number } | undefined, entering: boolean) => {
     if (!tr) return;
@@ -77,7 +81,9 @@ export function clipBox(clip: Clip, t: number, stageW: number, stageH: number, W
   if (alphaIn > 0 && t < start + alphaIn) opacity *= clamp01((t - start) / alphaIn);
   if (alphaOut > 0 && t > end - alphaOut) opacity *= clamp01((end - t) / alphaOut);
 
-  return { left, top, vw, vh, opacity };
+  const rotation = kf.rotation?.length ? kfValue(kf.rotation, localT) : clip.transform.rotation || 0;
+
+  return { left, top, vw, vh, opacity, rotation };
 }
 
 // cssFilter approximates a clip's effects as a CSS filter string for the preview

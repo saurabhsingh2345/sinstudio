@@ -20,6 +20,30 @@ type Transform struct {
 	Scale    float64 `json:"scale"`
 	Opacity  float64 `json:"opacity"`
 	Rotation float64 `json:"rotation,omitempty"` // clockwise degrees about the clip's center
+	// AnchorX/AnchorY move the point that scaling holds fixed — the zoom origin —
+	// away from the clip's center. Normalized and *relative to center*, so ±0.5 is
+	// an edge and 0 is the center. Center-relative (rather than a 0..1 fraction) so
+	// the zero value is the historical behavior and documents predating anchors
+	// keep zooming from the middle. Rotation always pivots about the center.
+	AnchorX float64 `json:"anchorX,omitempty"`
+	AnchorY float64 `json:"anchorY,omitempty"`
+}
+
+// AnchorFrac returns the scale origin as a 0..1 fraction of the clip's box
+// (0.5 = center), clamped. Both engines size a scaled clip so this point stays
+// put: left = AnchorFracX * (canvasW - clipW).
+func (t Transform) AnchorFrac() (float64, float64) {
+	clamp := func(v float64) float64 {
+		v += 0.5
+		if v < 0 {
+			return 0
+		}
+		if v > 1 {
+			return 1
+		}
+		return v
+	}
+	return clamp(t.AnchorX), clamp(t.AnchorY)
 }
 
 // Clip is a placed reference to an asset on a track.
@@ -38,8 +62,9 @@ type Clip struct {
 	TransitionOut *Transition `json:"transitionOut,omitempty"`
 	// Keyframes animate a property over the clip's life. Keyed by property name:
 	// "x"/"y" (position offset in canvas px), "scale" (multiplier, 1 = canvas-fit),
-	// "opacity" (0..1). Points are clip-local seconds (from Start) so they survive
-	// moving/splitting the clip.
+	// "opacity" (0..1), "rotation" (clockwise degrees). Points are clip-local
+	// seconds (from Start) so they survive moving/splitting the clip. A keyed
+	// property overrides the matching static Transform field for the clip's life.
 	Keyframes map[string][]Keyframe `json:"keyframes,omitempty"`
 	Effects   *Effects              `json:"effects,omitempty"`
 	// EQ is an optional 3-band equalizer on this clip's audio.

@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import { api, ConflictError } from "./api";
-import type { Asset, CaptionCue, Clip, EditDoc, Keyframe, Track, TitleAnim, TitleReveal } from "./types";
+import type { Asset, CaptionCue, Clip, EditDoc, Keyable, Keyframe, Track, TitleAnim, TitleReveal } from "./types";
 import { newId, clipPlayDur } from "./types";
 import { buildTitleAnim } from "./titleAnim";
+import { buildMotionPreset, type MotionPreset } from "./motionPresets";
 import { clearPeaks } from "./peaks";
 
 interface StudioState {
@@ -71,7 +72,8 @@ interface StudioState {
   moveTrackZ: (trackId: string, dir: -1 | 1) => void;
   toggleTrackFlag: (trackId: string, flag: "muted" | "hidden" | "solo" | "duck") => void;
 
-  addKeyframe: (trackId: string, clipId: string, prop: "x" | "y" | "scale" | "opacity") => void;
+  addKeyframe: (trackId: string, clipId: string, prop: Keyable) => void;
+  applyMotionPreset: (trackId: string, clipId: string, preset: MotionPreset) => void;
   updateKeyframe: (trackId: string, clipId: string, prop: string, index: number, value: number) => void;
   moveKeyframe: (trackId: string, clipId: string, prop: string, index: number, t: number) => void;
   setKeyframeEase: (trackId: string, clipId: string, prop: string, index: number, ease: string) => void;
@@ -723,7 +725,8 @@ export const useStudio = create<StudioState>((set, get) => ({
       const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
       if (!c) return;
       const tLocal = Math.max(0, +(get().playhead - c.start).toFixed(3));
-      const value = c.transform[prop];
+      // rotation is optional on Transform; an absent one keys as 0°.
+      const value = c.transform[prop] ?? 0;
       const kf = (c.keyframes ||= {});
       const list = (kf[prop] ||= []);
       const existing = list.findIndex((k) => Math.abs(k.t - tLocal) < 0.02);
@@ -732,6 +735,19 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (existing >= 0) list[existing] = { ...list[existing], t: tLocal, value };
       else list.push({ t: tLocal, value, ease: prop === "opacity" ? "linear" : "easeInOut" });
       list.sort((a, b) => a.t - b.t);
+    }),
+
+  // applyMotionPreset writes a camera move onto a clip. It replaces only the
+  // properties the preset animates, so a hand-built opacity fade survives a
+  // later "Ken Burns" — and re-applying a preset is idempotent rather than
+  // additive.
+  applyMotionPreset: (trackId, clipId, preset) =>
+    get().mutate((d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      if (!c) return;
+      const kf = buildMotionPreset(preset, clipPlayDur(c), d.canvas.width, d.canvas.height);
+      const merged = { ...(c.keyframes ?? {}), ...kf };
+      c.keyframes = Object.keys(merged).length ? merged : undefined;
     }),
 
   updateKeyframe: (trackId, clipId, prop, index, value) =>

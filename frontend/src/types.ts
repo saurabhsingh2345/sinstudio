@@ -8,7 +8,24 @@ export interface Transform {
   scale: number;
   opacity: number;
   rotation?: number; // clockwise degrees about the clip's center
+  // The zoom origin — the point scaling holds fixed — relative to the clip's
+  // center, where ±0.5 is an edge and 0 (the default) is the center. Stored
+  // center-relative so documents predating anchors still zoom from the middle.
+  anchorX?: number;
+  anchorY?: number;
 }
+
+// Properties that can be keyframed. A keyed property overrides the matching
+// static Transform field for the clip's life.
+export const KEYABLE = ["x", "y", "scale", "rotation", "opacity"] as const;
+export type Keyable = (typeof KEYABLE)[number];
+
+// anchorFrac converts a center-relative anchor to a 0..1 box fraction (0.5 =
+// center). Mirrors schema.Transform.AnchorFrac.
+export const anchorFrac = (t: Transform): [number, number] => {
+  const f = (v: number | undefined) => Math.max(0, Math.min(1, (v ?? 0) + 0.5));
+  return [f(t.anchorX), f(t.anchorY)];
+};
 
 // Transition types: fade | dissolve | slide-left | slide-right | slide-top | slide-bottom
 export interface Transition {

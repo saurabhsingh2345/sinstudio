@@ -47,7 +47,8 @@ type visual struct {
 	speed             float64
 	fadeIn, fadeOut   float64
 	transIn, transOut *schema.Transition
-	cx, cy            int                          // centered base position (no offset) for keyframes
+	cx, cy            int                          // anchored base position (no offset) for keyframes
+	ax, ay            float64                      // scale origin as a 0..1 fraction of the box (0.5 = center)
 	rot               float64                      // clockwise rotation in degrees about center (0 = none)
 	keyframes         map[string][]schema.Keyframe // property -> control points (clip-local t)
 	effects           *schema.Effects
@@ -296,10 +297,21 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				fmt.Fprintf(&fc, ",tpad=stop_mode=clone:stop_duration=%.3f", v.hold)
 			}
 		}
-		// Static rotation about the clip's center. format=rgba first so the corners
-		// exposed by the rotation are transparent (c=none), not black. rotw/roth grow
-		// the box to fit the rotated content; positioning below re-centers dynamically.
-		if v.rot != 0 {
+		// Rotation about the clip's center. format=rgba first so the corners exposed
+		// by the rotation are transparent (c=none), not black. Positioning below
+		// re-centers dynamically, since either form grows the box.
+		rotActive := len(v.keyframes["rotation"]) > 0
+		switch {
+		case rotActive:
+			// Animated: `rotate` re-evaluates its angle per frame, but ow/oh are
+			// evaluated once at config time — so they can't track the live angle.
+			// Size the box to the diagonal, which contains the frame at *any* angle;
+			// this also stays correct under overshoot easings that swing past the
+			// keyed values.
+			fmt.Fprintf(&fc, ",format=rgba,rotate=a=%s:ow='hypot(iw,ih)':oh='hypot(iw,ih)':c=none",
+				kfRotExpr(v.start, v.keyframes["rotation"]))
+		case v.rot != 0:
+			// Static: rotw/roth size the box exactly to the rotated content.
 			rad := v.rot * math.Pi / 180
 			fmt.Fprintf(&fc, ",format=rgba,rotate=%.6f:ow=rotw(%.6f):oh=roth(%.6f):c=none", rad, rad, rad)
 		}
@@ -326,14 +338,15 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		fmt.Fprintf(&fc, "%s;", lbl)
 		out := fmt.Sprintf("[b%d]", i)
 		// Position — motion keyframes win per axis, else a slide expression, else
-		// static. When scale is animated the center must track the clip's live
-		// size, so use overlay's own w/h ("(W-w)/2") instead of the static center.
-		// Rotation (like scale animation) grows the overlay box, so its center must
-		// track the overlay's live size instead of the static pre-transform center.
-		dynCenter := scaleActive || v.rot != 0
+		// static. When scale is animated the anchor must track the clip's live
+		// size, so use overlay's own w/h ("ax*(W-w)") instead of the static base.
+		// Rotation (like scale animation) grows the overlay box, so it too has to
+		// track the live size rather than the static pre-transform position.
+		dynCenter := scaleActive || rotActive || v.rot != 0
 		cxExpr, cyExpr := fmt.Sprintf("%d", v.cx), fmt.Sprintf("%d", v.cy)
 		if dynCenter {
-			cxExpr, cyExpr = "(W-w)/2", "(H-h)/2"
+			cxExpr = fmt.Sprintf("%.4f*(W-w)", v.ax)
+			cyExpr = fmt.Sprintf("%.4f*(H-h)", v.ay)
 		}
 		var xPos, yPos string
 		switch {
@@ -577,18 +590,23 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 	if sh < 2 {
 		sh = 2
 	}
-	cx, cy := (w-sw)/2, (h-sh)/2
+	// The anchor is the point scaling holds fixed: at anchor fraction a, the box
+	// sits at a*(canvas-box), which is the old (canvas-box)/2 when a = 0.5.
+	ax, ay := c.Transform.AnchorFrac()
+	cx, cy := int(ax*float64(w-sw)), int(ay*float64(h-sh))
 	x := cx + int(c.Transform.X)
 	y := cy + int(c.Transform.Y)
 	if isBG {
 		sw, sh, x, y, cx, cy = w, h, 0, 0, 0, 0
+		ax, ay = 0.5, 0.5
 	}
 	*visuals = append(*visuals, visual{
 		path: p, in: c.In, out: c.Out, start: c.Start, end: c.Start + span + hold,
 		x: x, y: y, sw: sw, sh: sh, opacity: op,
 		speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
-		cx: cx, cy: cy, rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
+		cx: cx, cy: cy, ax: ax, ay: ay,
+		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
 		hold: hold,
 	})
 	if !muted && !isBG && !c.Mute {
@@ -782,59 +800,54 @@ func easeProgress(ease, p string) string {
 	}
 }
 
-// kfExpr compiles animation keyframes into an overlay coordinate: a base
-// position (a plain integer center, or a dynamic "(W-w)/2" expression when the
-// clip's size animates) plus a piecewise-linear function of clip-local time
-// (t-S), holding the first/last value outside the keyed range. Values are
-// canvas-px offsets from center.
-func kfExpr(base string, S float64, kfs []schema.Keyframe) string {
+// kfPiecewise compiles keyframes into a piecewise function of clip-local time,
+// eased per the LEFT keyframe's curve and holding the first/last value outside
+// the keyed range — the exact shape kfValue() interpolates in the browser.
+//
+// timeVar is the filter's own time variable: "t" for most filters, "T" inside
+// geq. The result is bare; callers wrap, quote, and unit-convert it. Note that
+// an ffmpeg filter argument containing commas must be single-quoted, which is
+// why every wrapper below either quotes or is used inside a quoted context.
+func kfPiecewise(timeVar string, S float64, kfs []schema.Keyframe) string {
 	pts := append([]schema.Keyframe(nil), kfs...)
 	sort.SliceStable(pts, func(i, j int) bool { return pts[i].T < pts[j].T })
 	if len(pts) == 1 {
-		return fmt.Sprintf("'(%s+%.3f)'", base, pts[0].Value)
+		return fmt.Sprintf("%.4f", pts[0].Value)
 	}
-	local := fmt.Sprintf("(t-%.3f)", S)
-	// Innermost fallback: hold the last value.
-	expr := fmt.Sprintf("%.3f", pts[len(pts)-1].Value)
+	local := fmt.Sprintf("(%s-%.3f)", timeVar, S)
+	expr := fmt.Sprintf("%.4f", pts[len(pts)-1].Value) // innermost: hold the last
 	for i := len(pts) - 2; i >= 0; i-- {
 		a, b := pts[i], pts[i+1]
-		dt := b.T - a.T
-		if dt < 1e-3 {
-			dt = 1e-3
-		}
-		p := easeProgress(a.Ease, fmt.Sprintf("(%s-%.3f)/%.3f", local, a.T, dt))
-		seg := fmt.Sprintf("(%.3f+(%.3f)*%s)", a.Value, b.Value-a.Value, p)
-		expr = fmt.Sprintf("if(lt(%s,%.3f),%s,%s)", local, b.T, seg, expr)
-	}
-	// Before the first key: hold the first value.
-	expr = fmt.Sprintf("if(lt(%s,%.3f),%.3f,%s)", local, pts[0].T, pts[0].Value, expr)
-	return fmt.Sprintf("'(%s+%s)'", base, expr)
-}
-
-// kfScaleExpr compiles scale keyframes into a bare multiplier expression of
-// timeline time t (piecewise-linear, held outside the keyed range), for a
-// scale filter in eval=frame mode. A keyframe Value is an absolute scale
-// multiplier (1 = canvas-fit), overriding the clip's static Transform.Scale.
-func kfScaleExpr(S float64, kfs []schema.Keyframe) string {
-	pts := append([]schema.Keyframe(nil), kfs...)
-	sort.SliceStable(pts, func(i, j int) bool { return pts[i].T < pts[j].T })
-	if len(pts) == 1 {
-		return fmt.Sprintf("(%.4f)", math.Max(0, pts[0].Value))
-	}
-	local := fmt.Sprintf("(t-%.3f)", S)
-	expr := fmt.Sprintf("%.4f", pts[len(pts)-1].Value)
-	for i := len(pts) - 2; i >= 0; i-- {
-		a, b := pts[i], pts[i+1]
-		dt := b.T - a.T
-		if dt < 1e-3 {
-			dt = 1e-3
-		}
+		dt := math.Max(b.T-a.T, 1e-3)
 		p := easeProgress(a.Ease, fmt.Sprintf("(%s-%.3f)/%.3f", local, a.T, dt))
 		seg := fmt.Sprintf("(%.4f+(%.4f)*%s)", a.Value, b.Value-a.Value, p)
 		expr = fmt.Sprintf("if(lt(%s,%.3f),%s,%s)", local, b.T, seg, expr)
 	}
-	expr = fmt.Sprintf("if(lt(%s,%.3f),%.4f,%s)", local, pts[0].T, pts[0].Value, expr)
-	return "(" + expr + ")"
+	// Before the first key: hold the first value.
+	return fmt.Sprintf("if(lt(%s,%.3f),%.4f,%s)", local, pts[0].T, pts[0].Value, expr)
+}
+
+// kfExpr compiles position keyframes into an overlay coordinate: a base position
+// (a plain integer anchor, or a dynamic "ax*(W-w)" expression when the clip's
+// size animates) plus the keyed offset. Values are canvas-px offsets from the
+// anchored base.
+func kfExpr(base string, S float64, kfs []schema.Keyframe) string {
+	return fmt.Sprintf("'(%s+%s)'", base, kfPiecewise("t", S, kfs))
+}
+
+// kfScaleExpr compiles scale keyframes into a bare multiplier expression for a
+// scale filter in eval=frame mode. A keyframe Value is an absolute scale
+// multiplier (1 = canvas-fit), overriding the clip's static Transform.Scale.
+// Negative values need no guard here — the call site clamps to max(2,…) px.
+func kfScaleExpr(S float64, kfs []schema.Keyframe) string {
+	return "(" + kfPiecewise("t", S, kfs) + ")"
+}
+
+// kfRotExpr compiles rotation keyframes into an angle expression for the rotate
+// filter, which re-evaluates its angle every frame. Keyframe values are degrees
+// (matching Transform.Rotation); rotate wants radians.
+func kfRotExpr(S float64, kfs []schema.Keyframe) string {
+	return fmt.Sprintf("'((%s)*%.10f)'", kfPiecewise("t", S, kfs), math.Pi/180)
 }
 
 // addTitleClip renders a text clip to a PNG and appends it as a still visual so
@@ -858,7 +871,8 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 		op = 1
 	}
 	sw, sh := int(float64(w)*scale), int(float64(h)*scale)
-	cx, cy := (w-sw)/2, (h-sh)/2
+	ax, ay := c.Transform.AnchorFrac()
+	cx, cy := int(ax*float64(w-sw)), int(ay*float64(h-sh))
 	x, y := cx+int(c.Transform.X), cy+int(c.Transform.Y)
 
 	reveal := strings.TrimSpace(c.Title.Reveal)
@@ -872,7 +886,8 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 			x: x, y: y, sw: sw, sh: sh, opacity: op,
 			fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 			transIn: c.TransitionIn, transOut: c.TransitionOut,
-			cx: cx, cy: cy, keyframes: c.Keyframes, effects: c.Effects,
+			cx: cx, cy: cy, ax: ax, ay: ay,
+			rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects,
 			still: true,
 		})
 		return nil
@@ -906,7 +921,8 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 			path: png, start: start, end: end,
 			x: x, y: y, sw: sw, sh: sh, opacity: op,
 			fadeIn: fadeIn, fadeOut: fadeOut,
-			cx: cx, cy: cy, effects: c.Effects,
+			cx: cx, cy: cy, ax: ax, ay: ay,
+			rot: c.Transform.Rotation, effects: c.Effects,
 			still: true,
 		})
 	}
@@ -964,27 +980,10 @@ func titleRevealSteps(text, mode string) []int {
 	return bounds
 }
 
-// kfOpacityExpr builds a bare piecewise-linear 0..1 expression of geq time T
-// (clip-local via T-S), for animating a clip's alpha. Held outside the range.
+// kfOpacityExpr builds a bare piecewise 0..1 expression for animating a clip's
+// alpha. geq exposes time as T rather than t.
 func kfOpacityExpr(S float64, kfs []schema.Keyframe) string {
-	pts := append([]schema.Keyframe(nil), kfs...)
-	sort.SliceStable(pts, func(i, j int) bool { return pts[i].T < pts[j].T })
-	if len(pts) == 1 {
-		return fmt.Sprintf("%.4f", pts[0].Value)
-	}
-	local := fmt.Sprintf("(T-%.3f)", S)
-	expr := fmt.Sprintf("%.4f", pts[len(pts)-1].Value)
-	for i := len(pts) - 2; i >= 0; i-- {
-		a, b := pts[i], pts[i+1]
-		dt := b.T - a.T
-		if dt < 1e-3 {
-			dt = 1e-3
-		}
-		p := easeProgress(a.Ease, fmt.Sprintf("(%s-%.3f)/%.3f", local, a.T, dt))
-		seg := fmt.Sprintf("(%.4f+(%.4f)*%s)", a.Value, b.Value-a.Value, p)
-		expr = fmt.Sprintf("if(lt(%s,%.3f),%s,%s)", local, b.T, seg, expr)
-	}
-	return fmt.Sprintf("if(lt(%s,%.3f),%.4f,%s)", local, pts[0].T, pts[0].Value, expr)
+	return kfPiecewise("T", S, kfs)
 }
 
 // playSpan is the on-timeline duration of a source range after speed scaling.

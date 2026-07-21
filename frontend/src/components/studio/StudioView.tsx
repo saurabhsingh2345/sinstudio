@@ -76,6 +76,7 @@ import type {
   Clip,
   EditDoc,
   GeneratorStatus,
+  Keyable,
   LibraryEntry,
   ParamSpec,
   PluginState,
@@ -83,7 +84,8 @@ import type {
   Track,
 } from "../../types";
 import { SAMPLES } from "../../generatorSamples";
-import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
+import { anchorFrac, clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
+import { MOTION_PRESETS } from "../../motionPresets";
 import { api } from "../../api";
 import { PluginDocEditor } from "./PluginDocEditor";
 import { parseDoc, seedDoc, serializeDoc, type Doc } from "../../pluginDoc";
@@ -1327,7 +1329,8 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
     window.addEventListener("pointerup", up);
   };
 
-  const selRot = selClip?.transform.rotation || 0;
+  // Follows keyframed rotation so the selection box stays glued to the clip.
+  const selRot = selBox?.rotation || 0;
   const handle = "absolute h-2.5 w-2.5 rounded-[2px] bg-background border border-brand shadow-[0_0_0_1px_rgba(0,0,0,0.5)]";
 
   return (
@@ -1364,7 +1367,7 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                       opacity: box.opacity,
                       overflow: "hidden",
                       pointerEvents: "none",
-                      transform: clip.transform.rotation ? `rotate(${clip.transform.rotation}deg)` : undefined,
+                      transform: box.rotation ? `rotate(${box.rotation}deg)` : undefined,
                     }}
                   >
                     <div
@@ -1392,7 +1395,7 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
               }
               const asset = doc.assets.find((a) => a.id === clip.assetId);
               if (!asset) return null;
-              const rot = clip.transform.rotation || 0;
+              const rot = box.rotation;
               const style = {
                 width: box.vw,
                 height: box.vh,
@@ -2767,6 +2770,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
         <SliderRow label="Scale" value={Math.round(tr.scale * 100)} min={10} max={300} step={1} onChange={(v) => setTr({ scale: v / 100 })} fmt={(v) => `${v}%`} />
         <SliderRow label="Rotate" value={tr.rotation || 0} min={-180} max={180} step={1} onChange={(v) => setTr({ rotation: v })} fmt={(v) => `${v}°`} />
         <SliderRow label="Opacity" value={Math.round(tr.opacity * 100)} min={0} max={100} step={1} onChange={(v) => setTr({ opacity: v / 100 })} fmt={(v) => `${v}%`} />
+        <AnchorPicker tr={tr} onChange={setTr} />
       </Section>
 
       <KeyframeEditor trackId={trackId} clip={clip} />
@@ -2839,16 +2843,76 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
   );
 }
 
+// AnchorPicker sets the zoom origin — the point a scale animation holds fixed.
+// Dragging it onto a UI element is what turns a generic zoom into "zoom into
+// THAT". Stored center-relative (0 = center), so the pad's middle is the default.
+function AnchorPicker({ tr, onChange }: { tr: Clip["transform"]; onChange: (p: Partial<Clip["transform"]>) => void }) {
+  const padRef = useRef<HTMLDivElement>(null);
+  const [ax, ay] = anchorFrac(tr);
+  const centered = !tr.anchorX && !tr.anchorY;
+
+  const setFromEvent = (e: { clientX: number; clientY: number }) => {
+    const r = padRef.current?.getBoundingClientRect();
+    if (!r || !r.width || !r.height) return;
+    const fx = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    const fy = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
+    onChange({ anchorX: +(fx - 0.5).toFixed(4), anchorY: +(fy - 0.5).toFixed(4) });
+  };
+
+  const drag = (e: React.PointerEvent) => {
+    e.preventDefault();
+    setFromEvent(e);
+    const move = (ev: PointerEvent) => setFromEvent(ev);
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Anchor</span>
+        <button
+          onClick={() => onChange({ anchorX: undefined, anchorY: undefined })}
+          disabled={centered}
+          className="text-[10px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+        >
+          {centered ? "centered" : "reset"}
+        </button>
+      </div>
+      <div
+        ref={padRef}
+        onPointerDown={drag}
+        title="Drag to set the zoom origin"
+        className="relative aspect-video w-full cursor-crosshair rounded border hairline bg-panel-2"
+      >
+        {/* center guides, so "back to the middle" is findable by eye */}
+        <div className="pointer-events-none absolute inset-x-0 top-1/2 border-t hairline opacity-40" />
+        <div className="pointer-events-none absolute inset-y-0 left-1/2 border-l hairline opacity-40" />
+        <div
+          className="pointer-events-none absolute h-2.5 w-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-brand bg-background"
+          style={{ left: `${ax * 100}%`, top: `${ay * 100}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
 function KeyframeEditor({ trackId, clip }: { trackId: string; clip: Clip }) {
   const addKeyframe = useStudio((s) => s.addKeyframe);
   const updateKeyframe = useStudio((s) => s.updateKeyframe);
   const setKeyframeEase = useStudio((s) => s.setKeyframeEase);
   const removeKeyframe = useStudio((s) => s.removeKeyframe);
+  const applyMotionPreset = useStudio((s) => s.applyMotionPreset);
   const playhead = useStudio((s) => s.playhead);
-  const props: { k: "x" | "y" | "scale" | "opacity"; label: string }[] = [
+  const props: { k: Keyable; label: string }[] = [
     { k: "x", label: "X" },
     { k: "y", label: "Y" },
     { k: "scale", label: "Scale" },
+    { k: "rotation", label: "Rotate" },
     { k: "opacity", label: "Opacity" },
   ];
   const localT = Math.max(0, +(playhead - clip.start).toFixed(2));
@@ -2857,6 +2921,27 @@ function KeyframeEditor({ trackId, clip }: { trackId: string; clip: Clip }) {
     <Section label="Motion keyframes" defaultOpen={false}>
       <div className="text-[10.5px] leading-relaxed text-muted-foreground">
         Set a Transform value, move the playhead, then key it. Playhead t = {localT}s (clip-local).
+      </div>
+      <div>
+        <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">Camera move</div>
+        <div className="grid grid-cols-2 gap-1">
+          {MOTION_PRESETS.map((p) => (
+            <button
+              key={p.id}
+              title={p.hint}
+              onClick={() => {
+                applyMotionPreset(trackId, clip.id, p.id);
+                toast.success(`${p.label} applied`);
+              }}
+              className="rounded border hairline bg-panel-2 px-1.5 py-1 text-[10.5px] hover:bg-panel-3"
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-1 text-[10px] leading-relaxed text-muted-foreground">
+          Zooms scale about the anchor — drop it on what you're emphasizing first.
+        </div>
       </div>
       {props.map(({ k, label }) => {
         const keys = clip.keyframes?.[k] ?? [];

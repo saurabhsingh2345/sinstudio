@@ -258,8 +258,10 @@ func TestScaleKeyframesRun(t *testing.T) {
 	if !strings.Contains(joined, "eval=frame") {
 		t.Errorf("expected an eval=frame scale filter for scale keyframes")
 	}
-	if !strings.Contains(joined, "(W-w)/2") {
-		t.Errorf("expected dynamic overlay re-centering for scale keyframes")
+	// Re-centering is expressed against overlay's live w/h. A default (centered)
+	// anchor compiles to 0.5*(W-w) — the anchored generalization of (W-w)/2.
+	if !strings.Contains(joined, "0.5000*(W-w)") {
+		t.Errorf("expected dynamic overlay re-centering for scale keyframes, got:\n%s", joined)
 	}
 	if b, err := exec.Command("ffmpeg", plan.Args...).CombinedOutput(); err != nil {
 		t.Fatalf("ffmpeg failed: %v\n%s", err, b)
