@@ -99,6 +99,22 @@ export function canMapToVideo(surface: string | undefined): boolean {
 }
 
 /**
+ * The crop a region recording applied, in captured-frame pixels.
+ *
+ * Needed because the two coordinate systems stop agreeing once a region is
+ * recorded: cursord still reports against the whole screen, while the video is
+ * now a rectangle inside it. Scaling needs the full frame; placing needs the
+ * region's origin. Both, or the pointer lands somewhere it never was.
+ */
+export interface CaptureCrop {
+  /** The whole captured frame the region was taken from. */
+  frame: { width: number; height: number };
+  /** The region's top-left within that frame. */
+  x: number;
+  y: number;
+}
+
+/**
  * Convert a cursord session into a sidecar aligned to one recorded track.
  *
  * `videoStartedAt` is when that MediaRecorder actually began — cursord starts
@@ -108,21 +124,40 @@ export function canMapToVideo(surface: string | undefined): boolean {
  * Scaling handles the display-vs-capture resolution gap: a Retina screen
  * reported at 1728 wide may be captured at 1728 or 3456, and a constrained
  * capture may be smaller than either.
+ *
+ * `crop` additionally shifts samples into a region recording's own frame. This
+ * is the single boundary where pointer coordinates are converted, which is why
+ * the offset belongs here: everything downstream — renderer, preview, the
+ * sidecar's own contract that coordinates are in the recorded video's pixel
+ * space — then needs to know nothing about regions at all.
  */
 export function toSidecar(
   rec: CursorRecording,
   videoStartedAt: number,
   video: { width: number; height: number },
-  cursorHidden = false
+  cursorHidden = false,
+  crop?: CaptureCrop
 ): CursorSidecar {
-  const sx = rec.screen.width > 0 ? video.width / rec.screen.width : 1;
-  const sy = rec.screen.height > 0 ? video.height / rec.screen.height : 1;
+  // Scale against the WHOLE captured frame; a region is a window onto it, not a
+  // smaller capture of the same screen.
+  const frame = crop?.frame ?? video;
+  const sx = rec.screen.width > 0 ? frame.width / rec.screen.width : 1;
+  const sy = rec.screen.height > 0 ? frame.height / rec.screen.height : 1;
+  const ox = crop?.x ?? 0;
+  const oy = crop?.y ?? 0;
 
   const samples: CursorSample[] = [];
   for (const s of rec.samples) {
     const t = s.t - videoStartedAt;
     if (t < 0) continue;
-    const out: CursorSample = { t: Math.round(t), x: Math.round(s.x * sx), y: Math.round(s.y * sy) };
+    const x = Math.round(s.x * sx) - ox;
+    const y = Math.round(s.y * sy) - oy;
+    // A pointer outside the recorded region has no position in this video.
+    // Keeping it would place the highlight outside the clip's box, drawing it
+    // over whatever else is on the canvas; dropping it holds the last position
+    // inside the region instead, which is where the pointer was last seen.
+    if (x < 0 || y < 0 || x > video.width || y > video.height) continue;
+    const out: CursorSample = { t: Math.round(t), x, y };
     if (s.down) out.down = s.down;
     samples.push(out);
   }

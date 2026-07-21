@@ -98,6 +98,7 @@ import {
   isRecordingSupported,
   listInputs,
   startRecording,
+  trackFrameSize,
   type RecordKind,
   type RecordOptions,
   type RecordingHandle,
@@ -118,6 +119,13 @@ import { toast } from "../../toast";
 import { revealedText } from "../../titleAnim";
 import { getPeaks } from "../../peaks";
 import { getCursorTrack, cursorTrackNow } from "../../cursorTracks";
+import {
+  clampRegion,
+  isRegionRecordingSupported,
+  normRegion,
+  regionPixels,
+  type Region,
+} from "../../region";
 import { clickTimes, drawCursorFX } from "./cursor-draw";
 import { playClicksBetween } from "../../clickAudio";
 import { awaitJob } from "../../jobs";
@@ -778,6 +786,21 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
   const cameraRef = useRef<HTMLVideoElement>(null);
   const supported = isRecordingSupported();
 
+  // Region recording is a two-phase start: the share has to exist before a
+  // rectangle can be drawn on it, so "framing" holds the granted stream while
+  // the user picks, and the same stream is then handed to startRecording.
+  const [wantRegion, setWantRegion] = useState(false);
+  const [framing, setFraming] = useState<{ stream: MediaStream; frame: { width: number; height: number } } | null>(null);
+  const [region, setRegion] = useState<Region>({ x: 0.2, y: 0.15, w: 0.6, h: 0.6 });
+  const [tracking, setTracking] = useState(false);
+  const regionOK = isRegionRecordingSupported();
+  // The framing stream, mirrored into a ref so the share's own "ended" listener
+  // can tell "the user stopped sharing while still framing" from "framing ended
+  // because recording began". Without it, hitting the browser's Stop bar mid-
+  // recording would unwind the framing session underneath the recorder.
+  const framingRef = useRef<MediaStream | null>(null);
+  const trackingRef = useRef(false);
+
   useEffect(() => {
     void listInputs().then(({ mics }) => setMics(mics));
   }, [handle]);
@@ -824,8 +847,11 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
           // Cursor data belongs only to the screen capture, and only when that
           // capture is a whole monitor — see canMapToVideo.
           const mappable = tr.kind === "screen" && tr.video && canMapToVideo(tr.surface);
+          // tr.crop is set only for a region recording, and carries the whole
+          // frame the region came out of — pointer samples are still in screen
+          // coordinates, so both are needed to place them.
           const sidecar = cursorRec && mappable
-            ? toSidecar(cursorRec, tr.startedAt, tr.video!, !!tr.cursorHidden)
+            ? toSidecar(cursorRec, tr.startedAt, tr.video!, !!tr.cursorHidden, tr.crop)
             : undefined;
           const res = await api.ingestRecording(
             projectId,
@@ -860,19 +886,97 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
     [projectId, addAsset, addSyncedClips]
   );
 
+  /*
+   * Acquire the share and stop, so a region can be drawn on it.
+   *
+   * Cursor tracking starts HERE rather than at the second step, because
+   * cursor:"never" is a constraint on getDisplayMedia and cannot be applied
+   * afterwards — deciding to hide the real cursor has to happen before the
+   * share exists. Tracking early is harmless: samples before the video's first
+   * frame are dropped when the sidecar is built.
+   */
+  const beginFraming = async () => {
+    try {
+      const wantCursor = !!cursord?.supported && trackCursor && opts.screen;
+      const t = wantCursor ? await startCursorTracking() : false;
+      if (wantCursor && !t) toast.info("Cursor helper didn't start — recording without it.");
+      setTracking(t);
+      trackingRef.current = t;
+
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: {
+          frameRate: { ideal: opts.fps },
+          ...(t && ownCursor ? { cursor: "never" } : {}),
+        } as MediaTrackConstraints,
+        audio: opts.systemAudio,
+      });
+      const frame = trackFrameSize(stream.getVideoTracks()[0]);
+      if (!frame) {
+        stream.getTracks().forEach((x) => x.stop());
+        toast.error("Couldn't read the shared display's size.");
+        return;
+      }
+      // Ending the share from the browser's own bar while framing has to unwind
+      // this, or the panel sits on a dead stream showing a frozen picture. Only
+      // while this stream is still the framing one — once recording starts, the
+      // recorder owns it and has its own listener.
+      stream.getVideoTracks().forEach((x) =>
+        x.addEventListener("ended", () => {
+          if (framingRef.current === stream) cancelFraming();
+        })
+      );
+      framingRef.current = stream;
+      setFraming({ stream, frame });
+    } catch (e) {
+      const msg = String((e as Error)?.message || e);
+      if (/permission|denied|abort/i.test(msg)) toast.info("Recording cancelled.");
+      else toast.error(msg);
+      if (trackingRef.current) void stopCursorTracking();
+      setTracking(false);
+      trackingRef.current = false;
+    }
+  };
+
+  const cancelFraming = () => {
+    framingRef.current = null;
+    setFraming((f) => {
+      f?.stream.getTracks().forEach((t) => t.stop());
+      return null;
+    });
+    // Collect and discard, or the helper keeps running into the next session.
+    if (trackingRef.current) void stopCursorTracking();
+    setTracking(false);
+    trackingRef.current = false;
+  };
+
   const start = async () => {
     try {
-      // Start tracking before capture, so the pointer's position is already
-      // known at frame zero rather than only from its first movement after.
-      const wantCursor = !!cursord?.supported && trackCursor && opts.screen;
-      const tracking = wantCursor ? await startCursorTracking() : false;
+      // Framing already started tracking and acquired the share; a plain start
+      // does both here.
+      let t = tracking;
+      if (!framing) {
+        // Start tracking before capture, so the pointer's position is already
+        // known at frame zero rather than only from its first movement after.
+        const wantCursor = !!cursord?.supported && trackCursor && opts.screen;
+        t = wantCursor ? await startCursorTracking() : false;
+        if (wantCursor && !t) toast.info("Cursor helper didn't start — recording without it.");
+      }
       // Only hide the real cursor once tracking is confirmed running, or the
       // recording would have no cursor at all rather than an editable one.
-      opts.hideCursor = tracking && ownCursor;
-      if (wantCursor && !tracking) toast.info("Cursor helper didn't start — recording without it.");
+      opts.hideCursor = t && ownCursor;
 
-      const h = await startRecording(opts);
-      h.cursorTracking = tracking;
+      const h = await startRecording({
+        ...opts,
+        screenStream: framing?.stream,
+        region: framing && wantRegion ? region : undefined,
+      });
+      // The recorder owns the share from here; framing must let go of it
+      // WITHOUT stopping it.
+      framingRef.current = null;
+      setFraming(null);
+      setTracking(false);
+      trackingRef.current = false;
+      h.cursorTracking = t;
       setElapsed(0);
       setHandle(h);
       // The browser's own "Stop sharing" bar ends the stream without going
@@ -939,10 +1043,44 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
             </Button>
           </div>
         </>
+      ) : framing ? (
+        <>
+          <RegionPicker
+            stream={framing.stream}
+            frame={framing.frame}
+            region={region}
+            onChange={setRegion}
+          />
+          <div className="flex gap-1.5">
+            <Button size="sm" variant="ghost" className="h-7 flex-1 bg-panel-3 text-xs" onClick={cancelFraming}>
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 flex-1 bg-red-600 text-xs text-white hover:bg-red-600/90"
+              onClick={() => void start()}
+            >
+              ● Start recording
+            </Button>
+          </div>
+        </>
       ) : (
         <>
           <div className="space-y-1">
             <ToggleRow label="Screen" hint="You'll pick the display or window next." checked={opts.screen} onChange={(v) => set({ screen: v })} />
+            {opts.screen && (
+              <ToggleRow
+                label="Just a region"
+                hint={
+                  !regionOK
+                    ? "This browser can't crop a capture. Chrome or Edge can."
+                    : "Record a rectangle instead of the whole screen — a smaller file, cropped before it's ever encoded."
+                }
+                checked={wantRegion && regionOK}
+                disabled={!regionOK}
+                onChange={setWantRegion}
+              />
+            )}
             <ToggleRow label="Camera" hint="Lands on the overlay track as picture-in-picture." checked={opts.camera} onChange={(v) => set({ camera: v })} />
             <ToggleRow label="Microphone" hint="Its own audio track, so narration stays adjustable." checked={opts.mic} onChange={(v) => set({ mic: v })} />
             <ToggleRow
@@ -1013,9 +1151,9 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
             size="sm"
             className="h-8 w-full bg-red-600 text-xs text-white hover:bg-red-600/90 disabled:opacity-40"
             disabled={!opts.screen && !opts.camera && !opts.mic}
-            onClick={() => void start()}
+            onClick={() => void (wantRegion && regionOK && opts.screen ? beginFraming() : start())}
           >
-            ● Start recording
+            {wantRegion && regionOK && opts.screen ? "Choose the region…" : "● Start recording"}
           </Button>
           <div className="text-[10px] leading-relaxed text-muted-foreground">
             Each source becomes its own clip, aligned to the moment they started — so
@@ -1027,6 +1165,140 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
   );
 }
 
+
+/**
+ * Drag the rectangle to record out of a live view of the share.
+ *
+ * Drawn on the live stream rather than a still, because what you are framing is
+ * usually moving — a menu you are about to open, a terminal that is scrolling —
+ * and a frozen frame makes you guess whether the thing you want is inside.
+ *
+ * The region is stored as fractions of the frame, so this preview's own size is
+ * irrelevant to the result and the panel can be any width.
+ */
+function RegionPicker({
+  stream,
+  frame,
+  region,
+  onChange,
+}: {
+  stream: MediaStream;
+  frame: { width: number; height: number };
+  region: Region;
+  onChange: (r: Region) => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const boxRef = useRef<HTMLDivElement>(null);
+  const [drawing, setDrawing] = useState(false);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = stream;
+  }, [stream]);
+
+  const px = regionPixels(region, frame.width, frame.height);
+
+  // A drag on empty space draws a new region; a drag on the region moves it.
+  const draw = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const rect = boxRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    e.preventDefault();
+    setDrawing(true);
+    const ox = (e.clientX - rect.left) / rect.width;
+    const oy = (e.clientY - rect.top) / rect.height;
+    const move = (ev: PointerEvent) => {
+      const cx = (ev.clientX - rect.left) / rect.width;
+      const cy = (ev.clientY - rect.top) / rect.height;
+      onChange(clampRegion(normRegion(ox, oy, cx - ox, cy - oy)));
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setDrawing(false);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  const drag = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const rect = boxRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const start = { ...region };
+    const x0 = e.clientX;
+    const y0 = e.clientY;
+    const move = (ev: PointerEvent) => {
+      onChange(
+        clampRegion({
+          ...start,
+          x: start.x + (ev.clientX - x0) / rect.width,
+          y: start.y + (ev.clientY - y0) / rect.height,
+        })
+      );
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  const pct = (v: number) => `${v * 100}%`;
+
+  return (
+    <div className="space-y-1.5">
+      <div
+        ref={boxRef}
+        onPointerDown={draw}
+        className={cn(
+          "relative w-full select-none overflow-hidden rounded border hairline bg-black",
+          drawing ? "cursor-crosshair" : "cursor-crosshair"
+        )}
+        style={{ aspectRatio: `${frame.width} / ${frame.height}` }}
+      >
+        <video ref={videoRef} autoPlay muted playsInline className="pointer-events-none h-full w-full object-contain" />
+        {/* Everything outside the region dimmed, so the framing reads at a glance. */}
+        <div className="pointer-events-none absolute inset-0 bg-black/55" />
+        <div
+          onPointerDown={drag}
+          className="absolute cursor-move border-2 border-brand"
+          style={{ left: pct(region.x), top: pct(region.y), width: pct(region.w), height: pct(region.h) }}
+        >
+          {/* The unmasked window: the live picture shown again, unclipped by the
+              dim above it, so the region shows what will actually be recorded. */}
+          <div className="absolute inset-0 overflow-hidden">
+            <video
+              autoPlay
+              muted
+              playsInline
+              ref={(el) => {
+                if (el && el.srcObject !== stream) el.srcObject = stream;
+              }}
+              className="pointer-events-none absolute object-contain"
+              style={{
+                width: pct(1 / Math.max(region.w, 0.001)),
+                height: pct(1 / Math.max(region.h, 0.001)),
+                left: pct(-region.x / Math.max(region.w, 0.001)),
+                top: pct(-region.y / Math.max(region.h, 0.001)),
+              }}
+            />
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>Drag to draw the region, or drag it to move.</span>
+        {/* The real encoded size, not the fractions — even numbers included, so
+            what is promised here is what the file turns out to be. */}
+        <span className="tabular">
+          {px.w}×{px.h}
+        </span>
+      </div>
+    </div>
+  );
+}
 
 function MediaCard({ asset, onAdd, onRemove }: { asset: Asset; onAdd: () => void; onRemove: () => void }) {
   const Icon = asset.kind === "video" ? VideoIcon : asset.kind === "audio" ? Music2 : ImageIcon;

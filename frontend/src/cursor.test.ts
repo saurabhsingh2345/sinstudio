@@ -102,3 +102,82 @@ describe("toSidecar", () => {
     expect(Number.isFinite(out.samples[0].x)).toBe(true);
   });
 });
+
+describe("toSidecar with a region recording", () => {
+  // cursord reports against the whole screen; a region recording's video is a
+  // rectangle inside it. Getting this wrong misplaces every highlight, ring and
+  // drawn pointer by the region's offset — consistently, so it looks like a
+  // calibration bug rather than a coordinate one.
+  const rec = (samples: { t: number; x: number; y: number }[]) => ({
+    version: 1,
+    startedAt: 0,
+    stoppedAt: 1000,
+    screen: { width: 1920, height: 1080 },
+    samples,
+    clicks: true,
+  });
+
+  it("shifts samples into the region's own frame", () => {
+    const s = toSidecar(rec([{ t: 0, x: 500, y: 400 }]), 0, { width: 640, height: 360 }, false, {
+      frame: { width: 1920, height: 1080 },
+      x: 400,
+      y: 300,
+    });
+    expect(s.samples[0]).toMatchObject({ x: 100, y: 100 });
+    expect(s.video).toEqual({ width: 640, height: 360 });
+  });
+
+  /*
+   * Scaling must use the WHOLE captured frame, not the region.
+   *
+   * A Retina screen reported at 1920 but captured at 3840 needs every sample
+   * doubled before the region's offset is subtracted. Scaling by the region
+   * instead would compound the two errors and put the pointer nowhere near the
+   * content it is marking.
+   */
+  it("scales against the full frame, then offsets by the region", () => {
+    const s = toSidecar(rec([{ t: 0, x: 500, y: 400 }]), 0, { width: 640, height: 360 }, false, {
+      frame: { width: 3840, height: 2160 }, // 2x the reported screen
+      x: 800,
+      y: 600,
+    });
+    // 500 * 2 = 1000, minus the 800 origin.
+    expect(s.samples[0]).toMatchObject({ x: 200, y: 200 });
+  });
+
+  // A pointer outside the region has no position in the video. Keeping it would
+  // place the highlight outside the clip's box — drawn over whatever else is on
+  // the canvas, which is worse than not drawing it.
+  it("drops samples that fall outside the region", () => {
+    const s = toSidecar(
+      rec([
+        { t: 0, x: 500, y: 400 }, // inside
+        { t: 10, x: 100, y: 100 }, // left of the region
+        { t: 20, x: 1900, y: 400 }, // right of it
+      ]),
+      0,
+      { width: 640, height: 360 },
+      false,
+      { frame: { width: 1920, height: 1080 }, x: 400, y: 300 }
+    );
+    expect(s.samples).toHaveLength(1);
+    expect(s.samples[0]).toMatchObject({ x: 100, y: 100 });
+  });
+
+  it("behaves exactly as before when no region was recorded", () => {
+    const samples = [{ t: 0, x: 960, y: 540 }];
+    const withCrop = toSidecar(rec(samples), 0, { width: 1920, height: 1080 }, false);
+    expect(withCrop.samples[0]).toMatchObject({ x: 960, y: 540 });
+  });
+
+  it("keeps click state on a shifted sample", () => {
+    const s = toSidecar(
+      { ...rec([]), samples: [{ t: 0, x: 500, y: 400, down: 1 }] },
+      0,
+      { width: 640, height: 360 },
+      false,
+      { frame: { width: 1920, height: 1080 }, x: 400, y: 300 }
+    );
+    expect(s.samples[0]!.down).toBe(1);
+  });
+});
