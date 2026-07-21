@@ -52,7 +52,13 @@ type Track struct {
 	} `json:"video"`
 	// Clicks records whether button state could be observed at all, so a
 	// consumer can tell "no clicks happened" from "clicks were never visible".
-	Clicks  bool     `json:"clicks"`
+	Clicks bool `json:"clicks"`
+	// Hidden records that the OS cursor was kept OUT of the capture, so the
+	// renderer owns drawing it. This has to travel with the recording rather
+	// than be a project setting: anything captured before we started hiding it
+	// has a cursor burned into the pixels, and drawing a second one over that
+	// is the one outcome worse than not drawing any.
+	Hidden  bool     `json:"hidden,omitempty"`
 	Samples []Sample `json:"samples"`
 }
 

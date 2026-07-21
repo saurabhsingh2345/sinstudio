@@ -746,6 +746,7 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
   const [saving, setSaving] = useState(false);
   const [cursord, setCursord] = useState<CursorHealth | null>(null);
   const [trackCursor, setTrackCursor] = useState(true);
+  const [ownCursor, setOwnCursor] = useState(true);
   const screenRef = useRef<HTMLVideoElement>(null);
   const cameraRef = useRef<HTMLVideoElement>(null);
   const supported = isRecordingSupported();
@@ -796,7 +797,9 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
           // Cursor data belongs only to the screen capture, and only when that
           // capture is a whole monitor — see canMapToVideo.
           const mappable = tr.kind === "screen" && tr.video && canMapToVideo(tr.surface);
-          const sidecar = cursorRec && mappable ? toSidecar(cursorRec, tr.startedAt, tr.video!) : undefined;
+          const sidecar = cursorRec && mappable
+            ? toSidecar(cursorRec, tr.startedAt, tr.video!, !!tr.cursorHidden)
+            : undefined;
           const res = await api.ingestRecording(
             projectId,
             tr.blob,
@@ -836,6 +839,9 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
       // known at frame zero rather than only from its first movement after.
       const wantCursor = !!cursord?.supported && trackCursor && opts.screen;
       const tracking = wantCursor ? await startCursorTracking() : false;
+      // Only hide the real cursor once tracking is confirmed running, or the
+      // recording would have no cursor at all rather than an editable one.
+      opts.hideCursor = tracking && ownCursor;
       if (wantCursor && !tracking) toast.info("Cursor helper didn't start — recording without it.");
 
       const h = await startRecording(opts);
@@ -919,6 +925,19 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
               disabled={!opts.screen}
               onChange={(v) => set({ systemAudio: v })}
             />
+            {cursord?.supported && (
+              <ToggleRow
+                label="Studio draws the cursor"
+                hint={
+                  !trackCursor || !opts.screen
+                    ? "Needs cursor tracking."
+                    : "Keeps the real cursor out of the recording so it can be smoothed, resized and restyled afterwards."
+                }
+                checked={ownCursor && trackCursor && opts.screen}
+                disabled={!trackCursor || !opts.screen}
+                onChange={setOwnCursor}
+              />
+            )}
             {cursord?.supported ? (
               <ToggleRow
                 label="Cursor tracking"
@@ -3098,7 +3117,9 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
       </Section>
 
       {asset?.hasCursor && <SmartFocusSection trackId={trackId} clip={clip} assetId={asset.id} />}
-      {asset?.hasCursor && <CursorFXSection trackId={trackId} clip={clip} />}
+      {asset?.hasCursor && (
+        <CursorFXSection trackId={trackId} clip={clip} ownsCursor={!!asset.cursorHidden} />
+      )}
 
       <KeyframeEditor trackId={trackId} clip={clip} />
 
@@ -3304,7 +3325,7 @@ function SmartFocusSection({ trackId, clip, assetId }: { trackId: string; clip: 
 // CursorFXSection emphasises the pointer on a screen recording. Only shown when
 // the asset actually arrived with a pointer track, since without one every
 // control here is inert — the renderer would silently skip them all.
-function CursorFXSection({ trackId, clip }: { trackId: string; clip: Clip }) {
+function CursorFXSection({ trackId, clip, ownsCursor }: { trackId: string; clip: Clip; ownsCursor: boolean }) {
   const updateClip = useStudio((s) => s.updateClip);
   const fx = clip.cursor ?? {};
   const set = (patch: Partial<CursorFX>) =>
@@ -3319,6 +3340,59 @@ function CursorFXSection({ trackId, clip }: { trackId: string; clip: Clip }) {
       <div className="text-[10.5px] leading-relaxed text-muted-foreground">
         This clip has a recorded pointer track. Effects are drawn on export.
       </div>
+
+      {ownsCursor ? (
+        <>
+          <ToggleRow
+            label="Draw the cursor"
+            hint="This recording was captured without one, so Studio draws it — resize, restyle and smooth it freely."
+            checked={!!fx.pointer}
+            onChange={(v) => toggle("pointer", v)}
+          />
+          {fx.pointer && (
+            <div className="space-y-1 pl-5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Style</span>
+                <select
+                  value={fx.pointer.style ?? "arrow"}
+                  onChange={(e) => set({ pointer: { ...fx.pointer, style: e.target.value } })}
+                  className="h-6 flex-1 rounded border hairline bg-panel px-1 text-[10px] outline-none"
+                >
+                  <option value="arrow">Arrow</option>
+                  <option value="dot">Dot</option>
+                  <option value="ring">Ring</option>
+                </select>
+              </div>
+              <SliderRow
+                label="Size" value={fx.pointer.size ?? 44} min={16} max={160} step={2}
+                onChange={(v) => set({ pointer: { ...fx.pointer, size: v } })} fmt={(v) => `${v}px`}
+              />
+              <SliderRow
+                label="Opacity" value={Math.round((fx.pointer.opacity ?? 1) * 100)} min={20} max={100} step={5}
+                onChange={(v) => set({ pointer: { ...fx.pointer, opacity: v / 100 } })} fmt={(v) => `${v}%`}
+              />
+              <SliderRow
+                label="Smoothing" value={Math.round((fx.pointer.smoothing ?? 0) * 100)} min={0} max={100} step={5}
+                onChange={(v) => set({ pointer: { ...fx.pointer, smoothing: v / 100 } })}
+                fmt={(v) => (v === 0 ? "off" : `${v}%`)}
+              />
+              <ColorRow
+                label="Color" value={fx.pointer.color ?? "#ffffff"}
+                onChange={(v) => set({ pointer: { ...fx.pointer, color: v } })}
+              />
+              <div className="text-[10px] leading-relaxed text-muted-foreground">
+                Smoothing irons out hand shake. Clicks stay pinned to where they actually landed.
+              </div>
+            </div>
+          )}
+        </>
+      ) : (
+        <div className="rounded border hairline bg-panel-2/60 px-2 py-1.5 text-[10px] leading-relaxed text-muted-foreground">
+          The cursor is part of this recording's pixels, so it can't be resized, restyled or
+          smoothed. Enable <span className="text-foreground">Studio draws the cursor</span> before
+          recording to make it editable.
+        </div>
+      )}
 
       <ToggleRow
         label="Highlight"

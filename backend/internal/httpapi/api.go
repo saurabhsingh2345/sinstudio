@@ -368,6 +368,11 @@ func (s *Server) registerAsset(ctx context.Context, projID, assetID, path, name,
 		// the UI, since only the server can see the sidecar.
 		HasCursor: fileExists(cursor.Path(path)),
 	}
+	// Whether Studio owns the cursor is a property of how it was captured, so
+	// it is read from the track rather than assumed.
+	if track, err := cursor.Read(path); err == nil && track != nil {
+		asset.CursorHidden = track.Hidden
+	}
 	if info.Kind != "audio" {
 		thumbs, _ := s.Store.ThumbsDir(projID)
 		thumb := filepath.Join(thumbs, assetID+".jpg")

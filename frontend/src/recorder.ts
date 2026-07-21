@@ -24,6 +24,15 @@ export interface RecordOptions {
   fps: number;
   micDeviceId?: string;
   cameraDeviceId?: string;
+  /**
+   * Keep the OS cursor out of the capture so Studio can draw its own.
+   *
+   * This is what makes the cursor editable at all — smoothing, resizing,
+   * restyling and magnifying are only possible when the pixels don't already
+   * contain a cursor we can't move. Only ask for it when pointer tracking is
+   * actually running, or the recording ends up with no cursor whatsoever.
+   */
+  hideCursor?: boolean;
 }
 
 export interface RecordedTrack {
@@ -39,6 +48,10 @@ export interface RecordedTrack {
   /** "monitor" | "window" | "browser" for a display capture. Only a whole-monitor
    *  capture can be mapped to screen-space pointer coordinates. */
   surface?: string;
+  /** True when the OS cursor was verifiably kept out of the capture, so the
+   *  renderer should draw one. Read back from the track rather than assumed
+   *  from what we asked for — see hideCursor in RecordOptions. */
+  cursorHidden?: boolean;
 }
 
 export interface RecordingHandle {
@@ -127,6 +140,21 @@ function stopStream(s?: MediaStream) {
 // One recorder + its collected chunks. Kept together so stop() can resolve the
 // blob only once the final dataavailable has actually landed — resolving on
 // stop() alone truncates the tail of every recording.
+/**
+ * Whether the OS cursor is verifiably absent from a display track.
+ *
+ * Asking for cursor:"never" is not the same as getting it — the constraint is
+ * optional in the spec and browsers differ. Getting this wrong in either
+ * direction is visible: believe it worked when it didn't and the export has two
+ * cursors; believe it failed when it worked and the export has none. So this
+ * only returns true on a positive confirmation from the track itself, and
+ * treats "the browser won't say" as not hidden.
+ */
+export function cursorIsHidden(track: MediaStreamTrack | undefined): boolean {
+  const s = track?.getSettings?.() as (MediaTrackSettings & { cursor?: string }) | undefined;
+  return s?.cursor === "never";
+}
+
 function record(stream: MediaStream, kind: RecordKind, mimes: string[]) {
   const mime = pickMime(mimes);
   const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
@@ -151,6 +179,7 @@ function record(stream: MediaStream, kind: RecordKind, mimes: string[]) {
       ? { width: settings.width, height: settings.height }
       : undefined;
   const surface = settings?.displaySurface;
+  const hidden = kind === "screen" ? cursorIsHidden(vtrack) : undefined;
 
   const finished = new Promise<RecordedTrack | null>((resolve) => {
     rec.onstop = () => {
@@ -164,6 +193,7 @@ function record(stream: MediaStream, kind: RecordKind, mimes: string[]) {
         startedAt,
         video,
         surface,
+        cursorHidden: hidden,
       });
     };
   });
@@ -188,7 +218,13 @@ export async function startRecording(opts: RecordOptions): Promise<RecordingHand
       // The browser shows its own picker here; there is no way to preselect a
       // display, and the call rejects if the user cancels it.
       screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: opts.fps } },
+        video: {
+          frameRate: { ideal: opts.fps },
+          // Not universally supported, and browsers may quietly ignore it —
+          // which is why what actually happened is read back below rather than
+          // inferred from having asked.
+          ...(opts.hideCursor ? { cursor: "never" } : {}),
+        } as MediaTrackConstraints,
         audio: opts.systemAudio,
       });
     }

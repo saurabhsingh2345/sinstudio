@@ -41,6 +41,8 @@ export interface CursorSidecar {
   version: number;
   video: { width: number; height: number };
   clicks: boolean;
+  /** The OS cursor was kept out of the capture, so the renderer draws it. */
+  hidden?: boolean;
   samples: CursorSample[];
 }
 
@@ -110,7 +112,8 @@ export function canMapToVideo(surface: string | undefined): boolean {
 export function toSidecar(
   rec: CursorRecording,
   videoStartedAt: number,
-  video: { width: number; height: number }
+  video: { width: number; height: number },
+  cursorHidden = false
 ): CursorSidecar {
   const sx = rec.screen.width > 0 ? video.width / rec.screen.width : 1;
   const sy = rec.screen.height > 0 ? video.height / rec.screen.height : 1;
@@ -123,5 +126,5 @@ export function toSidecar(
     if (s.down) out.down = s.down;
     samples.push(out);
   }
-  return { version: 1, video, clicks: rec.clicks, samples };
+  return { version: 1, video, clicks: rec.clicks, hidden: cursorHidden, samples };
 }

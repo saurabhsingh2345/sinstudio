@@ -43,10 +43,19 @@ export interface CursorSpotlight {
   radius?: number; // clear radius in canvas px
   dim?: number; // 0..1 darkness outside it
 }
+export interface CursorPointer {
+  size?: number;
+  opacity?: number; // 0..1
+  style?: string; // arrow | dot | ring
+  color?: string;
+  smoothing?: number; // 0..1
+}
 export interface CursorFX {
   highlight?: CursorHighlight;
   clicks?: CursorClicks;
   spotlight?: CursorSpotlight;
+  /** Studio's own drawn cursor — only for recordings captured without one. */
+  pointer?: CursorPointer;
 }
 
 // Transition types: fade | dissolve | slide-left | slide-right | slide-top | slide-bottom
@@ -197,6 +206,9 @@ export interface Asset {
   // True when a pointer track arrived beside the media, i.e. this is a screen
   // recording cursor effects can be drawn on.
   hasCursor?: boolean;
+  // True when the OS cursor was kept out of the capture, so Studio owns drawing
+  // it — and only then can it be resized, restyled or smoothed.
+  cursorHidden?: boolean;
 }
 
 export interface Canvas {

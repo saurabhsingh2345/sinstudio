@@ -223,6 +223,14 @@ func buildCursorFX(
 	if fx == nil || track == nil || len(track.Samples) == 0 {
 		return nil, nil
 	}
+	// Smooth once, up front, so every effect agrees on where the pointer is.
+	// A drawn cursor on a smoothed path with a highlight on the raw one would
+	// visibly separate the two.
+	if p := fx.Pointer; p != nil && p.Smoothing > 0 && track.Hidden {
+		smoothed := *track
+		smoothed.Samples = smoothPath(track.Samples, p.Smoothing)
+		track = &smoothed
+	}
 	sx := 1.0
 	sy := 1.0
 	if track.Video.Width > 0 {
@@ -330,6 +338,32 @@ func buildCursorFX(
 				})
 			}
 		}
+	}
+
+	// The drawn pointer goes last so it sits above every emphasis effect — a
+	// highlight painted over the cursor would defeat the purpose.
+	//
+	// Gated on track.Hidden: without it the capture already contains a cursor,
+	// and a second one would track along beside the first.
+	if p := fx.Pointer; p != nil && track.Hidden {
+		size := p.Size
+		if size <= 0 {
+			size = defPointerSize
+		}
+		pp := filepath.Join(dir, fmt.Sprintf("cur-%d-ptr.png", idx))
+		hotX, hotY, err := writePointerPNG(pp, p.Style, size, hexColor(p.Color, defPointerColor), p.Opacity)
+		if err != nil {
+			return nil, err
+		}
+		name := fmt.Sprintf("ptr%d", idx)
+		plan.segments = append(plan.segments, cursorSegment{
+			png:    pp,
+			name:   name,
+			x:      fmt.Sprintf("%d", -hotX),
+			y:      fmt.Sprintf("%d", -hotY),
+			enable: fmt.Sprintf("between(t,%.3f,%.3f)", start, end),
+		})
+		cmds = append(cmds, cursorCommands(track, name, sx, sy, start, dur, hotX, hotY)...)
 	}
 
 	plan.cmds = cmds

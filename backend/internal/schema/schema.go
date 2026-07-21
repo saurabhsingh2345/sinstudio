@@ -102,6 +102,23 @@ type CursorFX struct {
 	Highlight *CursorHighlight `json:"highlight,omitempty"`
 	Clicks    *CursorClicks    `json:"clicks,omitempty"`
 	Spotlight *CursorSpotlight `json:"spotlight,omitempty"`
+	// Pointer draws Studio's own cursor. It only applies to a recording whose
+	// track says the real cursor was kept out of the capture — drawing a second
+	// cursor over a burned-in one is worse than drawing none.
+	Pointer *CursorPointer `json:"pointer,omitempty"`
+}
+
+// CursorPointer is the cursor Studio draws itself, which is what makes size,
+// styling and smoothing possible at all.
+type CursorPointer struct {
+	Size    int     `json:"size,omitempty"`    // height in canvas px (0 → 44)
+	Opacity float64 `json:"opacity,omitempty"` // 0..1 (0 → 1)
+	Style   string  `json:"style,omitempty"`   // arrow | dot | ring (empty → arrow)
+	Color   string  `json:"color,omitempty"`   // fill hex (empty → white)
+	// Smoothing irons the jitter out of hand movement, 0..1. Clicks stay
+	// anchored to where they actually landed: a smoothed path that drifts off
+	// the button being clicked is worse than a slightly shaky one.
+	Smoothing float64 `json:"smoothing,omitempty"`
 }
 
 // CursorHighlight draws a soft disc under the pointer so it stays findable on a
@@ -267,6 +284,10 @@ type Asset struct {
 	// beside it. The editor keys the cursor-effects panel off this: offering the
 	// controls on a clip that can never show them is worse than not offering them.
 	HasCursor bool `json:"hasCursor,omitempty"`
+	// CursorHidden means the OS cursor was kept out of the capture, so Studio
+	// owns drawing it. Only then can the cursor be resized, restyled or
+	// smoothed — otherwise it is part of the pixels.
+	CursorHidden bool `json:"cursorHidden,omitempty"`
 }
 
 // EditDoc is the whole persisted project state.

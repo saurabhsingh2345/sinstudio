@@ -3,6 +3,7 @@ package render
 import (
 	"context"
 	"encoding/json"
+	"image/png"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -270,4 +271,66 @@ func TestHighlightLandsOnThePointer(t *testing.T) {
 	if x < 150 || x > 170 || y < 80 || y > 100 {
 		t.Errorf("highlight at (%.1f,%.1f), want the pointer at (160,90)", x, y)
 	}
+}
+
+// writeTrackHidden is writeTrack plus the flag saying whether the OS cursor was
+// kept out of the capture.
+func writeTrackHidden(t *testing.T, mediaPath string, vw, vh int, samples []cursor.Sample, hidden bool) {
+	t.Helper()
+	var tr cursor.Track
+	tr.Version = 1
+	tr.Clicks = true
+	tr.Hidden = hidden
+	tr.Video.Width, tr.Video.Height = vw, vh
+	tr.Samples = samples
+	b, err := json.Marshal(&tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cursor.Path(mediaPath), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// alphaCentroid locates the ink in an RGBA PNG.
+func alphaCentroid(t *testing.T, path string) (float64, float64, int) {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	img, err := png.Decode(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := img.Bounds()
+	var sx, sy float64
+	var n int
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if _, _, _, a := img.At(x, y).RGBA(); a>>8 > 40 {
+				sx += float64(x)
+				sy += float64(y)
+				n++
+			}
+		}
+	}
+	if n == 0 {
+		return 0, 0, 0
+	}
+	return sx / float64(n), sy / float64(n), n
+}
+
+// compileFor compiles against a real media path, so the .cursor.json sidecar
+// beside it is actually found — compileArgs resolves to a fixed /tmp path and
+// would silently see no track at all.
+func compileFor(t *testing.T, doc *schema.EditDoc, src, dir string) string {
+	t.Helper()
+	plan, err := Compile(doc, func(string) (string, bool) { return src, true },
+		filepath.Join(dir, "o.mp4"), dir, Options{})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	return strings.Join(plan.Args, " ")
 }
