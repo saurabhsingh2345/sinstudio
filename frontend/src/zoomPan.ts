@@ -1,0 +1,289 @@
+import { kfValue } from "./components/studio/preview-engine";
+import type { Keyframe } from "./types";
+
+// Zoom-n-pan: the manual half of what SmartFocus does automatically.
+//
+// A zoom is described the way an editor thinks about it — "make THIS rectangle
+// fill the frame, from here to here" — and compiled down to the scale/x/y
+// keyframes the engine already understands. Nothing new reaches the renderer,
+// so a hand-placed zoom and an auto-detected one are the same object by the
+// time they are drawn, and both stay draggable on the timeline afterwards.
+//
+// The rectangle is the source of truth for the UI; the keyframes are the source
+// of truth for the document. `readZoomStops` recovers the former from the
+// latter, so dragging a diamond on the timeline is reflected back in the panel
+// rather than being silently overwritten by a stale rectangle.
+
+/** A region of the canvas, in canvas pixels, to be blown up to fill the frame. */
+export interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface Size {
+  width: number;
+  height: number;
+}
+
+/** Beyond this a screen recording is showing individual pixels, not detail. */
+export const MAX_ZOOM = 8;
+
+export const DEFAULT_RAMP = 0.7;
+export const DEFAULT_EASE = "easeInOut";
+
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
+/**
+ * Offset that brings a point to the centre of frame at a given scale.
+ *
+ * Derivation: the clip is drawn at width W*s centred on the canvas, so a source
+ * point px sits at (W-W*s)/2 + offX + px*s. Setting that equal to W/2 gives
+ * offX = s*(W/2 - px).
+ *
+ * The clamp is what keeps background from showing: at scale s the frame
+ * overhangs the canvas by W*(s-1)/2 per side, and panning further than that
+ * pulls its edge inside the frame. At s = 1 the bound is zero, so a full-size
+ * clip correctly refuses to pan at all.
+ */
+export function centerOffset(point: number, size: number, scale: number): number {
+  const bound = (size * (scale - 1)) / 2;
+  const v = clamp(scale * (size / 2 - point), -bound, bound);
+  // Clamping against a zero bound yields -0, which is numerically fine but
+  // serializes into the document as "-0". Normalize so saved keyframes read
+  // cleanly.
+  return v === 0 ? 0 : v;
+}
+
+/**
+ * Force a rectangle to be something the engine can actually express: the canvas
+ * aspect (one `scale` drives both axes, so a differently-shaped rectangle is
+ * not representable) and wholly inside the canvas.
+ *
+ * Containment is not cosmetic — it is the same rule `centerOffset` clamps to.
+ * A rectangle hanging over the edge would ask to pan further than the zoom
+ * allows, and the frame's edge would come into view as visible background.
+ */
+export function clampRect(rect: Rect, canvas: Size): Rect {
+  const aspect = canvas.width / canvas.height;
+  const w = clamp(rect.w, canvas.width / MAX_ZOOM, canvas.width);
+  const h = w / aspect;
+  return {
+    x: clamp(rect.x, 0, canvas.width - w),
+    y: clamp(rect.y, 0, canvas.height - h),
+    w,
+    h,
+  };
+}
+
+/** The rectangle that fills the frame at scale 1 — i.e. no zoom at all. */
+export const fullFrame = (canvas: Size): Rect => ({ x: 0, y: 0, w: canvas.width, h: canvas.height });
+
+/** Rectangle → the transform that makes it fill the frame. */
+export function rectToTransform(rect: Rect, canvas: Size): { scale: number; x: number; y: number } {
+  const r = clampRect(rect, canvas);
+  const scale = clamp(canvas.width / r.w, 1, MAX_ZOOM);
+  return {
+    scale,
+    x: centerOffset(r.x + r.w / 2, canvas.width, scale),
+    y: centerOffset(r.y + r.h / 2, canvas.height, scale),
+  };
+}
+
+/** The inverse, so an existing keyframe can be shown as a draggable rectangle. */
+export function transformToRect(scale: number, x: number, y: number, canvas: Size): Rect {
+  const s = clamp(scale, 1, MAX_ZOOM);
+  const w = canvas.width / s;
+  const h = canvas.height / s;
+  // Inverting offX = s*(W/2 - px) gives px = W/2 - offX/s.
+  return {
+    x: canvas.width / 2 - x / s - w / 2,
+    y: canvas.height / 2 - y / s - h / 2,
+    w,
+    h,
+  };
+}
+
+/** Convenience for the UI's zoom slider, which thinks in multiples, not widths. */
+export const rectForZoom = (zoom: number, centre: { x: number; y: number }, canvas: Size): Rect => {
+  const s = clamp(zoom, 1, MAX_ZOOM);
+  const w = canvas.width / s;
+  const h = canvas.height / s;
+  return clampRect({ x: centre.x - w / 2, y: centre.y - h / 2, w, h }, canvas);
+};
+
+/** A zoom the editor placed: hold this region from `start` to `end`. */
+export interface ZoomStop {
+  start: number;
+  end: number;
+  rect: Rect;
+  /** Seconds to travel into this zoom from whatever preceded it. */
+  ramp: number;
+  ease: string;
+}
+
+/** A stop with its rectangle already resolved to engine values. */
+export interface ZoomHold {
+  start: number;
+  end: number;
+  scale: number;
+  x: number;
+  y: number;
+  ramp: number;
+  ease: string;
+}
+
+export const holdFromStop = (stop: ZoomStop, canvas: Size): ZoomHold => ({
+  start: stop.start,
+  end: stop.end,
+  ramp: stop.ramp,
+  ease: stop.ease,
+  ...rectToTransform(stop.rect, canvas),
+});
+
+/**
+ * Compile held zooms into scale/x/y keyframes.
+ *
+ * Shared with SmartFocus, which differs only in where its holds come from —
+ * so an auto zoom and a hand-placed one produce identically-shaped motion, and
+ * there is one copy of the rules about when to pull back and when to pan.
+ */
+export function zoomKeyframes(holds: ZoomHold[], duration: number): Record<string, Keyframe[]> {
+  if (!holds.length) return {};
+
+  const scale: Keyframe[] = [];
+  const xs: Keyframe[] = [];
+  const ys: Keyframe[] = [];
+
+  // Keys must ascend strictly; a later write at the same instant replaces the
+  // earlier one rather than producing a zero-length segment.
+  const at = (t: number, s: number, ox: number, oy: number, ease: string) => {
+    const tt = +Math.max(0, Math.min(duration, t)).toFixed(3);
+    const push = (arr: Keyframe[], value: number) => {
+      const prev = arr[arr.length - 1];
+      if (prev && prev.t >= tt) {
+        prev.t = tt;
+        prev.value = value;
+        prev.ease = ease;
+        return;
+      }
+      arr.push({ t: tt, value, ease });
+    };
+    push(scale, +s.toFixed(4));
+    push(xs, Math.round(ox));
+    push(ys, Math.round(oy));
+  };
+
+  const sorted = [...holds].sort((a, b) => a.start - b.start);
+
+  // Start wide, so the first zoom has something to move from.
+  at(0, 1, 0, 0, sorted[0].ease);
+
+  sorted.forEach((h, i) => {
+    const prev = sorted[i - 1];
+
+    if (!prev) {
+      const inStart = Math.max(0, h.start - h.ramp);
+      if (inStart > 0) at(inStart, 1, 0, 0, h.ease);
+    } else if (h.start - prev.end >= prev.ramp + h.ramp) {
+      // Room to breathe: pull back to full frame between the two.
+      at(prev.end + prev.ramp, 1, 0, 0, h.ease);
+      at(Math.max(prev.end + prev.ramp, h.start - h.ramp), 1, 0, 0, h.ease);
+    }
+    // Otherwise stay zoomed and let x/y carry the move — a pan straight from
+    // one target to the next. Pulling out and back in over a gap this short
+    // reads as a flinch, and both endpoints are clamped at the same scale, so
+    // interpolating between them can never expose background either.
+    at(h.start, h.scale, h.x, h.y, "linear");
+    at(h.end, h.scale, h.x, h.y, h.ease);
+  });
+
+  const last = sorted[sorted.length - 1];
+  at(Math.min(duration, last.end + last.ramp), 1, 0, 0, last.ease);
+  if (scale[scale.length - 1].t < duration) at(duration, 1, 0, 0, "linear");
+
+  return { scale, x: xs, y: ys };
+}
+
+/** Write stops into a clip's keyframes, leaving properties zoom doesn't drive alone. */
+export function applyZoomStops(
+  existing: Record<string, Keyframe[]> | undefined,
+  stops: ZoomStop[],
+  duration: number,
+  canvas: Size
+): Record<string, Keyframe[]> | undefined {
+  const rest = { ...(existing ?? {}) };
+  delete rest.scale;
+  delete rest.x;
+  delete rest.y;
+  if (!stops.length) return Object.keys(rest).length ? rest : undefined;
+  return { ...rest, ...zoomKeyframes(stops.map((s) => holdFromStop(s, canvas)), duration) };
+}
+
+const EPS = 1e-3;
+
+// kfValue assumes at least one key. A clip legitimately carries scale and x but
+// no y (a zoom that only ever panned sideways), and an unkeyed property is not
+// animated — which for an offset means zero.
+const sample = (keys: Keyframe[], t: number) => (keys.length ? kfValue(keys, t) : 0);
+
+/**
+ * Recover the editable stops from a clip's keyframes.
+ *
+ * A stop is a *held* region: two consecutive scale keys with the same value and
+ * the same offsets. Anything else — a ramp, or a pan between two stops — is
+ * motion between stops, not a stop, and deliberately isn't listed as one.
+ *
+ * x/y are sampled with `kfValue` rather than read by index, so keyframes that
+ * were hand-edited on the timeline (and no longer line up key-for-key with
+ * scale) still read back as something sensible instead of being dropped.
+ */
+export function readZoomStops(
+  keyframes: Record<string, Keyframe[]> | undefined,
+  canvas: Size
+): ZoomStop[] {
+  const scale = keyframes?.scale ?? [];
+  if (scale.length < 2) return [];
+  const xs = keyframes?.x ?? [];
+  const ys = keyframes?.y ?? [];
+
+  const out: ZoomStop[] = [];
+  for (let i = 0; i < scale.length - 1; i++) {
+    const a = scale[i];
+    const b = scale[i + 1];
+    if (a.value <= 1 + EPS) continue;
+    if (Math.abs(a.value - b.value) > EPS) continue;
+
+    const ax = sample(xs, a.t);
+    const ay = sample(ys, a.t);
+    // Same scale but a moving offset is a pan, not a hold.
+    if (Math.abs(ax - sample(xs, b.t)) > 0.5) continue;
+    if (Math.abs(ay - sample(ys, b.t)) > 0.5) continue;
+
+    const prev = scale[i - 1];
+    out.push({
+      start: a.t,
+      end: b.t,
+      rect: clampRect(transformToRect(a.value, ax, ay, canvas), canvas),
+      ramp: prev ? Math.max(0, +(a.t - prev.t).toFixed(3)) : DEFAULT_RAMP,
+      // A keyframe's ease governs the segment LEAVING it, so the ramp into this
+      // hold is eased by the key before it.
+      ease: prev?.ease || DEFAULT_EASE,
+    });
+    i++; // the pair is consumed; b cannot also open a stop
+  }
+  return out;
+}
+
+/**
+ * Place or replace a stop, keeping the list ordered and non-overlapping.
+ *
+ * Overlaps are resolved by dropping what the new stop covers rather than by
+ * shortening it: two zooms held at once is not a state the engine can render,
+ * and a silently-truncated zoom is harder to understand than a replaced one.
+ */
+export function upsertStop(stops: ZoomStop[], next: ZoomStop): ZoomStop[] {
+  const kept = stops.filter((s) => s.end <= next.start || s.start >= next.end);
+  return [...kept, next].sort((a, b) => a.start - b.start);
+}

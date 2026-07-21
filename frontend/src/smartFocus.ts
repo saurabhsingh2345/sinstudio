@@ -1,5 +1,10 @@
 import type { CursorSample, CursorSidecar } from "./cursor";
 import type { Keyframe } from "./types";
+import { centerOffset, zoomKeyframes, type ZoomHold } from "./zoomPan";
+
+// centerOffset moved to zoomPan (the manual zoom editor needs the same
+// geometry); re-exported so it still reads as part of this module's vocabulary.
+export { centerOffset };
 
 // Auto-zoom derived from what the user was actually doing — Camtasia's
 // SmartFocus, built on the pointer track we already record.
@@ -122,27 +127,6 @@ export function clusterEvents(events: FocusSegment[], gap: number, radius: numbe
 }
 
 /**
- * Offset that brings a point to the centre of frame at a given scale.
- *
- * Derivation: the clip is drawn at width W*s centred on the canvas, so a source
- * point px sits at (W-W*s)/2 + offX + px*s. Setting that equal to W/2 gives
- * offX = s*(W/2 - px).
- *
- * The clamp is what keeps background from showing: at scale s the frame
- * overhangs the canvas by W*(s-1)/2 per side, and panning further than that
- * pulls its edge inside the frame. At s = 1 the bound is zero, so a full-size
- * clip correctly refuses to pan at all.
- */
-export function centerOffset(point: number, size: number, scale: number): number {
-  const bound = (size * (scale - 1)) / 2;
-  const v = clamp(scale * (size / 2 - point), -bound, bound);
-  // Clamping against a zero bound yields -0, which is numerically fine but
-  // serializes into the document as "-0". Normalize so saved keyframes read
-  // cleanly.
-  return v === 0 ? 0 : v;
-}
-
-/**
  * Build focus segments from a pointer track. Exposed separately from keyframe
  * emission so the UI can say how many zooms it found before committing them.
  */
@@ -202,62 +186,19 @@ export function focusKeyframes(
   const sx = video.width > 0 ? canvas.width / video.width : 1;
   const sy = video.height > 0 ? canvas.height / video.height : 1;
 
-  const scale: Keyframe[] = [];
-  const xs: Keyframe[] = [];
-  const ys: Keyframe[] = [];
-
-  // Keys must ascend strictly; a later write at the same instant replaces the
-  // earlier one rather than producing a zero-length segment.
-  const at = (t: number, s: number, ox: number, oy: number, ease: string) => {
-    const tt = +Math.max(0, Math.min(duration, t)).toFixed(3);
-    const push = (arr: Keyframe[], value: number) => {
-      const prev = arr[arr.length - 1];
-      if (prev && prev.t >= tt) {
-        prev.t = tt;
-        prev.value = value;
-        prev.ease = ease;
-        return;
-      }
-      arr.push({ t: tt, value, ease });
-    };
-    push(scale, +s.toFixed(4));
-    push(xs, Math.round(ox));
-    push(ys, Math.round(oy));
-  };
-
-  const offsets = segs.map((seg) => ({
-    ox: centerOffset(seg.x * sx, canvas.width, opts.zoom),
-    oy: centerOffset(seg.y * sy, canvas.height, opts.zoom),
+  // Each focus point becomes a held zoom; the shared compiler decides when to
+  // pull back to full frame and when to pan straight across (see zoomPan.ts).
+  const holds: ZoomHold[] = segs.map((seg) => ({
+    start: seg.start,
+    end: seg.end,
+    scale: opts.zoom,
+    x: centerOffset(seg.x * sx, canvas.width, opts.zoom),
+    y: centerOffset(seg.y * sy, canvas.height, opts.zoom),
+    ramp: opts.ramp,
+    ease: opts.ease,
   }));
 
-  // Start wide, so the first zoom has something to move from.
-  at(0, 1, 0, 0, opts.ease);
-
-  segs.forEach((seg, i) => {
-    const { ox, oy } = offsets[i];
-    const prev = segs[i - 1];
-
-    if (!prev) {
-      const inStart = Math.max(0, seg.start - opts.ramp);
-      if (inStart > 0) at(inStart, 1, 0, 0, opts.ease);
-    } else if (seg.start - prev.end >= opts.ramp * 2) {
-      // Room to breathe: pull back to full frame between the two.
-      at(prev.end + opts.ramp, 1, 0, 0, opts.ease);
-      at(Math.max(prev.end + opts.ramp, seg.start - opts.ramp), 1, 0, 0, opts.ease);
-    }
-    // Otherwise stay zoomed and let x/y carry the move — a pan straight from
-    // one target to the next. Pulling out and back in over a gap this short
-    // reads as a flinch, and both endpoints are clamped at the same scale, so
-    // interpolating between them can never expose background either.
-    at(seg.start, opts.zoom, ox, oy, "linear");
-    at(seg.end, opts.zoom, ox, oy, opts.ease);
-  });
-
-  const lastSeg = segs[segs.length - 1];
-  at(Math.min(duration, lastSeg.end + opts.ramp), 1, 0, 0, opts.ease);
-  if (scale[scale.length - 1].t < duration) at(duration, 1, 0, 0, "linear");
-
-  return { scale, x: xs, y: ys };
+  return zoomKeyframes(holds, duration);
 }
 
 /** Convenience: track → keyframes in one step. */
