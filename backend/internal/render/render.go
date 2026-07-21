@@ -59,6 +59,8 @@ type visual struct {
 	cursorFX          *schema.CursorFX
 	cursorPath        string      // media path, for finding the .cursor.json sidecar
 	cursor            *cursorPlan // compiled emphasis overlays, nil if none
+	// Regions blurred/pixelated in the clip's own picture, before any transform.
+	redactions []schema.Redaction
 }
 
 // audio is a resolved audio contribution.
@@ -348,22 +350,38 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			se := kfScaleExpr(v.start, v.keyframes["scale"])
 			scaleSeg = fmt.Sprintf("scale=w='max(2,%d*%s)':h='max(2,%d*%s)':eval=frame:flags=bicubic", w, se, h, se)
 		}
+		// Redactions branch the chain (split → crop → resample → overlay), so the
+		// source segment is cut short and handed to them; without any, the chain
+		// stays exactly as linear as it was.
+		redacting := len(v.redactions) > 0
 		if v.still {
 			// Looped still (title PNG): bound to its span, PTS shifted to start.
 			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", v.path)
-			fmt.Fprintf(&fc,
-				"[%d:v]setpts=PTS-STARTPTS+%.3f/TB,%s,format=rgba",
-				inputIdx, v.start, scaleSeg)
+			fmt.Fprintf(&fc, "[%d:v]setpts=PTS-STARTPTS+%.3f/TB", inputIdx, v.start)
 		} else {
 			args = append(args, "-i", v.path)
 			fmt.Fprintf(&fc,
-				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB,%s,format=rgba",
-				inputIdx, v.in, v.out, sp, v.start, scaleSeg)
-			// Hold: clone the last frame for `hold` more seconds so the clip covers
-			// trailing audio with a freeze-frame instead of cutting to background.
-			if v.hold > 0 {
-				fmt.Fprintf(&fc, ",tpad=stop_mode=clone:stop_duration=%.3f", v.hold)
+				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB",
+				inputIdx, v.in, v.out, sp, v.start)
+		}
+		if redacting {
+			// Applied here — on the clip's own pixels, at its own resolution, before
+			// any scaling — so a blurred region stays on the content it hides when
+			// the clip is zoomed or panned.
+			src := fmt.Sprintf("[rs%d]", i)
+			fmt.Fprintf(&fc, "%s;", src)
+			last := src
+			for k, r := range v.redactions {
+				last = writeRedaction(&fc, last, i, k, r)
 			}
+			fmt.Fprintf(&fc, "%s%s,format=rgba", last, scaleSeg)
+		} else {
+			fmt.Fprintf(&fc, ",%s,format=rgba", scaleSeg)
+		}
+		// Hold: clone the last frame for `hold` more seconds so the clip covers
+		// trailing audio with a freeze-frame instead of cutting to background.
+		if !v.still && v.hold > 0 {
+			fmt.Fprintf(&fc, ",tpad=stop_mode=clone:stop_duration=%.3f", v.hold)
 		}
 		// Rotation about the clip's center. format=rgba first so the corners exposed
 		// by the rotation are transparent (c=none), not black. Positioning below
@@ -718,7 +736,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
 		cx: cx, cy: cy, ax: ax, ay: ay,
 		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
-		hold: hold, cursorFX: c.Cursor, cursorPath: p,
+		hold: hold, cursorFX: c.Cursor, cursorPath: p, redactions: validRedactions(c.Redactions),
 	})
 	if !muted && !isBG && !c.Mute {
 		vol := c.Volume

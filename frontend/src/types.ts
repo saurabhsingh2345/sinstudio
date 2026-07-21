@@ -94,6 +94,21 @@ export interface Title {
   reveal?: TitleReveal; // per-word/character text build-on (renderer-composited)
 }
 
+// Redaction: a blurred/pixelated region of a clip's own picture.
+// Mirrors backend/internal/schema Redaction — keep the two in step.
+export type RedactKind = "blur" | "pixelate";
+
+export interface Redaction {
+  kind: RedactKind;
+  // Fractions of THE CLIP'S OWN FRAME (0..1), not of the canvas — which is what
+  // makes a redaction stick to the thing it hides when the clip is zoomed.
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  amount?: number; // 0..1 strength (0 = unset)
+}
+
 // Annotation: a callout shape drawn over the video (clip has no asset when set).
 // Mirrors backend/internal/schema Annotation — keep the two in step.
 export type AnnoKind = "arrow" | "box" | "ellipse" | "highlight" | "number" | "text";
@@ -160,6 +175,7 @@ export interface Clip {
   disabled?: boolean; // excluded from render/preview without deleting (per-clip enable toggle)
   title?: Title; // when set, this is a text clip (no asset)
   annotation?: Annotation; // when set, this is a callout clip (no asset)
+  redactions?: Redaction[]; // blurred/pixelated regions of this clip's picture
 }
 
 export interface ExportOptions {

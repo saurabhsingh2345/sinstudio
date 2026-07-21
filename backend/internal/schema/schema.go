@@ -94,6 +94,9 @@ type Clip struct {
 	// step numbers a tutorial points with. Like Title it renders to a
 	// full-canvas PNG, so transforms/keyframes/transitions/effects all apply.
 	Annotation *Annotation `json:"annotation,omitempty"`
+	// Redactions blur or pixelate regions of this clip's picture. Applied to the
+	// clip's own pixels before any transform, so they travel with the content.
+	Redactions []Redaction `json:"redactions,omitempty"`
 	// Cursor emphasises the pointer during a screen recording. It only does
 	// anything when the clip's asset has a recorded pointer track beside it
 	// (a .cursor.json sidecar); on any other clip it is inert.
@@ -174,6 +177,32 @@ type Title struct {
 	// Unlike Anim, this can't be expressed as transform keyframes on a single
 	// still, so the renderer composites a sequence of prefix PNGs (see addTitleClip).
 	Reveal string `json:"reveal,omitempty"`
+}
+
+// Redaction kinds.
+const (
+	RedactBlur     = "blur"
+	RedactPixelate = "pixelate"
+)
+
+// Redaction hides part of a clip's own picture — a password, a customer name, a
+// licence key that must not ship. Unlike an Annotation it is not drawn on top of
+// the frame: it resamples the frame's own pixels, so there is nothing to peel
+// off the finished video.
+type Redaction struct {
+	Kind string `json:"kind"` // blur|pixelate
+
+	// Fractions of THE CLIP'S OWN FRAME (0..1), not of the canvas. That is what
+	// makes a redaction stick to the thing it hides: the region is applied before
+	// the clip is scaled or panned, so a zoom carries the blur along with the
+	// content instead of sliding it off.
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
+
+	// Amount is 0..1 strength (0 = unset → a sensible default).
+	Amount float64 `json:"amount,omitempty"`
 }
 
 // Annotation kinds. Anything not recognised draws nothing rather than

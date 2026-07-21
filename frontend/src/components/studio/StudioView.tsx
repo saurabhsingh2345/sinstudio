@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronDown,
@@ -70,6 +70,8 @@ import { ColorSwatch, Field, NumInput, Section, SliderRow, ToggleRow } from "./i
 import { ZoomPanSection } from "./ZoomPanSection";
 import { AnnotationLayer } from "./AnnotationLayer";
 import { AnnotationInspector } from "./AnnotationInspector";
+import { RedactionLayer } from "./RedactionLayer";
+import { RedactSection } from "./RedactSection";
 
 import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
@@ -1815,18 +1817,46 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                 filter: cssFilter(clip.effects, stage.h, H),
                 transform: rot ? `rotate(${rot}deg)` : undefined,
               };
-              if (asset.kind === "image") {
-                return <img key={clip.id} src={mediaUrl(asset.path, asset.createdAt)} style={{ position: "absolute", ...style, objectFit: "contain" }} />;
-              }
+              const media =
+                asset.kind === "image" ? (
+                  <img key={clip.id} src={mediaUrl(asset.path, asset.createdAt)} style={{ position: "absolute", ...style, objectFit: "contain" }} />
+                ) : (
+                  <video
+                    key={clip.id}
+                    ref={(el) => (videoRefs.current[clip.id] = el)}
+                    src={mediaUrl(asset.path, asset.createdAt)}
+                    muted={!!track.muted || (soloActive && !track.solo) || !!clip.mute}
+                    playsInline
+                    style={{ position: "absolute", ...style }}
+                  />
+                );
+              const redactions = clip.redactions ?? [];
+              if (!redactions.length) return media;
+              // A sibling rather than a wrapper: the media element keeps its ref
+              // and styles untouched, and painting right after it puts the
+              // redaction over this clip but still under any clip above it.
               return (
-                <video
-                  key={clip.id}
-                  ref={(el) => (videoRefs.current[clip.id] = el)}
-                  src={mediaUrl(asset.path, asset.createdAt)}
-                  muted={!!track.muted || (soloActive && !track.solo) || !!clip.mute}
-                  playsInline
-                  style={{ position: "absolute", ...style }}
-                />
+                <Fragment key={clip.id}>
+                  {media}
+                  <div
+                    style={{
+                      position: "absolute",
+                      left: box.left,
+                      top: box.top,
+                      width: box.vw,
+                      height: box.vh,
+                      transform: rot ? `rotate(${rot}deg)` : undefined,
+                      pointerEvents: "none",
+                    }}
+                  >
+                    <RedactionLayer
+                      redactions={redactions}
+                      width={box.vw}
+                      height={box.vh}
+                      sourceWidth={asset.width}
+                    />
+                  </div>
+                </Fragment>
               );
             })}
 
@@ -3119,6 +3149,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
       </Section>
 
       {asset && asset.kind !== "audio" && <ZoomPanSection trackId={trackId} clip={clip} asset={asset} />}
+      {asset && asset.kind !== "audio" && <RedactSection trackId={trackId} clip={clip} asset={asset} />}
       {asset?.hasCursor && <SmartFocusSection trackId={trackId} clip={clip} assetId={asset.id} />}
       {asset?.hasCursor && (
         <CursorFXSection trackId={trackId} clip={clip} ownsCursor={!!asset.cursorHidden} />
