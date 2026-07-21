@@ -174,3 +174,26 @@ func TestDrawnCursorRenders(t *testing.T) {
 		t.Fatalf("ffmpeg failed: %v\n%s", err, lastLines(string(b), 6))
 	}
 }
+
+// Golden values shared with the TypeScript preview. See golden_test.go.
+func TestSmoothPathGolden(t *testing.T) {
+	out := smoothPath(goldenSamples(), 0.7)
+	want := map[int][2]int{0: {124, 190}, 5: {140, 183}, 10: {174, 170}, 15: {203, 155}, 19: {221, 148}}
+	for i, w := range want {
+		if out[i].X != w[0] || out[i].Y != w[1] {
+			t.Errorf("smoothPath[%d] = (%d,%d), want (%d,%d) — the preview asserts these same numbers",
+				i, out[i].X, out[i].Y, w[0], w[1])
+		}
+	}
+}
+
+func TestTrackAtGolden(t *testing.T) {
+	tr := &cursor.Track{Samples: goldenSamples()}
+	want := map[float64][2]int{0.05: {122, 191}, 0.12: {155, 178}, 0.25: {212, 154}}
+	for ts, w := range want {
+		x, y := tr.At(ts)
+		if x != w[0] || y != w[1] {
+			t.Errorf("At(%.2f) = (%d,%d), want (%d,%d)", ts, x, y, w[0], w[1])
+		}
+	}
+}

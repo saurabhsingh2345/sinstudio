@@ -5,6 +5,7 @@ import { newId, clipPlayDur } from "./types";
 import { buildTitleAnim } from "./titleAnim";
 import { buildMotionPreset, type MotionPreset } from "./motionPresets";
 import { clearPeaks } from "./peaks";
+import { clearCursorTracks } from "./cursorTracks";
 
 interface StudioState {
   doc: EditDoc | null;
@@ -134,6 +135,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   load: async (id) => {
     const doc = await api.getProject(id);
     clearPeaks(); // drop cached waveforms from any previously-open project
+    clearCursorTracks();
     set({ doc, dirty: false, conflict: null, past: [], future: [], selClip: null, selClips: [], selCue: null, playhead: 0 });
   },
 
@@ -171,6 +173,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const c = get().conflict;
     if (!c) return;
     clearPeaks();
+    clearCursorTracks();
     set({
       doc: c.current,
       conflict: null,

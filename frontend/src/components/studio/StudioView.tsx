@@ -111,6 +111,8 @@ import { useLivePreview, type LivePreview } from "../../useLivePreview";
 import { toast } from "../../toast";
 import { revealedText } from "../../titleAnim";
 import { getPeaks } from "../../peaks";
+import { getCursorTrack, cursorTrackNow } from "../../cursorTracks";
+import { drawCursorFX } from "./cursor-draw";
 import { awaitJob } from "../../jobs";
 import { AppStudio } from "../AppStudio";
 import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel } from "./preview-engine";
@@ -1586,7 +1588,23 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playhead, playing, audiosKey]);
 
-  // draw the active caption cue onto the overlay canvas
+  // Cursor tracks resolve asynchronously; a repaint once they land is what
+  // gets the effects on screen without polling.
+  const [, bumpCursor] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const withFX = visuals.filter(({ clip }) => clip.cursor);
+    if (!withFX.length) return;
+    Promise.all(withFX.map(({ clip }) => getCursorTrack(doc.id, clip.assetId))).then(
+      () => alive && bumpCursor((n) => n + 1)
+    );
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.id, visualsKey]);
+
+  // draw cursor effects, then the active caption cue, onto the overlay canvas
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv) return;
@@ -1594,6 +1612,18 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
     cv.height = stage.h;
     const ctx = cv.getContext("2d")!;
     ctx.clearRect(0, 0, cv.width, cv.height);
+
+    // Cursor emphasis sits under captions, which are the topmost layer, and is
+    // placed through each clip's own box so it rides any zoom — the same rule
+    // the export follows.
+    for (const { clip } of visuals) {
+      if (!clip.cursor) continue;
+      const track = cursorTrackNow(doc.id, clip.assetId);
+      if (!track) continue;
+      const box = clipBox(clip, playhead, stage.w, stage.h, W, H);
+      drawCursorFX(ctx, clip, track, box, playhead - clip.start, stage.w / W);
+    }
+
     const cue = captionTrack(doc)?.cues?.find((c) => playhead >= c.start && playhead < c.end);
     if (cue) {
       const size = (cue.style.size / H) * stage.h;
@@ -1608,7 +1638,8 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
       ctx.strokeText(cue.text, x, y);
       ctx.fillText(cue.text, x, y);
     }
-  }, [playhead, stage, doc, H]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playhead, stage, doc, H, W, visualsKey]);
 
   const bg = doc.tracks.find((t) => t.kind === "background")?.backgroundColor || "#000";
   const level = audioLevel(doc.id, doc.assets, audios, playhead);
