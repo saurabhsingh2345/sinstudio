@@ -43,6 +43,9 @@ interface StudioState {
   removeAsset: (assetId: string) => void;
   addClip: (trackId: string, assetId: string, start: number) => void;
   addClipToLane: (assetId: string, start?: number) => void;
+  addSyncedClips: (
+    items: { assetId: string; lane: "video" | "overlay" | "audio"; startedAt: number }[]
+  ) => void;
   updateClip: (trackId: string, clipId: string, patch: Partial<Clip>) => void;
   moveClip: (fromTrackId: string, toTrackId: string, clipId: string, start: number) => void;
   removeClip: (trackId: string, clipId: string) => void;
@@ -342,6 +345,40 @@ export const useStudio = create<StudioState>((set, get) => ({
         transform: { x: 0, y: 0, scale: 1, opacity: 1 },
         volume: 1,
       });
+    }),
+
+  // addSyncedClips places several assets that were captured together so they
+  // stay in sync. Unlike addClipToLane it never appends to the end of a lane —
+  // a screen recording and its narration have to start at the same instant, and
+  // "after the last clip" would slide them apart. Each source's own start time
+  // preserves the few ms the recorders drifted from each other at launch.
+  addSyncedClips: (items) =>
+    get().mutate((d) => {
+      const present = items.filter((i) => d.assets.some((a) => a.id === i.assetId));
+      if (!present.length) return;
+      const origin = Math.min(...present.map((i) => i.startedAt));
+      const at = Math.max(0, get().playhead);
+      for (const item of present) {
+        const asset = d.assets.find((a) => a.id === item.assetId)!;
+        let t = d.tracks.find((t) => t.kind === item.lane);
+        if (!t) {
+          const label = item.lane === "audio" ? "Audio" : item.lane === "overlay" ? "Overlay" : "Video";
+          t = { id: newId("t_"), kind: item.lane, name: `${label} 1`, clips: [] };
+          const capIdx = d.tracks.findIndex((x) => x.kind === "caption");
+          if (capIdx >= 0) d.tracks.splice(capIdx, 0, t);
+          else d.tracks.push(t);
+        }
+        const dur = asset.duration > 0 ? asset.duration : 5;
+        (t.clips ||= []).push({
+          id: newId("clip_"),
+          assetId: item.assetId,
+          start: +(at + (item.startedAt - origin) / 1000).toFixed(3),
+          in: 0,
+          out: dur,
+          transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+          volume: 1,
+        });
+      }
     }),
 
   updateClip: (trackId, clipId, patch) =>

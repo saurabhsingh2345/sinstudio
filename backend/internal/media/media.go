@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -119,6 +121,50 @@ func decodeDuration(ctx context.Context, path string) float64 {
 		}
 	}
 	return dur
+}
+
+// NeedsRemux reports whether a container should be rewritten before use.
+//
+// A browser MediaRecorder streams its output and can never seek back to finish
+// the header, so what it produces carries no duration and no seek index. The
+// probe can recover a duration by decoding the whole file, but nothing recovers
+// seeking: the preview drives <video>.currentTime on every playhead move, and a
+// cue-less WebM scrubs badly or not at all.
+func NeedsRemux(path string) bool {
+	return strings.EqualFold(filepath.Ext(path), ".webm")
+}
+
+// Remux rewrites a container without touching the streams, which is what
+// restores the duration and seek index a streamed recording never got. It is
+// lossless and I/O-bound — cheap enough to run inline on upload — because the
+// codecs are copied rather than re-encoded.
+func Remux(ctx context.Context, src, dst string) error {
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-loglevel", "error",
+		"-fflags", "+genpts", // a streamed capture can arrive without timestamps
+		"-i", src,
+		"-c", "copy",
+		dst)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("remux: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// RemuxInPlace repairs a file where it sits. The rewrite goes to a temporary
+// sibling and is renamed over the original only on success, so a failed repair
+// leaves the upload exactly as it arrived — an unseekable recording is a poor
+// clip, but a deleted one is no clip at all.
+func RemuxInPlace(ctx context.Context, path string) error {
+	tmp := path + ".remux" + filepath.Ext(path)
+	if err := Remux(ctx, path, tmp); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // Thumbnail writes a single representative JPEG frame for the asset.

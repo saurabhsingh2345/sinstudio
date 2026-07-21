@@ -86,6 +86,14 @@ import type {
 import { SAMPLES } from "../../generatorSamples";
 import { anchorFrac, clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { MOTION_PRESETS } from "../../motionPresets";
+import {
+  isRecordingSupported,
+  listInputs,
+  startRecording,
+  type RecordKind,
+  type RecordOptions,
+  type RecordingHandle,
+} from "../../recorder";
 import { api } from "../../api";
 import { PluginDocEditor } from "./PluginDocEditor";
 import { parseDoc, seedDoc, serializeDoc, type Doc } from "../../pluginDoc";
@@ -606,6 +614,7 @@ function MediaPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
   const removeAsset = useStudio((s) => s.removeAsset);
   const [busy, setBusy] = useState(false);
   const [lib, setLib] = useState(false);
+  const [recording, setRecording] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const onFiles = async (files: FileList | null) => {
@@ -631,8 +640,18 @@ function MediaPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
   return (
     <>
       <div className="flex items-center justify-between px-3 pt-3 pb-2">
-        <div className="text-sm font-medium">Media</div>
+        <div className="text-sm font-medium">{recording ? "Record" : "Media"}</div>
         <div className="flex items-center gap-1">
+          <Button
+            size="sm"
+            variant="ghost"
+            title="Record your screen, camera or microphone"
+            className={cn("h-7 px-2 text-xs", recording && "bg-panel-2 text-foreground")}
+            onClick={() => setRecording((v) => !v)}
+          >
+            <Circle className={cn("mr-1 h-3 w-3", recording ? "fill-red-500 text-red-500" : "text-red-500")} />
+            {recording ? "Close" : "Record"}
+          </Button>
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setLib(true)}>
             <Library className="mr-1 h-3.5 w-3.5" /> Library
           </Button>
@@ -657,10 +676,13 @@ function MediaPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
           />
         </div>
       </div>
+      {recording ? (
+        <RecordPanel projectId={projectId} onClose={() => setRecording(false)} />
+      ) : (
       <div className="scrollbar-thin flex-1 overflow-y-auto px-2 pb-3">
         {doc.assets.length === 0 ? (
           <div className="px-2 py-6 text-center text-[11px] leading-relaxed text-muted-foreground">
-            Import media, browse your Library, or generate a clip from the Plugins tab.
+            Record your screen, import media, browse your Library, or generate a clip from the Plugins tab.
           </div>
         ) : (
           <div className="space-y-1.5">
@@ -670,6 +692,7 @@ function MediaPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
           </div>
         )}
       </div>
+      )}
 
       {lib && (
         <div className="legacy">
@@ -684,6 +707,244 @@ function MediaPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
         </div>
       )}
     </>
+  );
+}
+
+// Where each captured source belongs on the timeline. Screen is the spine;
+// a webcam is picture-in-picture over it; narration is its own audio lane so
+// its level stays independent of whatever the screen recording picked up.
+const RECORD_LANE: Record<RecordKind, "video" | "overlay" | "audio"> = {
+  screen: "video",
+  camera: "overlay",
+  mic: "audio",
+};
+
+function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+  const addAsset = useStudio((s) => s.addAsset);
+  const addSyncedClips = useStudio((s) => s.addSyncedClips);
+  const [opts, setOpts] = useState<RecordOptions>({
+    screen: true,
+    camera: false,
+    mic: true,
+    systemAudio: false,
+    fps: 30,
+  });
+  const [mics, setMics] = useState<MediaDeviceInfo[]>([]);
+  const [handle, setHandle] = useState<RecordingHandle | null>(null);
+  const [paused, setPaused] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const [saving, setSaving] = useState(false);
+  const screenRef = useRef<HTMLVideoElement>(null);
+  const cameraRef = useRef<HTMLVideoElement>(null);
+  const supported = isRecordingSupported();
+
+  useEffect(() => {
+    void listInputs().then(({ mics }) => setMics(mics));
+  }, [handle]);
+
+  // Elapsed clock. Derived from the handle's start rather than counted up, so
+  // it stays honest if the tab is backgrounded and timers are throttled.
+  useEffect(() => {
+    if (!handle || paused) return;
+    const t = setInterval(() => setElapsed((Date.now() - handle.startedAt) / 1000), 200);
+    return () => clearInterval(t);
+  }, [handle, paused]);
+
+  // Attach the live streams to their preview elements so you can see what is
+  // actually being captured before committing minutes to it.
+  useEffect(() => {
+    if (screenRef.current && handle?.preview.screen) screenRef.current.srcObject = handle.preview.screen;
+    if (cameraRef.current && handle?.preview.camera) cameraRef.current.srcObject = handle.preview.camera;
+  }, [handle]);
+
+  const set = (patch: Partial<RecordOptions>) => setOpts((o) => ({ ...o, ...patch }));
+
+  const finish = useCallback(
+    async (h: RecordingHandle) => {
+      setSaving(true);
+      try {
+        const tracks = await h.stop();
+        setHandle(null);
+        setPaused(false);
+        if (!tracks.length) {
+          toast.error("Nothing was captured.");
+          return;
+        }
+        const placed: { assetId: string; lane: "video" | "overlay" | "audio"; startedAt: number }[] = [];
+        for (const tr of tracks) {
+          const res = await api.ingestRecording(projectId, tr.blob, tr.filename, `recording-${tr.kind}`);
+          if (!res.asset) {
+            toast.error(`${tr.kind}: ${res.importError || "upload failed"}`);
+            continue;
+          }
+          if (res.remuxError) toast.error(`${tr.kind}: couldn't repair the container — scrubbing may be rough.`);
+          addAsset(res.asset);
+          placed.push({ assetId: res.asset.id, lane: RECORD_LANE[tr.kind], startedAt: tr.startedAt });
+        }
+        if (placed.length) {
+          addSyncedClips(placed);
+          toast.success(`${placed.length} recorded track${placed.length > 1 ? "s" : ""} → timeline`);
+        }
+      } catch (e) {
+        toast.error(String((e as Error)?.message || e));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [projectId, addAsset, addSyncedClips]
+  );
+
+  const start = async () => {
+    try {
+      const h = await startRecording(opts);
+      setElapsed(0);
+      setHandle(h);
+      // The browser's own "Stop sharing" bar ends the stream without going
+      // through our button, so the recording has to finish itself.
+      h.preview.screen?.getVideoTracks().forEach((t) =>
+        t.addEventListener("ended", () => void finish(h))
+      );
+    } catch (e) {
+      const msg = String((e as Error)?.message || e);
+      // Cancelling the picker is a normal thing to do, not an error worth shouting about.
+      if (/permission|denied|abort/i.test(msg)) toast.info("Recording cancelled.");
+      else toast.error(msg);
+    }
+  };
+
+  if (!supported) {
+    return (
+      <div className="px-3 py-6 text-center text-[11px] leading-relaxed text-muted-foreground">
+        This browser can't capture the screen. Chrome, Edge or Firefox on desktop can.
+        <div className="mt-2">
+          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onClose}>Back to media</Button>
+        </div>
+      </div>
+    );
+  }
+
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const ss = String(Math.floor(elapsed % 60)).padStart(2, "0");
+
+  return (
+    <div className="scrollbar-thin flex-1 space-y-2 overflow-y-auto px-3 pb-3 pt-2">
+      {handle ? (
+        <>
+          <div className="flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 p-2">
+            <span className={cn("h-2 w-2 rounded-full bg-red-500", !paused && "animate-pulse")} />
+            <span className="text-[12px] font-medium tabular">{mm}:{ss}</span>
+            <span className="text-[10px] text-muted-foreground">{paused ? "paused" : "recording"}</span>
+          </div>
+          {handle.preview.screen && (
+            <video ref={screenRef} autoPlay muted playsInline className="w-full rounded border hairline bg-black" />
+          )}
+          {handle.preview.camera && (
+            <video ref={cameraRef} autoPlay muted playsInline className="w-full rounded border hairline bg-black" />
+          )}
+          <div className="flex gap-1.5">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 flex-1 bg-panel-3 text-xs"
+              onClick={() => {
+                paused ? handle.resume() : handle.pause();
+                setPaused(!paused);
+              }}
+            >
+              {paused ? "Resume" : "Pause"}
+            </Button>
+            <Button
+              size="sm"
+              disabled={saving}
+              className="h-7 flex-1 bg-red-600 text-xs text-white hover:bg-red-600/90"
+              onClick={() => void finish(handle)}
+            >
+              {saving ? "Saving…" : "Stop"}
+            </Button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="space-y-1">
+            <ToggleRow label="Screen" hint="You'll pick the display or window next." checked={opts.screen} onChange={(v) => set({ screen: v })} />
+            <ToggleRow label="Camera" hint="Lands on the overlay track as picture-in-picture." checked={opts.camera} onChange={(v) => set({ camera: v })} />
+            <ToggleRow label="Microphone" hint="Its own audio track, so narration stays adjustable." checked={opts.mic} onChange={(v) => set({ mic: v })} />
+            <ToggleRow
+              label="System audio"
+              hint={opts.screen ? "Chrome only, and only for a tab or window share." : "Needs a screen share."}
+              checked={opts.systemAudio && opts.screen}
+              disabled={!opts.screen}
+              onChange={(v) => set({ systemAudio: v })}
+            />
+          </div>
+          {opts.mic && mics.length > 1 && (
+            <select
+              value={opts.micDeviceId ?? ""}
+              onChange={(e) => set({ micDeviceId: e.target.value || undefined })}
+              className="h-7 w-full rounded border hairline bg-panel px-1 text-[11px] outline-none"
+            >
+              <option value="">Default microphone</option>
+              {mics.map((m, i) => (
+                <option key={m.deviceId} value={m.deviceId}>{m.label || `Microphone ${i + 1}`}</option>
+              ))}
+            </select>
+          )}
+          <Field label="Frame rate">
+            <select
+              value={opts.fps}
+              onChange={(e) => set({ fps: Number(e.target.value) })}
+              className="h-7 w-full rounded border hairline bg-panel px-1 text-[11px] outline-none"
+            >
+              <option value={24}>24 fps</option>
+              <option value={30}>30 fps</option>
+              <option value={60}>60 fps — smoother, larger files</option>
+            </select>
+          </Field>
+          <Button
+            size="sm"
+            className="h-8 w-full bg-red-600 text-xs text-white hover:bg-red-600/90 disabled:opacity-40"
+            disabled={!opts.screen && !opts.camera && !opts.mic}
+            onClick={() => void start()}
+          >
+            ● Start recording
+          </Button>
+          <div className="text-[10px] leading-relaxed text-muted-foreground">
+            Each source becomes its own clip, aligned to the moment they started — so
+            narration and screen stay in sync but can be edited apart.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className={cn("flex cursor-pointer items-start gap-2 rounded px-1 py-1", disabled && "cursor-default opacity-45")}>
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 accent-brand"
+      />
+      <span className="min-w-0">
+        <span className="block text-[11.5px] leading-tight">{label}</span>
+        {hint && <span className="block text-[10px] leading-snug text-muted-foreground">{hint}</span>}
+      </span>
+    </label>
   );
 }
 

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"studio/internal/media"
 	"studio/internal/store"
 )
 
@@ -32,6 +33,16 @@ func sanitizeToken(s string) string {
 		}
 	}
 	return string(out)
+}
+
+// truthy reads a form flag written by whatever client happens to be posting —
+// browsers send "1"/"true"/"on" depending on how the field was built.
+func truthy(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
 }
 
 // listLibrary returns clips discovered across all sibling products + the inbox.
@@ -152,6 +163,25 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Close()
 
+	// Repair a streamed container before anything probes or plays it. A browser
+	// recording arrives with no duration and no seek index; leaving it that way
+	// gives a clip the timeline can't measure and the preview can't scrub.
+	//
+	// The uploader declares this with "streamed", because which containers a
+	// MediaRecorder can emit is a moving target — inferring it from the
+	// extension would quietly stop covering the case the day a browser starts
+	// producing something else. The extension check stays as a backstop for
+	// uploaders that don't say (WebM here is a recording in all but name).
+	//
+	// Best-effort by design: a file we failed to repair is still a usable clip,
+	// so the error is reported alongside the asset rather than failing the upload.
+	var remuxErr string
+	if truthy(r.FormValue("streamed")) || media.NeedsRemux(dst) {
+		if err := media.RemuxInPlace(r.Context(), dst); err != nil {
+			remuxErr = err.Error()
+		}
+	}
+
 	// Keep the provenance next to the inbox copy too, so importing this clip
 	// from the library later is just as live as importing it now.
 	if prov != nil {
@@ -190,7 +220,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name, "importError": err.Error()})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "asset": asset, "inbox": s.Store.Rel(dst), "provenanceError": provErr})
+		writeJSON(w, 200, map[string]any{"ok": true, "asset": asset, "inbox": s.Store.Rel(dst), "provenanceError": provErr, "remuxError": remuxErr})
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name})

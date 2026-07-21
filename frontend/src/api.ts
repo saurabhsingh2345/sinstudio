@@ -1,5 +1,6 @@
 import type {
   AppStatus,
+  Asset,
   EditDoc,
   ExportOptions,
   GeneratorStatus,
@@ -89,6 +90,19 @@ export const api = {
     return fetch(`/api/projects/${projId}/assets`, { method: "POST", body: fd }).then((r) =>
       j<{ asset: any; version: number }>(r)
     );
+  },
+  // ingestRecording uploads a browser capture. `streamed` tells the server the
+  // container was written by a MediaRecorder and needs its header repaired —
+  // without that the clip has no duration and the preview can't scrub it.
+  ingestRecording: (projId: string, blob: Blob, filename: string, source: string) => {
+    const fd = new FormData();
+    fd.append("file", blob, filename);
+    fd.append("source", source);
+    fd.append("streamed", "1");
+    return fetch(`/api/ingest?projectId=${encodeURIComponent(projId)}`, {
+      method: "POST",
+      body: fd,
+    }).then((r) => j<{ asset?: Asset; importError?: string; remuxError?: string }>(r));
   },
   generate: (projId: string, generatorId: string, input: string, params: Record<string, string>) =>
     fetch(`/api/projects/${projId}/generate`, {
