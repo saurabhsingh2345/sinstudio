@@ -109,6 +109,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/transcribe", s.transcribe)
 	mux.HandleFunc("POST /api/projects/{id}/export", s.export)
 	mux.HandleFunc("GET /api/projects/{id}/waveform", s.waveform)
+	mux.HandleFunc("GET /api/projects/{id}/cursor", s.cursorTrack)
 	mux.HandleFunc("GET /api/projects/{id}/frame", s.frame)
 	mux.HandleFunc("GET /api/projects/{id}/renders", s.listRenders)
 	mux.HandleFunc("DELETE /api/projects/{id}/renders/{name}", s.deleteRender)

@@ -129,6 +129,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ assetId, input, params }),
     }).then((r) => j<{ jobId: string }>(r)),
+  // The pointer track recorded beside a screen capture, for deriving auto-zoom.
+  cursorTrack: (projId: string, assetId: string) =>
+    fetch(`/api/projects/${projId}/cursor?asset=${encodeURIComponent(assetId)}`).then((r) =>
+      j<{ track: { video: { width: number; height: number }; samples: unknown[] } | null }>(r)
+    ),
   waveform: (projId: string, assetId: string) =>
     fetch(`/api/projects/${projId}/waveform?asset=${assetId}`).then((r) => j<{ peaks: number[] }>(r)),
   transcribe: (projId: string, assetId: string) =>

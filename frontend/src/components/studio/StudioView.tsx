@@ -87,6 +87,7 @@ import type {
 import { SAMPLES } from "../../generatorSamples";
 import { anchorFrac, clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { MOTION_PRESETS } from "../../motionPresets";
+import { SMART_FOCUS_DEFAULTS, smartFocus, type SmartFocusOptions } from "../../smartFocus";
 import {
   isRecordingSupported,
   listInputs,
@@ -3096,6 +3097,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
         <AnchorPicker tr={tr} onChange={setTr} />
       </Section>
 
+      {asset?.hasCursor && <SmartFocusSection trackId={trackId} clip={clip} assetId={asset.id} />}
       {asset?.hasCursor && <CursorFXSection trackId={trackId} clip={clip} />}
 
       <KeyframeEditor trackId={trackId} clip={clip} />
@@ -3165,6 +3167,137 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
         <button onClick={() => resetEffects(trackId, clip.id)} className="text-[10px] text-muted-foreground hover:text-foreground">reset effects</button>
       </Section>
     </>
+  );
+}
+
+// SmartFocusSection derives zoom keyframes from where the user was working.
+//
+// It writes ordinary keyframes rather than a live effect, so every zoom it
+// guesses lands on the timeline as diamonds you can drag, retime or delete.
+// The one zoom it gets wrong is the one you most need to fix.
+function SmartFocusSection({ trackId, clip, assetId }: { trackId: string; clip: Clip; assetId: string }) {
+  const projectId = useStudio((s) => s.doc?.id ?? "");
+  const canvas = useStudio((s) => s.doc?.canvas);
+  const updateClip = useStudio((s) => s.updateClip);
+  const [opts, setOpts] = useState<SmartFocusOptions>(SMART_FOCUS_DEFAULTS);
+  const [busy, setBusy] = useState(false);
+  const [found, setFound] = useState<number | null>(null);
+  const set = (patch: Partial<SmartFocusOptions>) => setOpts((o) => ({ ...o, ...patch }));
+
+  const apply = async (preview: boolean) => {
+    if (!canvas) return;
+    setBusy(true);
+    try {
+      const { track } = await api.cursorTrack(projectId, assetId);
+      if (!track) {
+        toast.error("No pointer track on this clip.");
+        return;
+      }
+      const { keyframes, segments } = smartFocus(
+        track as never,
+        clipPlayDur(clip),
+        { width: canvas.width, height: canvas.height },
+        opts
+      );
+      setFound(segments.length);
+      if (!segments.length) {
+        toast.info("No clicks or dwells found to zoom on — try a lower dwell time.");
+        return;
+      }
+      if (preview) {
+        toast.info(`${segments.length} zoom${segments.length > 1 ? "s" : ""} found.`);
+        return;
+      }
+      // Replaces only the properties focus drives, so a hand-built opacity fade
+      // or rotation survives.
+      const merged = { ...(clip.keyframes ?? {}), ...keyframes };
+      updateClip(trackId, clip.id, { keyframes: merged });
+      toast.success(`${segments.length} zoom${segments.length > 1 ? "s" : ""} → timeline`);
+    } catch (e) {
+      toast.error(String((e as Error)?.message || e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clearFocus = () => {
+    const kf = { ...(clip.keyframes ?? {}) };
+    delete kf.scale;
+    delete kf.x;
+    delete kf.y;
+    updateClip(trackId, clip.id, { keyframes: Object.keys(kf).length ? kf : undefined });
+    setFound(null);
+    toast.success("Zoom keyframes cleared");
+  };
+
+  return (
+    <Section label="Auto zoom" defaultOpen={false}>
+      <div className="text-[10.5px] leading-relaxed text-muted-foreground">
+        Finds where you clicked and paused, and zooms there. Writes normal keyframes —
+        edit or delete any of them afterwards.
+      </div>
+
+      <SliderRow
+        label="Zoom" value={Math.round(opts.zoom * 100)} min={110} max={300} step={5}
+        onChange={(v) => set({ zoom: v / 100 })} fmt={(v) => `${(v / 100).toFixed(2)}×`}
+      />
+      <SliderRow
+        label="Move time" value={Math.round(opts.ramp * 100)} min={20} max={200} step={5}
+        onChange={(v) => set({ ramp: v / 100 })} fmt={(v) => `${(v / 100).toFixed(2)}s`}
+      />
+      <SliderRow
+        label="Min hold" value={Math.round(opts.minHold * 100)} min={40} max={500} step={10}
+        onChange={(v) => set({ minHold: v / 100 })} fmt={(v) => `${(v / 100).toFixed(1)}s`}
+      />
+
+      <ToggleRow
+        label="Zoom on clicks" hint="Each press is a place something happened."
+        checked={opts.useClicks} onChange={(v) => set({ useClicks: v })}
+      />
+      <ToggleRow
+        label="Zoom on pauses" hint="A parked pointer is usually pointing at something."
+        checked={opts.useDwell} onChange={(v) => set({ useDwell: v })}
+      />
+      {opts.useDwell && (
+        <div className="pl-5">
+          <SliderRow
+            label="Pause length" value={Math.round(opts.dwellTime * 10)} min={3} max={50} step={1}
+            onChange={(v) => set({ dwellTime: v / 10 })} fmt={(v) => `${(v / 10).toFixed(1)}s`}
+          />
+        </div>
+      )}
+      <SliderRow
+        label="Group within" value={Math.round(opts.clusterGap * 10)} min={5} max={100} step={5}
+        onChange={(v) => set({ clusterGap: v / 10 })} fmt={(v) => `${(v / 10).toFixed(1)}s`}
+      />
+      <div className="text-[10px] leading-relaxed text-muted-foreground">
+        Actions closer together than this become one zoom instead of several.
+      </div>
+
+      <div className="flex gap-1.5 pt-1">
+        <Button
+          size="sm" variant="ghost" disabled={busy}
+          className="h-7 flex-1 bg-panel-3 text-xs"
+          onClick={() => void apply(true)}
+        >
+          {busy ? "…" : found !== null ? `${found} found` : "Analyze"}
+        </Button>
+        <Button
+          size="sm" disabled={busy}
+          className="h-7 flex-1 bg-brand text-xs text-brand-foreground hover:bg-brand/90"
+          onClick={() => void apply(false)}
+        >
+          Apply zooms
+        </Button>
+      </div>
+      <Button
+        size="sm" variant="ghost"
+        className="h-6 w-full text-[10px] text-muted-foreground"
+        onClick={clearFocus}
+      >
+        Clear zoom keyframes
+      </Button>
+    </Section>
   );
 }
 
