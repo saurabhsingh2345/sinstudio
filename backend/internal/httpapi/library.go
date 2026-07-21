@@ -190,6 +190,19 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Cursor data for a screen recording, written beside the media the same way.
+	// Non-fatal for the same reason as provenance: the recording is the valuable
+	// part, and losing it because its metadata was malformed is the worse trade.
+	var cursorErr string
+	if raw := strings.TrimSpace(r.FormValue("cursor")); raw != "" {
+		track, err := parseCursorTrack(raw)
+		if err != nil {
+			cursorErr = err.Error()
+		} else if err := writeCursorTrack(dst, track); err != nil {
+			cursorErr = err.Error()
+		}
+	}
+
 	// Optional direct import into a project. The clip is already safe in the
 	// inbox, so an import failure is reported alongside the inbox location
 	// rather than silently swallowed.
@@ -204,6 +217,11 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		if err := copyFile(dst, adst); err != nil {
 			writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name, "importError": err.Error()})
 			return
+		}
+		// The cursor sidecar has to travel with the media, or the project's copy
+		// of a screen recording arrives without the data its effects need.
+		if err := copyFile(cursorPath(dst), cursorPath(adst)); err != nil && !os.IsNotExist(err) {
+			cursorErr = err.Error()
 		}
 		asset, err := s.registerAsset(r.Context(), projID, assetID, adst, name, src)
 		if err != nil {
@@ -220,10 +238,16 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name, "importError": err.Error()})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"ok": true, "asset": asset, "inbox": s.Store.Rel(dst), "provenanceError": provErr, "remuxError": remuxErr})
+		writeJSON(w, 200, map[string]any{
+			"ok": true, "asset": asset, "inbox": s.Store.Rel(dst),
+			"provenanceError": provErr, "remuxError": remuxErr, "cursorError": cursorErr,
+		})
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "inbox": s.Store.Rel(dst), "name": name})
+	writeJSON(w, 200, map[string]any{
+		"ok": true, "inbox": s.Store.Rel(dst), "name": name,
+		"remuxError": remuxErr, "cursorError": cursorErr,
+	})
 }
 
 // waitForStable blocks until path looks fully written: its mtime is not

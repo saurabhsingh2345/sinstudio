@@ -34,12 +34,20 @@ export interface RecordedTrack {
    *  samples are aligned against, so it must come from onstart, not from when
    *  we asked it to start. */
   startedAt: number;
+  /** Captured frame size, for placing cursor coordinates. Absent for audio. */
+  video?: { width: number; height: number };
+  /** "monitor" | "window" | "browser" for a display capture. Only a whole-monitor
+   *  capture can be mapped to screen-space pointer coordinates. */
+  surface?: string;
 }
 
 export interface RecordingHandle {
   /** Live streams, for previewing what is being captured. */
   preview: { screen?: MediaStream; camera?: MediaStream };
   startedAt: number;
+  /** Set by the caller when the cursor helper is recording alongside this
+   *  session, so stopping knows whether there is anything to collect. */
+  cursorTracking?: boolean;
   pause(): void;
   resume(): void;
   stop(): Promise<RecordedTrack[]>;
@@ -134,6 +142,16 @@ function record(stream: MediaStream, kind: RecordKind, mimes: string[]) {
       resolve();
     };
   });
+  // Read the frame geometry while the track is live; once stopped, settings
+  // are gone and there is no way to learn what was actually captured.
+  const vtrack = stream.getVideoTracks()[0];
+  const settings = vtrack?.getSettings?.() as (MediaTrackSettings & { displaySurface?: string }) | undefined;
+  const video =
+    settings?.width && settings?.height
+      ? { width: settings.width, height: settings.height }
+      : undefined;
+  const surface = settings?.displaySurface;
+
   const finished = new Promise<RecordedTrack | null>((resolve) => {
     rec.onstop = () => {
       const type = rec.mimeType || mime || "application/octet-stream";
@@ -144,6 +162,8 @@ function record(stream: MediaStream, kind: RecordKind, mimes: string[]) {
         blob,
         filename: recordingName(kind, new Date(startedAt || Date.now()), extForMime(type, kind)),
         startedAt,
+        video,
+        surface,
       });
     };
   });

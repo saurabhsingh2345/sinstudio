@@ -94,6 +94,14 @@ import {
   type RecordOptions,
   type RecordingHandle,
 } from "../../recorder";
+import {
+  canMapToVideo,
+  probeCursord,
+  startCursorTracking,
+  stopCursorTracking,
+  toSidecar,
+  type CursorHealth,
+} from "../../cursor";
 import { api } from "../../api";
 import { PluginDocEditor } from "./PluginDocEditor";
 import { parseDoc, seedDoc, serializeDoc, type Doc } from "../../pluginDoc";
@@ -734,6 +742,8 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
   const [paused, setPaused] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [saving, setSaving] = useState(false);
+  const [cursord, setCursord] = useState<CursorHealth | null>(null);
+  const [trackCursor, setTrackCursor] = useState(true);
   const screenRef = useRef<HTMLVideoElement>(null);
   const cameraRef = useRef<HTMLVideoElement>(null);
   const supported = isRecordingSupported();
@@ -741,6 +751,12 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
   useEffect(() => {
     void listInputs().then(({ mics }) => setMics(mics));
   }, [handle]);
+
+  // The cursor helper is optional and usually absent, so this is a quiet probe
+  // whose only effect is whether we offer the checkbox.
+  useEffect(() => {
+    void probeCursord().then(setCursord);
+  }, []);
 
   // Elapsed clock. Derived from the handle's start rather than counted up, so
   // it stays honest if the tab is backgrounded and timers are throttled.
@@ -764,6 +780,9 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
       setSaving(true);
       try {
         const tracks = await h.stop();
+        // Always collect what the helper has, even if we end up not attaching
+        // it — leaving it running would poison the next recording's session.
+        const cursorRec = h.cursorTracking ? await stopCursorTracking() : null;
         setHandle(null);
         setPaused(false);
         if (!tracks.length) {
@@ -772,14 +791,29 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
         }
         const placed: { assetId: string; lane: "video" | "overlay" | "audio"; startedAt: number }[] = [];
         for (const tr of tracks) {
-          const res = await api.ingestRecording(projectId, tr.blob, tr.filename, `recording-${tr.kind}`);
+          // Cursor data belongs only to the screen capture, and only when that
+          // capture is a whole monitor — see canMapToVideo.
+          const mappable = tr.kind === "screen" && tr.video && canMapToVideo(tr.surface);
+          const sidecar = cursorRec && mappable ? toSidecar(cursorRec, tr.startedAt, tr.video!) : undefined;
+          const res = await api.ingestRecording(
+            projectId,
+            tr.blob,
+            tr.filename,
+            `recording-${tr.kind}`,
+            sidecar
+          );
           if (!res.asset) {
             toast.error(`${tr.kind}: ${res.importError || "upload failed"}`);
             continue;
           }
           if (res.remuxError) toast.error(`${tr.kind}: couldn't repair the container — scrubbing may be rough.`);
+          if (res.cursorError) toast.error(`${tr.kind}: cursor data rejected — ${res.cursorError}`);
           addAsset(res.asset);
           placed.push({ assetId: res.asset.id, lane: RECORD_LANE[tr.kind], startedAt: tr.startedAt });
+        }
+        // Say why, rather than leaving the effects mysteriously unavailable.
+        if (cursorRec && !tracks.some((tr) => tr.kind === "screen" && canMapToVideo(tr.surface))) {
+          toast.info("Cursor data needs a whole-screen recording — a window or tab share can't be mapped.");
         }
         if (placed.length) {
           addSyncedClips(placed);
@@ -796,7 +830,14 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
 
   const start = async () => {
     try {
+      // Start tracking before capture, so the pointer's position is already
+      // known at frame zero rather than only from its first movement after.
+      const wantCursor = !!cursord?.supported && trackCursor && opts.screen;
+      const tracking = wantCursor ? await startCursorTracking() : false;
+      if (wantCursor && !tracking) toast.info("Cursor helper didn't start — recording without it.");
+
       const h = await startRecording(opts);
+      h.cursorTracking = tracking;
       setElapsed(0);
       setHandle(h);
       // The browser's own "Stop sharing" bar ends the stream without going
@@ -876,6 +917,26 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
               disabled={!opts.screen}
               onChange={(v) => set({ systemAudio: v })}
             />
+            {cursord?.supported ? (
+              <ToggleRow
+                label="Cursor tracking"
+                hint={
+                  !opts.screen
+                    ? "Needs a screen share."
+                    : cursord.clicks
+                      ? "Records pointer motion and clicks for cursor effects. Share a whole screen."
+                      : "Records pointer motion. Clicks aren't visible on this platform."
+                }
+                checked={trackCursor && opts.screen}
+                disabled={!opts.screen}
+                onChange={setTrackCursor}
+              />
+            ) : (
+              <div className="px-1 py-1 text-[10px] leading-snug text-muted-foreground">
+                Cursor effects need the local <code className="font-mono">cursord</code> helper.
+                Run it from <code className="font-mono">tools/cursord</code> and reopen this panel.
+              </div>
+            )}
           </div>
           {opts.mic && mics.length > 1 && (
             <select

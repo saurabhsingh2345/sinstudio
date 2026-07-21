@@ -3,7 +3,9 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,6 +46,33 @@ func probeDuration(t *testing.T, path string) string {
 		t.Fatalf("ffprobe %s: %v", path, err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// postFileFields uploads one file alongside arbitrary form fields.
+func postFileFields(t *testing.T, h http.Handler, url, filename string, data []byte, fields map[string]string) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		t.Fatal(err)
+	}
+	for k, v := range fields {
+		_ = mw.WriteField(k, v)
+	}
+	mw.Close()
+
+	r := httptest.NewRequest("POST", url, &body)
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("ingest = %d: %s", w.Code, w.Body.String())
+	}
+	return w
 }
 
 // ingestFile uploads one recording and returns the decoded response.
