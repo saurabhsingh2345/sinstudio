@@ -102,6 +102,9 @@ type CursorFX struct {
 	Highlight *CursorHighlight `json:"highlight,omitempty"`
 	Clicks    *CursorClicks    `json:"clicks,omitempty"`
 	Spotlight *CursorSpotlight `json:"spotlight,omitempty"`
+	// Sound plays a synthesised click at each press. Independent of Clicks so a
+	// recording can have the sound without the rings, or the other way round.
+	Sound *CursorClickSound `json:"sound,omitempty"`
 	// Pointer draws Studio's own cursor. It only applies to a recording whose
 	// track says the real cursor was kept out of the capture — drawing a second
 	// cursor over a burned-in one is worse than drawing none.
@@ -119,6 +122,13 @@ type CursorPointer struct {
 	// anchored to where they actually landed: a smoothed path that drifts off
 	// the button being clicked is worse than a slightly shaky one.
 	Smoothing float64 `json:"smoothing,omitempty"`
+}
+
+// CursorClickSound adds an audible click at each press, mixed as one generated
+// track rather than one input per click.
+type CursorClickSound struct {
+	Volume float64 `json:"volume,omitempty"` // 0..1 (0 → 0.35)
+	Style  string  `json:"style,omitempty"`  // click | tick | soft (empty → click)
 }
 
 // CursorHighlight draws a soft disc under the pointer so it stays findable on a

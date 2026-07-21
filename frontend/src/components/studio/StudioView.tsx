@@ -114,7 +114,8 @@ import { toast } from "../../toast";
 import { revealedText } from "../../titleAnim";
 import { getPeaks } from "../../peaks";
 import { getCursorTrack, cursorTrackNow } from "../../cursorTracks";
-import { drawCursorFX } from "./cursor-draw";
+import { clickTimes, drawCursorFX } from "./cursor-draw";
+import { playClicksBetween } from "../../clickAudio";
 import { awaitJob } from "../../jobs";
 import { AppStudio } from "../AppStudio";
 import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel } from "./preview-engine";
@@ -1576,6 +1577,29 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.id, visualsKey]);
+
+  // Click sounds while playing: fire the presses the playhead just crossed.
+  // Only during playback — scrubbing past a click should not chirp at you.
+  const lastPlayhead = useRef(playhead);
+  useEffect(() => {
+    const prev = lastPlayhead.current;
+    lastPlayhead.current = playhead;
+    if (!playing) return;
+    for (const { clip } of visuals) {
+      const snd = clip.cursor?.sound;
+      if (!snd) continue;
+      const track = cursorTrackNow(doc.id, clip.assetId);
+      if (!track) continue;
+      playClicksBetween(
+        clickTimes(track.samples).map((t) => t + clip.start),
+        prev,
+        playhead,
+        snd.style ?? "click",
+        snd.volume ?? 0.35
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playhead, playing]);
 
   // draw cursor effects, then the active caption cue, onto the overlay canvas
   useEffect(() => {
@@ -3375,6 +3399,33 @@ function CursorFXSection({ trackId, clip, ownsCursor }: { trackId: string; clip:
           <ColorRow
             label="Color" value={fx.clicks.color ?? "#ffffff"}
             onChange={(v) => set({ clicks: { ...fx.clicks, color: v } })}
+          />
+        </div>
+      )}
+
+      <ToggleRow
+        label="Click sounds"
+        hint="A synthesised click at each press. Mixed on export; the preview plays it while scrubbing."
+        checked={!!fx.sound}
+        onChange={(v) => toggle("sound", v)}
+      />
+      {fx.sound && (
+        <div className="space-y-1 pl-5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] uppercase tracking-wider text-muted-foreground">Style</span>
+            <select
+              value={fx.sound.style ?? "click"}
+              onChange={(e) => set({ sound: { ...fx.sound, style: e.target.value } })}
+              className="h-6 flex-1 rounded border hairline bg-panel px-1 text-[10px] outline-none"
+            >
+              <option value="click">Click</option>
+              <option value="tick">Tick</option>
+              <option value="soft">Soft</option>
+            </select>
+          </div>
+          <SliderRow
+            label="Volume" value={Math.round((fx.sound.volume ?? 0.35) * 100)} min={5} max={100} step={5}
+            onChange={(v) => set({ sound: { ...fx.sound, volume: v / 100 } })} fmt={(v) => `${v}%`}
           />
         </div>
       )}

@@ -284,6 +284,22 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			// renders without them; a malformed sidecar must not fail the export.
 			continue
 		}
+		// Click sounds are one generated track per clip with every press already
+		// placed in it, rather than one input per click — a normal tutorial has
+		// hundreds, and the filtergraph should not grow with them.
+		if snd := v.cursorFX.Sound; snd != nil && opts.FrameAt <= 0 {
+			wav := filepath.Join(srtDir, fmt.Sprintf("cur-%d-clicks.wav", i))
+			n, err := writeClickWAV(wav, track, v.end-v.start, snd.Style, snd.Volume)
+			if err != nil {
+				return nil, err
+			}
+			if n > 0 {
+				audios = append(audios, audio{
+					path: wav, in: 0, out: v.end - v.start, start: v.start, volume: 1,
+				})
+			}
+		}
+
 		plan, err := buildCursorFX(v.cursorFX, track, srtDir, i, v, w, h)
 		if err != nil {
 			return nil, err

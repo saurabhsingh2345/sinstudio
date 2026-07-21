@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { cursorAt, clickTimes, drawCursorFX, smoothSamples, withAlpha } from "./cursor-draw";
+import { clicksInStep } from "../../clickAudio";
 import type { CursorSample, CursorSidecar } from "../../cursor";
 import type { Clip } from "../../types";
 
@@ -249,5 +250,32 @@ describe("drawCursorFX", () => {
     // left + 0.5*vw = -400 + 1920 = 1520.
     drawCursorFX(ctx, clipFor({ highlight: {} }), trackFor(), { left: -400, top: -540, vw: 3840, vh: 2160 }, 0.5, 1);
     expect(calls.join(" ")).toContain("arc(1520,540");
+  });
+});
+
+// Preview click playback. The guards matter more than the sound: scrubbing
+// backwards or jumping must not replay everything in between.
+describe("clicksInStep", () => {
+  const times = [1.0, 2.0, 3.0];
+
+  it("takes the clicks a normal playback tick crossed", () => {
+    expect(clicksInStep(times, 0.9, 1.05)).toEqual([1.0]);
+    expect(clicksInStep(times, 1.9, 2.05)).toEqual([2.0]);
+  });
+
+  it("takes nothing when the playhead did not move or went backwards", () => {
+    expect(clicksInStep(times, 2.0, 2.0)).toEqual([]);
+    expect(clicksInStep(times, 3.0, 0.5)).toEqual([]);
+  });
+
+  // Seeking across the timeline crosses every click in between; firing them all
+  // at once is a burst of noise, not feedback.
+  it("takes nothing across a jump", () => {
+    expect(clicksInStep(times, 0, 5)).toEqual([]);
+  });
+
+  it("is half-open, so a click never fires twice on consecutive ticks", () => {
+    expect(clicksInStep(times, 0.9, 1.0)).toEqual([1.0]);
+    expect(clicksInStep(times, 1.0, 1.1)).toEqual([]);
   });
 });

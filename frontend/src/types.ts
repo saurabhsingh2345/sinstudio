@@ -50,10 +50,16 @@ export interface CursorPointer {
   color?: string;
   smoothing?: number; // 0..1
 }
+export interface CursorClickSound {
+  volume?: number; // 0..1
+  style?: string; // click | tick | soft
+}
 export interface CursorFX {
   highlight?: CursorHighlight;
   clicks?: CursorClicks;
   spotlight?: CursorSpotlight;
+  /** An audible click at each press. Independent of the visual rings. */
+  sound?: CursorClickSound;
   /** Studio's own drawn cursor — only for recordings captured without one. */
   pointer?: CursorPointer;
 }
