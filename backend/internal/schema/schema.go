@@ -90,6 +90,40 @@ type Clip struct {
 	// PNG and composited like any visual, so transforms/transitions/keyframes/
 	// effects/fades all apply. Duration comes from In/Out like any clip.
 	Title *Title `json:"title,omitempty"`
+	// Cursor emphasises the pointer during a screen recording. It only does
+	// anything when the clip's asset has a recorded pointer track beside it
+	// (a .cursor.json sidecar); on any other clip it is inert.
+	Cursor *CursorFX `json:"cursor,omitempty"`
+}
+
+// CursorFX turns on pointer emphasis for a screen recording. Each effect is a
+// pointer so "off" and "on with defaults" stay distinguishable in the document.
+type CursorFX struct {
+	Highlight *CursorHighlight `json:"highlight,omitempty"`
+	Clicks    *CursorClicks    `json:"clicks,omitempty"`
+	Spotlight *CursorSpotlight `json:"spotlight,omitempty"`
+}
+
+// CursorHighlight draws a soft disc under the pointer so it stays findable on a
+// busy screen.
+type CursorHighlight struct {
+	Size    int     `json:"size,omitempty"`    // diameter in canvas px (0 → 96)
+	Color   string  `json:"color,omitempty"`   // hex (empty → amber)
+	Opacity float64 `json:"opacity,omitempty"` // 0..1 (0 → 0.35)
+}
+
+// CursorClicks draws a ring that expands and fades at each press, giving the
+// viewer the feedback the recording itself can't show.
+type CursorClicks struct {
+	Size     int     `json:"size,omitempty"`     // final diameter in canvas px (0 → 140)
+	Color    string  `json:"color,omitempty"`    // hex (empty → white)
+	Duration float64 `json:"duration,omitempty"` // seconds per ring (0 → 0.45)
+}
+
+// CursorSpotlight dims everything except a radius around the pointer.
+type CursorSpotlight struct {
+	Radius int     `json:"radius,omitempty"` // clear radius in canvas px (0 → 220)
+	Dim    float64 `json:"dim,omitempty"`    // 0..1 darkness outside it (0 → 0.55)
 }
 
 // Title is a text overlay clip.
@@ -229,6 +263,10 @@ type Asset struct {
 	// imported assets. Source doubles as the generator id for generated assets.
 	GenInput  string            `json:"genInput,omitempty"`
 	GenParams map[string]string `json:"genParams,omitempty"`
+	// HasCursor marks a screen recording that arrived with a pointer track
+	// beside it. The editor keys the cursor-effects panel off this: offering the
+	// controls on a clip that can never show them is worse than not offering them.
+	HasCursor bool `json:"hasCursor,omitempty"`
 }
 
 // EditDoc is the whole persisted project state.

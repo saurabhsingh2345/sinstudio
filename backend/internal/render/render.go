@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"studio/internal/cursor"
 	"studio/internal/jobs"
 	"studio/internal/schema"
 )
@@ -55,6 +56,9 @@ type visual struct {
 	lut               string  // absolute path to a .cube LUT, or "" for none
 	still             bool    // input is a looped still image (title), not a trimmed video
 	hold              float64 // seconds of frozen last frame appended after the source span
+	cursorFX          *schema.CursorFX
+	cursorPath        string      // media path, for finding the .cursor.json sidecar
+	cursor            *cursorPlan // compiled emphasis overlays, nil if none
 }
 
 // audio is a resolved audio contribution.
@@ -264,6 +268,45 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	base := "[0:v]"
 	inputIdx := 1
 
+	// Cursor emphasis is compiled up front, because sendcmd has to sit on the
+	// chain BEFORE the overlays it drives — a command that arrives after the
+	// frame has already been composited is a frame too late. One script serves
+	// the whole graph; entries address filters by instance name.
+	var cursorCmds []string
+	for i := range visuals {
+		v := &visuals[i]
+		if v.cursorFX == nil || v.cursorPath == "" {
+			continue
+		}
+		track, err := cursor.Read(v.cursorPath)
+		if err != nil || track == nil {
+			// A clip asking for cursor effects without a pointer track just
+			// renders without them; a malformed sidecar must not fail the export.
+			continue
+		}
+		plan, err := buildCursorFX(v.cursorFX, track, srtDir, i, w, h, v.start, v.end)
+		if err != nil {
+			return nil, err
+		}
+		if plan == nil {
+			continue
+		}
+		v.cursor = plan
+		cursorCmds = append(cursorCmds, plan.cmds...)
+	}
+	if len(cursorCmds) > 0 {
+		// sendcmd requires its entries in ascending time order.
+		sort.SliceStable(cursorCmds, func(a, b int) bool {
+			return cmdTime(cursorCmds[a]) < cmdTime(cursorCmds[b])
+		})
+		cmdPath := filepath.Join(srtDir, "cursor.cmd")
+		if err := os.WriteFile(cmdPath, []byte(strings.Join(cursorCmds, "\n")+"\n"), 0o644); err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&fc, "[0:v]sendcmd=f=%s[cmd];", escapeFilterPath(cmdPath))
+		base = "[cmd]"
+	}
+
 	// Visual clips: trim, speed, position, opacity, fades/transitions, then overlay.
 	for i, v := range visuals {
 		lbl := fmt.Sprintf("[v%d]", i)
@@ -370,6 +413,43 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			base, lbl, xPos, yPos, v.start, v.end, out)
 		base = out
 		inputIdx++
+
+		// Cursor emphasis sits directly on top of the clip it belongs to, so a
+		// later clip covering this one also covers its highlight.
+		if v.cursor != nil {
+			for si, seg := range v.cursor.segments {
+				args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", seg.png)
+				src := fmt.Sprintf("[cx%d_%d]", i, si)
+				// Shift the looped still onto the clip's span so that `t` inside
+				// its own filters is timeline time — the scale and fade below are
+				// written against the timeline, not against the still's 0-based PTS.
+				fmt.Fprintf(&fc, "[%d:v]setpts=PTS-STARTPTS+%.3f/TB,format=rgba", inputIdx, v.start)
+				// A click ring grows and fades over its short life; the highlight
+				// and spotlight are fixed and only move.
+				if seg.scaleExpr != "" {
+					fmt.Fprintf(&fc, ",scale=w='max(2,%s)':h='max(2,%s)':eval=frame:flags=bicubic", seg.scaleExpr, seg.scaleExpr)
+				}
+				if seg.fadeDur > 0 {
+					fmt.Fprintf(&fc, ",fade=t=out:st=%.3f:d=%.3f:alpha=1", seg.fadeStart, seg.fadeDur)
+				}
+				fmt.Fprintf(&fc, "%s;", src)
+				out := fmt.Sprintf("[bc%d_%d]", i, si)
+				// format=auto is deliberately omitted when the overlay input
+				// resizes every frame (a click ring): overlay's format
+				// auto-negotiation does not survive the reconfiguration and the
+				// render dies mid-way with EINVAL. Everything else keeps it, to
+				// match the rest of the graph.
+				format := ":format=auto"
+				if seg.scaleExpr != "" {
+					format = ""
+				}
+				fmt.Fprintf(&fc,
+					"%s%soverlay@%s=x='%s':y='%s':enable='%s':eof_action=pass%s%s;",
+					base, src, seg.name, seg.x, seg.y, seg.enable, format, out)
+				base = out
+				inputIdx++
+			}
+		}
 	}
 
 	// Caption burn-in: render each cue to a full-canvas transparent PNG and
@@ -607,7 +687,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
 		cx: cx, cy: cy, ax: ax, ay: ay,
 		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
-		hold: hold,
+		hold: hold, cursorFX: c.Cursor, cursorPath: p,
 	})
 	if !muted && !isBG && !c.Mute {
 		vol := c.Volume

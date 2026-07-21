@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"studio/internal/apps"
+	"studio/internal/cursor"
 	"studio/internal/generator"
 	"studio/internal/jobs"
 	"studio/internal/library"
@@ -337,6 +338,13 @@ func (s *Server) deleteAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 // registerAsset probes a file and builds an Asset (with thumbnail).
+// fileExists is a presence check that treats every error as absence — the only
+// question here is whether a sidecar is there to read.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func (s *Server) registerAsset(ctx context.Context, projID, assetID, path, name, source string) (*schema.Asset, error) {
 	info, err := media.Probe(ctx, path)
 	if err != nil {
@@ -354,6 +362,10 @@ func (s *Server) registerAsset(ctx context.Context, projID, assetID, path, name,
 		HasAudio:  &info.HasAudio,
 		Source:    source,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		// A pointer track beside the media makes this a screen recording the
+		// editor can add cursor effects to. Checked here rather than inferred in
+		// the UI, since only the server can see the sidecar.
+		HasCursor: fileExists(cursor.Path(path)),
 	}
 	if info.Kind != "audio" {
 		thumbs, _ := s.Store.ThumbsDir(projID)

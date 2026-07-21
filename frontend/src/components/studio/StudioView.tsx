@@ -75,6 +75,7 @@ import type {
   CaptionCue,
   Clip,
   EditDoc,
+  CursorFX,
   GeneratorStatus,
   Keyable,
   LibraryEntry,
@@ -3095,6 +3096,8 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
         <AnchorPicker tr={tr} onChange={setTr} />
       </Section>
 
+      {asset?.hasCursor && <CursorFXSection trackId={trackId} clip={clip} />}
+
       <KeyframeEditor trackId={trackId} clip={clip} />
 
       <Section label="Timing">
@@ -3162,6 +3165,111 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
         <button onClick={() => resetEffects(trackId, clip.id)} className="text-[10px] text-muted-foreground hover:text-foreground">reset effects</button>
       </Section>
     </>
+  );
+}
+
+// CursorFXSection emphasises the pointer on a screen recording. Only shown when
+// the asset actually arrived with a pointer track, since without one every
+// control here is inert — the renderer would silently skip them all.
+function CursorFXSection({ trackId, clip }: { trackId: string; clip: Clip }) {
+  const updateClip = useStudio((s) => s.updateClip);
+  const fx = clip.cursor ?? {};
+  const set = (patch: Partial<CursorFX>) =>
+    updateClip(trackId, clip.id, { cursor: { ...fx, ...patch } });
+  // Toggling an effect on writes an empty object; the renderer fills in
+  // defaults, so "on" needs no opinion about values here.
+  const toggle = (key: keyof CursorFX, on: boolean) =>
+    set({ [key]: on ? (fx[key] ?? {}) : undefined } as Partial<CursorFX>);
+
+  return (
+    <Section label="Cursor effects" defaultOpen={false}>
+      <div className="text-[10.5px] leading-relaxed text-muted-foreground">
+        This clip has a recorded pointer track. Effects are drawn on export.
+      </div>
+
+      <ToggleRow
+        label="Highlight"
+        hint="A soft disc that follows the pointer."
+        checked={!!fx.highlight}
+        onChange={(v) => toggle("highlight", v)}
+      />
+      {fx.highlight && (
+        <div className="space-y-1 pl-5">
+          <SliderRow
+            label="Size" value={fx.highlight.size ?? 96} min={32} max={300} step={4}
+            onChange={(v) => set({ highlight: { ...fx.highlight, size: v } })} fmt={(v) => `${v}px`}
+          />
+          <SliderRow
+            label="Opacity" value={Math.round((fx.highlight.opacity ?? 0.35) * 100)} min={5} max={100} step={5}
+            onChange={(v) => set({ highlight: { ...fx.highlight, opacity: v / 100 } })} fmt={(v) => `${v}%`}
+          />
+          <ColorRow
+            label="Color" value={fx.highlight.color ?? "#ffcc33"}
+            onChange={(v) => set({ highlight: { ...fx.highlight, color: v } })}
+          />
+        </div>
+      )}
+
+      <ToggleRow
+        label="Click rings"
+        hint="A ring expands where each click happened."
+        checked={!!fx.clicks}
+        onChange={(v) => toggle("clicks", v)}
+      />
+      {fx.clicks && (
+        <div className="space-y-1 pl-5">
+          <SliderRow
+            label="Size" value={fx.clicks.size ?? 140} min={40} max={400} step={10}
+            onChange={(v) => set({ clicks: { ...fx.clicks, size: v } })} fmt={(v) => `${v}px`}
+          />
+          <SliderRow
+            label="Length" value={Math.round((fx.clicks.duration ?? 0.45) * 100)} min={15} max={150} step={5}
+            onChange={(v) => set({ clicks: { ...fx.clicks, duration: v / 100 } })} fmt={(v) => `${(v / 100).toFixed(2)}s`}
+          />
+          <ColorRow
+            label="Color" value={fx.clicks.color ?? "#ffffff"}
+            onChange={(v) => set({ clicks: { ...fx.clicks, color: v } })}
+          />
+        </div>
+      )}
+
+      <ToggleRow
+        label="Spotlight"
+        hint="Dims everything except a radius around the pointer."
+        checked={!!fx.spotlight}
+        onChange={(v) => toggle("spotlight", v)}
+      />
+      {fx.spotlight && (
+        <div className="space-y-1 pl-5">
+          <SliderRow
+            label="Radius" value={fx.spotlight.radius ?? 220} min={80} max={800} step={10}
+            onChange={(v) => set({ spotlight: { ...fx.spotlight, radius: v } })} fmt={(v) => `${v}px`}
+          />
+          <SliderRow
+            label="Dim" value={Math.round((fx.spotlight.dim ?? 0.55) * 100)} min={10} max={95} step={5}
+            onChange={(v) => set({ spotlight: { ...fx.spotlight, dim: v / 100 } })} fmt={(v) => `${v}%`}
+          />
+        </div>
+      )}
+
+      <div className="text-[10px] leading-relaxed text-muted-foreground">
+        The canvas preview doesn't draw these — use Export ▸ Render frame to see them.
+      </div>
+    </Section>
+  );
+}
+
+function ColorRow({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</span>
+      <input
+        type="color"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-6 w-12 cursor-pointer rounded border hairline bg-panel"
+      />
+    </div>
   );
 }
 

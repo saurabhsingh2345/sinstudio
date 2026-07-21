@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"studio/internal/cursor"
 )
 
 func validCursorJSON(t *testing.T) string {
 	t.Helper()
-	c := CursorTrack{Version: 1, Clicks: true, Samples: []CursorSample{
+	c := cursor.Track{Version: 1, Clicks: true, Samples: []cursor.Sample{
 		{T: 0, X: 10, Y: 20},
 		{T: 16, X: 12, Y: 22, Down: 1},
 	}}
@@ -23,18 +25,18 @@ func validCursorJSON(t *testing.T) string {
 }
 
 func TestCursorPathSitsBesideTheMedia(t *testing.T) {
-	if got := cursorPath("/m/clip.mp4"); got != "/m/clip.cursor.json" {
+	if got := cursor.Path("/m/clip.mp4"); got != "/m/clip.cursor.json" {
 		t.Errorf("cursorPath = %q", got)
 	}
 	// A recording is WebM; the suffix must not stack onto the old extension.
-	if got := cursorPath("/m/screen.webm"); got != "/m/screen.cursor.json" {
+	if got := cursor.Path("/m/screen.webm"); got != "/m/screen.cursor.json" {
 		t.Errorf("cursorPath = %q", got)
 	}
 }
 
 func TestParseCursorTrackRejectsUnusableData(t *testing.T) {
 	good := validCursorJSON(t)
-	if _, err := parseCursorTrack(good); err != nil {
+	if _, err := cursor.Parse(good); err != nil {
 		t.Fatalf("valid track rejected: %v", err)
 	}
 
@@ -47,7 +49,7 @@ func TestParseCursorTrackRejectsUnusableData(t *testing.T) {
 		"zero width":    `{"version":1,"video":{"width":0,"height":1080},"samples":[{"t":0,"x":0,"y":0}]}`,
 		"no samples":    `{"version":1,"video":{"width":1920,"height":1080},"samples":[]}`,
 	} {
-		if _, err := parseCursorTrack(raw); err == nil {
+		if _, err := cursor.Parse(raw); err == nil {
 			t.Errorf("%s: expected a rejection", name)
 		}
 	}
@@ -59,14 +61,14 @@ func TestCursorTrackRoundTrips(t *testing.T) {
 	if err := os.WriteFile(mediaPath, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	in, err := parseCursorTrack(validCursorJSON(t))
+	in, err := cursor.Parse(validCursorJSON(t))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := writeCursorTrack(mediaPath, in); err != nil {
+	if err := cursor.Write(mediaPath, in); err != nil {
 		t.Fatal(err)
 	}
-	out, err := readCursorTrack(mediaPath)
+	out, err := cursor.Read(mediaPath)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -89,7 +91,7 @@ func TestMissingCursorSidecarIsNormal(t *testing.T) {
 	if err := os.WriteFile(mediaPath, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := readCursorTrack(mediaPath)
+	got, err := cursor.Read(mediaPath)
 	if err != nil {
 		t.Fatalf("missing sidecar reported an error: %v", err)
 	}
@@ -149,7 +151,7 @@ func TestIngestStoresCursorDataBesideTheRecording(t *testing.T) {
 	}
 	inbox, _ := got["inbox"].(string)
 	stored := filepath.Join(s.Store.Root(), strings.TrimPrefix(inbox, "/"))
-	track, err := readCursorTrack(stored)
+	track, err := cursor.Read(stored)
 	if err != nil {
 		t.Fatalf("reading the stored sidecar: %v", err)
 	}

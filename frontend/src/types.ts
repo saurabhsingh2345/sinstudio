@@ -27,6 +27,28 @@ export const anchorFrac = (t: Transform): [number, number] => {
   return [f(t.anchorX), f(t.anchorY)];
 };
 
+// Cursor emphasis for a screen recording. Only does anything when the clip's
+// asset has a recorded pointer track beside it; inert on any other clip.
+export interface CursorHighlight {
+  size?: number; // diameter in canvas px
+  color?: string;
+  opacity?: number; // 0..1
+}
+export interface CursorClicks {
+  size?: number; // final ring diameter in canvas px
+  color?: string;
+  duration?: number; // seconds per ring
+}
+export interface CursorSpotlight {
+  radius?: number; // clear radius in canvas px
+  dim?: number; // 0..1 darkness outside it
+}
+export interface CursorFX {
+  highlight?: CursorHighlight;
+  clicks?: CursorClicks;
+  spotlight?: CursorSpotlight;
+}
+
 // Transition types: fade | dissolve | slide-left | slide-right | slide-top | slide-bottom
 export interface Transition {
   type: string;
@@ -87,7 +109,8 @@ export interface Clip {
   fadeOut?: number; // seconds
   transitionIn?: Transition;
   transitionOut?: Transition;
-  keyframes?: Record<string, Keyframe[]>; // property ("x"|"y"|"scale"|"opacity") -> control points
+  keyframes?: Record<string, Keyframe[]>; // Keyable property -> control points
+  cursor?: CursorFX; // pointer emphasis, only for clips with a recorded pointer track
   effects?: Effects;
   eq?: AudioEQ; // 3-band audio equalizer
   lut?: string; // .cube color LUT filename (in the project's luts dir)
@@ -171,6 +194,9 @@ export interface Asset {
   // as the generator id for generated assets.
   genInput?: string;
   genParams?: Record<string, string>;
+  // True when a pointer track arrived beside the media, i.e. this is a screen
+  // recording cursor effects can be drawn on.
+  hasCursor?: boolean;
 }
 
 export interface Canvas {

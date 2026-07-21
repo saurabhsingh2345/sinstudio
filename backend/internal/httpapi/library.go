@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"studio/internal/cursor"
 	"studio/internal/media"
 	"studio/internal/store"
 )
@@ -195,10 +196,10 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 	// part, and losing it because its metadata was malformed is the worse trade.
 	var cursorErr string
 	if raw := strings.TrimSpace(r.FormValue("cursor")); raw != "" {
-		track, err := parseCursorTrack(raw)
+		track, err := cursor.Parse(raw)
 		if err != nil {
 			cursorErr = err.Error()
-		} else if err := writeCursorTrack(dst, track); err != nil {
+		} else if err := cursor.Write(dst, track); err != nil {
 			cursorErr = err.Error()
 		}
 	}
@@ -220,7 +221,7 @@ func (s *Server) ingest(w http.ResponseWriter, r *http.Request) {
 		}
 		// The cursor sidecar has to travel with the media, or the project's copy
 		// of a screen recording arrives without the data its effects need.
-		if err := copyFile(cursorPath(dst), cursorPath(adst)); err != nil && !os.IsNotExist(err) {
+		if err := copyFile(cursor.Path(dst), cursor.Path(adst)); err != nil && !os.IsNotExist(err) {
 			cursorErr = err.Error()
 		}
 		asset, err := s.registerAsset(r.Context(), projID, assetID, adst, name, src)
