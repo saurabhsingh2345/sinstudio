@@ -17,6 +17,7 @@ import {
   Maximize2,
   Focus,
   MapPin,
+  Shapes,
   Eye,
   EyeOff,
   Volume2,
@@ -41,6 +42,13 @@ import {
 
 import { cn } from "@/lib/utils";
 import { useStudio } from "../../state";
+import { ANNO_KINDS } from "../../annotation";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { Clip, EditDoc, Track } from "../../types";
 import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { getPeaks, peaksNow } from "../../peaks";
@@ -369,7 +377,7 @@ export function Timeline({
 
 // ─────────────────────────── context menu (#2) ────────────────────────────
 
-type ClipMenu = { x: number; y: number; trackId: string; clipId: string; isTitle: boolean; hasAudio: boolean; detached: boolean; disabled: boolean; speed: number };
+type ClipMenu = { x: number; y: number; trackId: string; clipId: string; isTitle: boolean; isStill: boolean; hasAudio: boolean; detached: boolean; disabled: boolean; speed: number };
 
 function ClipContextMenu({
   menu,
@@ -384,7 +392,7 @@ function ClipContextMenu({
   zoomToClip: (c: Clip) => void;
   onSelect: (s: Selection) => void;
 }) {
-  const { trackId, clipId, isTitle, hasAudio, detached, disabled, speed } = menu;
+  const { trackId, clipId, isTitle, isStill, hasAudio, detached, disabled, speed } = menu;
   const run = (fn: () => void) => () => {
     fn();
     onClose();
@@ -405,12 +413,12 @@ function ClipContextMenu({
     },
     { label: "Duplicate", icon: Copy, onClick: () => st().duplicateClip(trackId, clipId) },
     "sep",
-    ...(!isTitle && hasAudio && !detached
+    ...(!isStill && hasAudio && !detached
       ? [{ label: "Detach audio", icon: Link2, onClick: () => st().detachAudio(trackId, clipId) }]
       : []),
     ...(detached ? [{ label: "Re-attach audio", icon: Link2, onClick: () => st().attachAudio(trackId, clipId) }] : []),
     { label: "Reset transform", icon: RotateCcw, onClick: () => st().updateClip(trackId, clipId, { transform: { x: 0, y: 0, scale: 1, opacity: 1, rotation: 0 } }) },
-    ...(isTitle ? [] : (["speedrow"] as const)),
+    ...(isStill ? [] : (["speedrow"] as const)),
     { label: disabled ? "Enable clip" : "Disable clip", icon: disabled ? Eye : Ban, onClick: () => st().updateClip(trackId, clipId, { disabled: !disabled }) },
     {
       label: "Zoom to clip",
@@ -509,6 +517,33 @@ function ClipContextMenu({
 
 // ─────────────────────────────── toolbar ──────────────────────────────────
 
+// CalloutMenu places an annotation at the playhead. It is a menu rather than a
+// single button because the kind is the first thing you choose — an arrow and a
+// step badge are placed differently — and picking it up front means the callout
+// lands already looking like what you wanted.
+function CalloutMenu() {
+  const addAnnotation = useStudio((s) => s.addAnnotation);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          title="Add a callout at the playhead"
+          className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-panel-2 hover:text-foreground"
+        >
+          <Shapes className="h-4 w-4" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="min-w-36">
+        {ANNO_KINDS.map((k) => (
+          <DropdownMenuItem key={k.kind} onClick={() => addAnnotation(k.kind)} className="text-[12.5px]">
+            {k.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function TimelineToolbar({
   doc,
   px,
@@ -555,6 +590,7 @@ function TimelineToolbar({
         <ToolBtn title="Add marker at playhead" onClick={onMarker}>
           <MapPin className="h-4 w-4" />
         </ToolBtn>
+        <CalloutMenu />
         <ToolBtn title={snap ? "Snapping on" : "Snapping off"} onClick={onToggleSnap} active={snap}>
           <Magnet className="h-4 w-4" />
         </ToolBtn>
@@ -953,6 +989,12 @@ function ClipBar({
   const rootRef = useRef<HTMLDivElement>(null);
   const asset = doc.assets.find((a) => a.id === clip.assetId);
   const isTitle = !!clip.title;
+  // Callouts are assetless in exactly the same ways titles are — no waveform,
+  // no audio to detach, no speed to retime, and in===0 so trimming the head
+  // moves `start`. Only the routing below differs, because a callout has its
+  // own inspector rather than the overlay one.
+  const isAnno = !!clip.annotation;
+  const isStill = isTitle || isAnno;
   const hue = hueFor(clip.id);
   const dur = clipPlayDur(clip);
   const srcPlay = clipSrcDur(clip);
@@ -963,9 +1005,9 @@ function ClipBar({
   const inMulti = useStudio((s) => s.selClips.length > 1 && s.selClips.some((c) => c.clipId === clip.id));
   const selected = ("clipId" in selection && selection.clipId === clip.id) || inMulti;
 
-  const label = isTitle ? clip.title!.text || "Title" : asset?.name || "Clip";
+  const label = isTitle ? clip.title!.text || "Title" : isAnno ? clip.annotation!.kind : asset?.name || "Clip";
   const isAudioLane = track.kind === "audio";
-  const showWave = !!asset && !isTitle && (isAudioLane || asset.hasAudio !== false);
+  const showWave = !!asset && !isStill && (isAudioLane || asset.hasAudio !== false);
 
   // #3 Level (volume for audio, opacity for visual) and fades — drawn as an
   // envelope and adjustable with on-clip handles.
@@ -1067,13 +1109,13 @@ function ClipBar({
         const rawEnd = snapValue(origStart + dur + dx);
         const desiredPlay = Math.max(0.1, rawEnd - origStart);
         setSnapLine(snapEnabled ? rawEnd : null);
-        if (retime && !isTitle) {
+        if (retime && !isStill) {
           // #10 retime: stretch/compress the source span to fill the new length.
           const srcSpan = origOut - origIn;
           const targetSrcPlay = Math.max(0.05, desiredPlay - origHold);
           const newSpeed = Math.max(0.1, Math.min(10, srcSpan / targetSrcPlay));
           s2.updateClip(curTrack, clip.id, { speed: +newSpeed.toFixed(3) });
-        } else if (isTitle) {
+        } else if (isStill) {
           s2.updateClip(curTrack, clip.id, { out: +desiredPlay.toFixed(3) });
         } else {
           const maxSrcPlay = (srcDur - origIn) / sp; // seconds of real footage left
@@ -1086,8 +1128,8 @@ function ClipBar({
         // trim-in: move the head; keep the tail fixed in time.
         const rawStart = snapValue(Math.max(0, origStart + dx));
         setSnapLine(snapEnabled ? rawStart : null);
-        if (isTitle) {
-          const end = origStart + origOut; // in=0 for titles
+        if (isStill) {
+          const end = origStart + origOut; // in=0 for assetless clips
           const ns = Math.min(rawStart, end - 0.1);
           s2.updateClip(curTrack, clip.id, { start: +ns.toFixed(3), out: +(end - ns).toFixed(3) });
         } else {
@@ -1195,7 +1237,8 @@ function ClipBar({
       trackId: track.id,
       clipId: clip.id,
       isTitle,
-      hasAudio: !isTitle && asset?.hasAudio !== false,
+      isStill,
+      hasAudio: !isStill && asset?.hasAudio !== false,
       detached,
       disabled: !!clip.disabled,
       speed: clip.speed && clip.speed > 0 ? clip.speed : 1,
@@ -1204,7 +1247,7 @@ function ClipBar({
 
   // Envelope/handles: skip on titles (own text opacity), collapsed rows, and
   // locked tracks. Waveform likewise hidden when collapsed.
-  const showLevel = !isTitle && !collapsed && !locked;
+  const showLevel = !isStill && !collapsed && !locked;
   const showWaveNow = showWave && !collapsed;
   // #7 keyframe diamonds — only for the selected clip, expanded, unlocked.
   const kfList: { prop: string; index: number; t: number }[] = [];
@@ -1263,6 +1306,7 @@ function ClipBar({
         <img src={mediaUrl(asset.thumbnail, asset.createdAt)} alt="" className="absolute inset-0 h-full w-full object-cover opacity-30" />
       )}
       {isTitle && <Type className="absolute right-1 top-1 h-3 w-3 text-white/60" />}
+      {isAnno && <Shapes className="absolute right-1 top-1 h-3 w-3 text-white/60" />}
 
       {/* waveform */}
       {showWaveNow && asset && (

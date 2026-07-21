@@ -94,6 +94,31 @@ export interface Title {
   reveal?: TitleReveal; // per-word/character text build-on (renderer-composited)
 }
 
+// Annotation: a callout shape drawn over the video (clip has no asset when set).
+// Mirrors backend/internal/schema Annotation — keep the two in step.
+export type AnnoKind = "arrow" | "box" | "ellipse" | "highlight" | "number" | "text";
+
+export interface Annotation {
+  kind: AnnoKind;
+  // Canvas fractions (0..1), not pixels, so a callout keeps its place at any
+  // export size. For an arrow (x,y) is the tail and (x2,y2) the point; for every
+  // other kind they are the bounding box.
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+  x2?: number;
+  y2?: number;
+  color?: string; // stroke/shape colour
+  fill?: string; // interior; "" = hollow
+  thickness?: number; // px at 1080 reference
+  opacity?: number; // 0..1
+  radius?: number; // corner rounding, px at 1080 reference
+  text?: string;
+  textSize?: number; // px at 1080 reference
+  textColor?: string;
+}
+
 // Effects: per-clip color/blur adjustments. Identity = brightness 0, contrast 1,
 // saturation 1, hue 0, blur 0.
 export interface Effects {
@@ -134,6 +159,7 @@ export interface Clip {
   sourceClip?: string; // detached audio clip → the video clip it came from (UI grouping)
   disabled?: boolean; // excluded from render/preview without deleting (per-clip enable toggle)
   title?: Title; // when set, this is a text clip (no asset)
+  annotation?: Annotation; // when set, this is a callout clip (no asset)
 }
 
 export interface ExportOptions {

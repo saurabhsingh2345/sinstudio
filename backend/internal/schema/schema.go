@@ -90,6 +90,10 @@ type Clip struct {
 	// PNG and composited like any visual, so transforms/transitions/keyframes/
 	// effects/fades all apply. Duration comes from In/Out like any clip.
 	Title *Title `json:"title,omitempty"`
+	// Annotation makes this a callout clip (no asset) — the arrows, boxes and
+	// step numbers a tutorial points with. Like Title it renders to a
+	// full-canvas PNG, so transforms/keyframes/transitions/effects all apply.
+	Annotation *Annotation `json:"annotation,omitempty"`
 	// Cursor emphasises the pointer during a screen recording. It only does
 	// anything when the clip's asset has a recorded pointer track beside it
 	// (a .cursor.json sidecar); on any other clip it is inert.
@@ -170,6 +174,48 @@ type Title struct {
 	// Unlike Anim, this can't be expressed as transform keyframes on a single
 	// still, so the renderer composites a sequence of prefix PNGs (see addTitleClip).
 	Reveal string `json:"reveal,omitempty"`
+}
+
+// Annotation kinds. Anything not recognised draws nothing rather than
+// guessing — a callout in the wrong shape is worse than a missing one.
+const (
+	AnnoArrow     = "arrow"
+	AnnoBox       = "box"
+	AnnoEllipse   = "ellipse"
+	AnnoHighlight = "highlight"
+	AnnoNumber    = "number"
+	AnnoText      = "text"
+)
+
+// Annotation is a shape drawn over the video — the callouts a tutorial points
+// with. It is deliberately one struct with a Kind rather than a union: every
+// shape is a stroke, a fill and (sometimes) a label over the same box, and the
+// editor is far simpler when switching kind keeps the geometry you placed.
+type Annotation struct {
+	Kind string `json:"kind"` // arrow|box|ellipse|highlight|number|text
+
+	// Geometry in canvas fractions (0..1), NOT pixels, so a callout keeps its
+	// place when the project is exported at another size. For an arrow (X,Y) is
+	// the tail and (X2,Y2) the point; for every other kind they are the top-left
+	// and size of the bounding box.
+	X  float64 `json:"x"`
+	Y  float64 `json:"y"`
+	W  float64 `json:"w,omitempty"`
+	H  float64 `json:"h,omitempty"`
+	X2 float64 `json:"x2,omitempty"`
+	Y2 float64 `json:"y2,omitempty"`
+
+	Color     string  `json:"color,omitempty"`     // stroke/shape colour (default amber)
+	Fill      string  `json:"fill,omitempty"`      // interior; "" = hollow
+	Thickness float64 `json:"thickness,omitempty"` // px at a 1080-tall reference
+	Opacity   float64 `json:"opacity,omitempty"`   // 0..1 (0 = unset → 1)
+	Radius    float64 `json:"radius,omitempty"`    // corner rounding, px at 1080 reference
+
+	// Text labels the shape: the digits for a "number" badge, the message for a
+	// "text" callout, an optional caption on any other kind.
+	Text      string `json:"text,omitempty"`
+	TextSize  int    `json:"textSize,omitempty"`  // px at a 1080-tall reference
+	TextColor string `json:"textColor,omitempty"` // default white
 }
 
 // Effects are per-clip color/blur adjustments (compiled to ffmpeg eq/hue/gblur).

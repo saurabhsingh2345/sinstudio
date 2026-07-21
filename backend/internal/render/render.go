@@ -131,6 +131,9 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		}
 	}
 	titleIdx := 0
+	// Separate counters: the PNGs are named positionally, so titles and
+	// annotations must not share a numbering or they overwrite each other.
+	annoIdx := 0
 
 	for _, t := range tracks {
 		suppressed := soloActive && !t.Solo && t.Kind != schema.TrackBackground
@@ -156,6 +159,12 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				if c.Title != nil {
 					if err := addTitleClip(&visuals, c, w, h, srtDir, titleIdx); err == nil {
 						titleIdx++
+					}
+					continue
+				}
+				if c.Annotation != nil {
+					if err := addAnnotationClip(&visuals, c, w, h, srtDir, annoIdx); err == nil {
+						annoIdx++
 					}
 					continue
 				}
@@ -959,11 +968,15 @@ func kfRotExpr(S float64, kfs []schema.Keyframe) string {
 // prefix PNGs is composited, each shown for its slice of the reveal window (the
 // full text then holds to the end). A reveal can't be expressed as transform
 // keyframes on one still, so it bypasses the keyframe/transition path.
-func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int) error {
-	span := c.Out - c.In
-	if span <= 0 {
-		span = 3
-	}
+// stillBox is where an assetless, full-canvas PNG clip (a title or an
+// annotation) lands on the canvas. The two kinds differ only in what they
+// rasterise, so the placement lives in one place and they cannot drift apart.
+type stillBox struct {
+	x, y, sw, sh, cx, cy int
+	ax, ay, opacity      float64
+}
+
+func stillBoxFor(c schema.Clip, w, h int) stillBox {
 	scale := c.Transform.Scale
 	if scale == 0 {
 		scale = 1
@@ -975,7 +988,47 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 	sw, sh := int(float64(w)*scale), int(float64(h)*scale)
 	ax, ay := c.Transform.AnchorFrac()
 	cx, cy := int(ax*float64(w-sw)), int(ay*float64(h-sh))
-	x, y := cx+int(c.Transform.X), cy+int(c.Transform.Y)
+	return stillBox{
+		x: cx + int(c.Transform.X), y: cy + int(c.Transform.Y),
+		sw: sw, sh: sh, cx: cx, cy: cy, ax: ax, ay: ay, opacity: op,
+	}
+}
+
+// stillSpan is an assetless clip's on-screen duration. Speed and hold are
+// deliberately ignored: there is no source to run faster or freeze.
+func stillSpan(c schema.Clip) float64 {
+	if span := c.Out - c.In; span > 0 {
+		return span
+	}
+	return 3
+}
+
+// addAnnotationClip composites one callout. The raster is the only thing that
+// differs from a title, so it inherits transforms, keyframes, transitions,
+// fades, effects and z-order without touching the filtergraph.
+func addAnnotationClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int) error {
+	png := filepath.Join(srtDir, fmt.Sprintf("anno-%d.png", idx))
+	if err := renderAnnotationPNG(*c.Annotation, w, h, png); err != nil {
+		return err
+	}
+	b := stillBoxFor(c, w, h)
+	span := stillSpan(c)
+	*visuals = append(*visuals, visual{
+		path: png, start: c.Start, end: c.Start + span,
+		x: b.x, y: b.y, sw: b.sw, sh: b.sh, opacity: b.opacity,
+		fadeIn: c.FadeIn, fadeOut: c.FadeOut,
+		transIn: c.TransitionIn, transOut: c.TransitionOut,
+		cx: b.cx, cy: b.cy, ax: b.ax, ay: b.ay,
+		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects,
+		still: true,
+	})
+	return nil
+}
+
+func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int) error {
+	span := stillSpan(c)
+	b := stillBoxFor(c, w, h)
+	x, y, sw, sh, cx, cy, ax, ay, op := b.x, b.y, b.sw, b.sh, b.cx, b.cy, b.ax, b.ay, b.opacity
 
 	reveal := strings.TrimSpace(c.Title.Reveal)
 	if reveal == "" {

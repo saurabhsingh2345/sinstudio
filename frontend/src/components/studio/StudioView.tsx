@@ -68,6 +68,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { ColorSwatch, Field, NumInput, Section, SliderRow, ToggleRow } from "./inspector-bits";
 import { ZoomPanSection } from "./ZoomPanSection";
+import { AnnotationLayer } from "./AnnotationLayer";
+import { AnnotationInspector } from "./AnnotationInspector";
 
 import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
@@ -243,6 +245,24 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
     setSelection(s);
     syncStore(s);
   };
+
+  // Actions that CREATE a clip (addTitle, addAnnotation) select it in the store,
+  // but the inspector's selection is local — so adopt the store's pick whenever
+  // it names a clip we aren't already showing. Without this a callout you just
+  // added lands on the timeline with the Project panel still open, and the very
+  // next thing you want to do (place it) starts with hunting for it.
+  //
+  // Matching on clipId alone is deliberate: selecting a lane or overlay syncs
+  // the same clip into the store, and those must not be rewritten to kind:"clip".
+  const storeSelClip = useStudio((s) => s.selClip);
+  useEffect(() => {
+    if (!storeSelClip) return;
+    if ("clipId" in selection && selection.clipId === storeSelClip.clipId) return;
+    setSelection({ kind: "clip", trackId: storeSelClip.trackId, clipId: storeSelClip.clipId });
+    // selection is intentionally not a dependency: this reacts to the store
+    // making a choice, not to the local selection changing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeSelClip]);
 
   if (!doc) {
     return (
@@ -1723,6 +1743,25 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
           <div ref={frameRef} className="absolute inset-0 overflow-hidden rounded-lg" style={{ background: bg }}>
             {visuals.map(({ track, clip }) => {
               const box = clipBox(clip, playhead, stage.w, stage.h, W, H);
+              if (clip.annotation) {
+                return (
+                  <div
+                    key={clip.id}
+                    style={{
+                      position: "absolute",
+                      left: box.left,
+                      top: box.top,
+                      width: box.vw,
+                      height: box.vh,
+                      opacity: box.opacity,
+                      pointerEvents: "none",
+                      transform: box.rotation ? `rotate(${box.rotation}deg)` : undefined,
+                    }}
+                  >
+                    <AnnotationLayer anno={clip.annotation} width={box.vw} height={box.vh} />
+                  </div>
+                );
+              }
               if (clip.title) {
                 const t = clip.title;
                 const fs = (t.size * box.vh) / 1080;
@@ -2780,8 +2819,8 @@ function Inspector({ doc, selection, onSelect }: { doc: EditDoc; selection: Sele
   let title = "Project";
   let sub = "Global settings";
   if (selection.kind === "clip" && clip) {
-    title = clip.title ? "Title clip" : "Clip";
-    sub = `${fmtDur(clipPlayDur(clip))} · ${clip.title ? "text" : "media"}`;
+    title = clip.title ? "Title clip" : clip.annotation ? "Callout" : "Clip";
+    sub = `${fmtDur(clipPlayDur(clip))} · ${clip.title ? "text" : clip.annotation ? clip.annotation.kind : "media"}`;
   } else if (selection.kind === "lane" && clip) {
     const labels = { video: "Video", audio: "Audio", subtitle: "Subtitle" };
     title = `${labels[selection.lane]}`;
@@ -2810,8 +2849,9 @@ function Inspector({ doc, selection, onSelect }: { doc: EditDoc; selection: Sele
       </div>
 
       <div className="flex-1 space-y-1 p-3 pt-2">
-        {selection.kind === "clip" && clip && !clip.title && <ClipInspector trackId={trackId} clip={clip} />}
+        {selection.kind === "clip" && clip && !clip.title && !clip.annotation && <ClipInspector trackId={trackId} clip={clip} />}
         {selection.kind === "clip" && clip && clip.title && <TitleInspector trackId={trackId} clip={clip} />}
+        {selection.kind === "clip" && clip && clip.annotation && <AnnotationInspector trackId={trackId} clip={clip} />}
         {selection.kind === "lane" && clip && selection.lane === "video" && <ClipInspector trackId={trackId} clip={clip} />}
         {selection.kind === "lane" && clip && selection.lane === "audio" && <AudioInspector doc={doc} trackId={trackId} clip={clip} />}
         {selection.kind === "lane" && clip && selection.lane === "subtitle" && <SubtitleInspector clip={clip} cue={cue} />}

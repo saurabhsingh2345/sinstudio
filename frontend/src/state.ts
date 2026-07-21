@@ -1,8 +1,9 @@
 import { create } from "zustand";
 import { api, ConflictError } from "./api";
-import type { Asset, CaptionCue, Clip, EditDoc, Keyable, Keyframe, Track, TitleAnim, TitleReveal } from "./types";
+import type { Annotation, AnnoKind, Asset, CaptionCue, Clip, EditDoc, Keyable, Keyframe, Track, TitleAnim, TitleReveal } from "./types";
 import { newId, clipPlayDur } from "./types";
 import { buildTitleAnim } from "./titleAnim";
+import { newAnnotation } from "./annotation";
 import { buildMotionPreset, type MotionPreset } from "./motionPresets";
 import { clearPeaks } from "./peaks";
 import { clearCursorTracks } from "./cursorTracks";
@@ -90,6 +91,8 @@ interface StudioState {
   updateTitle: (trackId: string, clipId: string, patch: Partial<NonNullable<Clip["title"]>>) => void;
   applyTitleAnim: (trackId: string, clipId: string, preset: TitleAnim) => void;
   applyTitleReveal: (trackId: string, clipId: string, reveal: TitleReveal) => void;
+  addAnnotation: (kind: AnnoKind) => void;
+  updateAnnotation: (trackId: string, clipId: string, patch: Partial<Annotation>) => void;
 
   addMarker: () => void;
   removeMarker: (id: string) => void;
@@ -657,7 +660,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().mutate((d) => {
       const vt = d.tracks.find((t) => t.id === trackId);
       const c = vt?.clips?.find((c) => c.id === clipId);
-      if (!c || c.title) return; // titles carry no audio
+      if (!c || c.title || c.annotation) return; // assetless clips carry no audio
       for (const t of d.tracks)
         if (t.kind === "audio")
           for (const ac of t.clips || []) if (ac.sourceClip === clipId) return; // already detached
@@ -883,6 +886,37 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().mutate((d) => {
       const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
       if (c?.title) Object.assign(c.title, patch);
+    }),
+
+  // addAnnotation drops a callout on the overlay lane at the playhead. Callouts
+  // live above the footage they point at, so the overlay track is the right
+  // home; falling back to video keeps it working on a project without one.
+  addAnnotation: (kind) => {
+    const { doc, playhead } = get();
+    if (!doc) return;
+    const track = doc.tracks.find((t) => t.kind === "overlay") || doc.tracks.find((t) => t.kind === "video");
+    if (!track) return;
+    const clipId = newId("anno_");
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === track.id)!;
+      (t.clips ||= []).push({
+        id: clipId,
+        assetId: "",
+        start: Math.max(0, playhead),
+        in: 0,
+        out: 3,
+        transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+        volume: 0,
+        annotation: newAnnotation(kind),
+      });
+    });
+    set({ selClip: { trackId: track.id, clipId }, selCue: null });
+  },
+
+  updateAnnotation: (trackId, clipId, patch) =>
+    get().mutate((d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      if (c?.annotation) Object.assign(c.annotation, patch);
     }),
 
   // applyTitleAnim writes an animation preset's keyframes/transitions onto a
