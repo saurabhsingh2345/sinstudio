@@ -332,3 +332,153 @@ func TestTranslucentColourSurvivesEncoding(t *testing.T) {
 		}
 	}
 }
+
+/*
+Keycap layout must match keysLayout() in annotation.ts exactly.
+
+Cap widths come from rune count rather than measured glyphs for precisely this
+reason: Go and the browser measure text differently, and a few percent per label
+compounds across a row until the last cap is visibly out of place. These numbers
+are asserted identically on the TypeScript side; either half changing alone
+fails on one side or the other rather than quietly making the editor lie about
+the render.
+*/
+func TestKeysLayoutGolden(t *testing.T) {
+	caps, w, h := keysLayout("Cmd+C", 40)
+	if len(caps) != 2 {
+		t.Fatalf("caps = %d, want 2", len(caps))
+	}
+	if math.Abs(h-64) > 1e-9 {
+		t.Errorf("height = %.4f, want 64", h)
+	}
+	if math.Abs(caps[0].w-110.4) > 1e-9 || math.Abs(caps[0].x) > 1e-9 { // 3 runes
+		t.Errorf("cap 0 = x%.4f w%.4f, want x0 w110.4", caps[0].x, caps[0].w)
+	}
+	if math.Abs(caps[1].w-64) > 1e-9 { // 1 rune → square minimum
+		t.Errorf("cap 1 w = %.4f, want 64", caps[1].w)
+	}
+	if math.Abs(caps[1].x-127.2) > 1e-9 { // 110.4 + a 16.8 gap
+		t.Errorf("cap 1 x = %.4f, want 127.2", caps[1].x)
+	}
+	if math.Abs(w-191.2) > 1e-9 {
+		t.Errorf("width = %.4f, want 191.2", w)
+	}
+
+	caps, w, _ = keysLayout("Ctrl+Shift+P", 40)
+	for i, want := range []float64{135.2, 160, 64} {
+		if math.Abs(caps[i].w-want) > 1e-9 {
+			t.Errorf("cap %d w = %.4f, want %.4f", i, caps[i].w, want)
+		}
+	}
+	if math.Abs(w-392.8) > 1e-9 {
+		t.Errorf("width = %.4f, want 392.8", w)
+	}
+}
+
+// Measuring bytes rather than runes would make any non-ASCII label too wide.
+// "é" is two bytes and one key.
+func TestKeycapMeasuresRunesNotBytes(t *testing.T) {
+	e, _, _ := keysLayout("é", 40)
+	c, _, _ := keysLayout("C", 40)
+	if e[0].w != c[0].w {
+		t.Errorf("é cap = %.4f, C cap = %.4f, want equal", e[0].w, c[0].w)
+	}
+}
+
+/*
+The Mac modifier symbols must be spelled out, here and in annotation.ts.
+
+Arial — the face fontPath() picks on a Mac — has no ⌘ (U+2318) or ⇧ (U+21E7),
+so a badge reading "⌘+C" exported as a tofu box beside a C while the browser
+preview drew it perfectly. Worse, a Linux render host with DejaVu DOES have
+those glyphs, so the same project would have exported differently per machine.
+Canonicalising in both halves is what makes the output host-independent.
+*/
+func TestMacSymbolsAreSpelledOut(t *testing.T) {
+	got := splitKeys("⌘+⇧+4")
+	want := []string{"Cmd", "Shift", "4"}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("splitKeys(⌘+⇧+4) = %v, want %v", got, want)
+		}
+	}
+	// And the width follows the word actually drawn, not the symbol typed.
+	sym, _, _ := keysLayout("⌘", 40)
+	word, _, _ := keysLayout("Cmd", 40)
+	if sym[0].w != word[0].w {
+		t.Errorf("⌘ cap = %.4f, Cmd cap = %.4f, want equal", sym[0].w, word[0].w)
+	}
+}
+
+func TestSplitKeys(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want []string
+	}{
+		{"ctrl+shift+p", []string{"ctrl", "shift", "p"}},
+		{"ctrl+", []string{"ctrl"}}, // mid-typing, not an empty cap
+		{"  cmd  +  c  ", []string{"cmd", "c"}},
+		{"+", []string{"+"}}, // splitting yields nothing; keep the key
+		{"   ", nil},
+	} {
+		got := splitKeys(tc.in)
+		if len(got) != len(tc.want) {
+			t.Errorf("splitKeys(%q) = %v, want %v", tc.in, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("splitKeys(%q) = %v, want %v", tc.in, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
+/*
+A keystroke badge must actually put ink where the layout says it does.
+
+The badge is drawn from the annotation's own origin, so this checks the caps
+land inside their computed boxes and that the gap between them stays clear —
+the failure this catches is a row that renders as one merged slab.
+*/
+func TestKeycapsLandWhereTheLayoutSaysAndAreSeparate(t *testing.T) {
+	const w, h = 400, 200
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	a := schema.Annotation{
+		Kind: schema.AnnoKeys, X: 0.1, Y: 0.4, Text: "Cmd+C", TextSize: 40, Fill: "#1e293b",
+	}
+	if err := drawAnnotation(img, a, w, h); err != nil {
+		t.Fatal(err)
+	}
+	ref := float64(h) / 1080
+	caps, _, _ := keysLayout(a.Text, 40*ref)
+	x0, y0 := a.X*float64(w), a.Y*float64(h)
+
+	alphaAt := func(x, y float64) uint8 { return img.RGBAAt(int(x), int(y)).A }
+	for i, k := range caps {
+		cx, cy := x0+k.x+k.w/2, y0+k.y+k.h/2
+		if alphaAt(cx, cy) == 0 {
+			t.Errorf("cap %d is blank at its centre (%.1f,%.1f)", i, cx, cy)
+		}
+	}
+	// The gap between the two caps must stay transparent, or they have merged.
+	gapX := x0 + caps[0].w + (caps[1].x-caps[0].w)/2
+	gapY := y0 + caps[0].h/2
+	if got := alphaAt(gapX, gapY); got != 0 {
+		t.Errorf("gap between caps has alpha %d at (%.1f,%.1f), want 0", got, gapX, gapY)
+	}
+}
+
+// Nothing typed yet must draw nothing, not an empty cap floating on the frame.
+func TestEmptyKeysDrawNothing(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 100, 100))
+	if err := drawAnnotation(img, schema.Annotation{Kind: schema.AnnoKeys, X: 0.1, Y: 0.1}, 100, 100); err != nil {
+		t.Fatal(err)
+	}
+	for i := 3; i < len(img.Pix); i += 4 {
+		if img.Pix[i] != 0 {
+			t.Fatal("empty keys annotation painted something")
+		}
+	}
+}

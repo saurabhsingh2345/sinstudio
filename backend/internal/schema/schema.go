@@ -214,6 +214,7 @@ const (
 	AnnoHighlight = "highlight"
 	AnnoNumber    = "number"
 	AnnoText      = "text"
+	AnnoKeys      = "keys"
 )
 
 // Annotation is a shape drawn over the video — the callouts a tutorial points

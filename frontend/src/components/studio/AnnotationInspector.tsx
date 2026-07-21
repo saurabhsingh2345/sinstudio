@@ -5,7 +5,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@/lib/utils";
 import { useStudio } from "../../state";
 import { clipPlayDur, mediaUrl, type Annotation, type AnnoKind, type Clip } from "../../types";
-import { ANNO_KINDS, clampAnno, isArrow, newAnnotation, resolveAnno } from "../../annotation";
+import { annoBox, ANNO_KINDS, clampAnno, isArrow, newAnnotation, resolveAnno } from "../../annotation";
 import { AnnotationLayer } from "./AnnotationLayer";
 import { ColorSwatch, Field, NumInput, Section, SliderRow } from "./inspector-bits";
 
@@ -15,6 +15,9 @@ import { ColorSwatch, Field, NumInput, Section, SliderRow } from "./inspector-bi
 //
 // The stage shows whatever footage sits under the callout at the playhead, so
 // what you are pointing at is actually on screen while you place the arrow.
+
+/** Kinds that carry a text label, and so get the Label section and a fill. */
+const LABELLED = new Set<string>(["number", "text", "keys"]);
 
 export function AnnotationInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
   const updateClip = useStudio((s) => s.updateClip);
@@ -43,8 +46,8 @@ export function AnnotationInspector({ trackId, clip }: { trackId: string; clip: 
                 next.w = seed.w;
                 next.h = seed.h;
               }
-              if ((v === "number" || v === "text") && !next.text) next.text = seed.text;
-              if ((v === "number" || v === "text") && !next.fill) next.fill = seed.fill;
+              if (LABELLED.has(v) && !next.text) next.text = seed.text;
+              if (LABELLED.has(v) && !next.fill) next.fill = seed.fill;
               updateClip(trackId, clip.id, { annotation: next });
             }}
           >
@@ -74,7 +77,7 @@ export function AnnotationInspector({ trackId, clip }: { trackId: string; clip: 
         <Field label="Colour">
           <ColorSwatch color={a.color} onChange={(c) => set({ color: c })} />
         </Field>
-        {anno.kind !== "highlight" && anno.kind !== "number" && anno.kind !== "text" && (
+        {anno.kind !== "highlight" && !LABELLED.has(anno.kind) && (
           <>
             <SliderRow
               label="Thickness"
@@ -87,7 +90,19 @@ export function AnnotationInspector({ trackId, clip }: { trackId: string; clip: 
             <ToggleFill anno={anno} onChange={set} />
           </>
         )}
-        {(anno.kind === "highlight" || anno.kind === "number" || anno.kind === "text") && (
+        {anno.kind === "keys" && (
+          // A keycap always has a border, so it gets the width without the
+          // on/off toggle the outline shapes need.
+          <SliderRow
+            label="Border"
+            value={a.thickness}
+            min={0}
+            max={12}
+            onChange={(v) => set({ thickness: v })}
+            fmt={(v) => (v === 0 ? "none" : `${v}px`)}
+          />
+        )}
+        {(anno.kind === "highlight" || LABELLED.has(anno.kind)) && (
           <Field label="Fill">
             <ColorSwatch color={a.fill || a.color} onChange={(c) => set({ fill: c })} />
           </Field>
@@ -112,14 +127,18 @@ export function AnnotationInspector({ trackId, clip }: { trackId: string; clip: 
         />
       </Section>
 
-      {(anno.kind === "number" || anno.kind === "text") && (
-        <Section label="Label">
-          <Input
-            value={a.text}
-            onChange={(e) => set({ text: e.target.value })}
-            className="h-7 bg-panel-2 text-[12px]"
-            placeholder={anno.kind === "number" ? "1" : "Click here"}
-          />
+      {LABELLED.has(anno.kind) && (
+        <Section label={anno.kind === "keys" ? "Keys" : "Label"}>
+          {anno.kind === "keys" ? (
+            <KeysField value={a.text} onChange={(text) => set({ text })} />
+          ) : (
+            <Input
+              value={a.text}
+              onChange={(e) => set({ text: e.target.value })}
+              className="h-7 bg-panel-2 text-[12px]"
+              placeholder={anno.kind === "number" ? "1" : "Click here"}
+            />
+          )}
           <Field label="Colour">
             <ColorSwatch color={a.textColor} onChange={(c) => set({ textColor: c })} />
           </Field>
@@ -180,6 +199,92 @@ export function AnnotationInspector({ trackId, clip }: { trackId: string; clip: 
   );
 }
 
+/*
+Modifier labels, in words rather than the Mac symbols.
+
+The renderer's font has no ⌘ or ⇧, so a captured symbol would export as a tofu
+box — see KEY_SYMBOLS in annotation.ts. Capturing the word form means the field
+shows exactly what the export draws, instead of looking right here and breaking
+later. Names still follow the platform, because "Cmd" and "Win" are what is
+printed on the key the viewer is looking at.
+*/
+const IS_MAC = typeof navigator !== "undefined" && /Mac|iP(hone|ad)/.test(navigator.platform || navigator.userAgent);
+const MOD_LABELS = IS_MAC
+  ? { meta: "Cmd", alt: "Opt", shift: "Shift", ctrl: "Ctrl" }
+  : { meta: "Win", alt: "Alt", shift: "Shift", ctrl: "Ctrl" };
+
+/** The printable name of the non-modifier key in a KeyboardEvent. */
+function keyLabel(e: React.KeyboardEvent): string {
+  const k = e.key;
+  if (["Meta", "Alt", "Shift", "Control"].includes(k)) return "";
+  const named: Record<string, string> = {
+    " ": "Space",
+    ArrowUp: "Up",
+    ArrowDown: "Down",
+    ArrowLeft: "Left",
+    ArrowRight: "Right",
+    Escape: "Esc",
+    Enter: "Enter",
+    Backspace: "Bksp",
+    Tab: "Tab",
+  };
+  if (named[k]) return named[k];
+  // A single character comes back lower-case unless Shift is down; a keycap is
+  // conventionally upper-case regardless of how it was typed.
+  return k.length === 1 ? k.toUpperCase() : k;
+}
+
+/**
+ * The keys to display, typed or captured.
+ *
+ * Capture here is just a focused input reading its own keydown — the browser
+ * gives that away for free to a field that has focus. It is NOT keystroke
+ * recording: nothing is watched while you record, nothing is stored, and the
+ * app asks for no permission. Pressing the shortcut is simply a faster and
+ * more accurate way to fill this box than spelling it out.
+ */
+function KeysField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [capturing, setCapturing] = useState(false);
+  return (
+    <div className="space-y-1">
+      <Input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="h-7 bg-panel-2 text-[12px]"
+        placeholder="Cmd+C"
+      />
+      <Button
+        type="button"
+        variant={capturing ? "default" : "secondary"}
+        className="h-7 w-full text-[11px]"
+        onFocus={() => setCapturing(true)}
+        onBlur={() => setCapturing(false)}
+        onKeyDown={(e) => {
+          // Every key is consumed while focused, or Tab and Enter would leave
+          // the field instead of being captured — they are shortcuts too.
+          e.preventDefault();
+          e.stopPropagation();
+          const parts: string[] = [];
+          if (e.ctrlKey) parts.push(MOD_LABELS.ctrl);
+          if (e.altKey) parts.push(MOD_LABELS.alt);
+          if (e.shiftKey) parts.push(MOD_LABELS.shift);
+          if (e.metaKey) parts.push(MOD_LABELS.meta);
+          const k = keyLabel(e);
+          if (k) parts.push(k);
+          // A bare modifier is a chord still being formed, not a shortcut.
+          if (k) onChange(parts.join("+"));
+        }}
+      >
+        {capturing ? "Press the shortcut…" : "Capture a shortcut"}
+      </Button>
+      <p className="text-[10px] leading-snug text-muted-foreground">
+        Separate keys with <span className="tabular">+</span>. Nothing is recorded while you capture — this only reads
+        the field you're typing in.
+      </p>
+    </div>
+  );
+}
+
 function ToggleFill({ anno, onChange }: { anno: Annotation; onChange: (p: Partial<Annotation>) => void }) {
   const on = !!anno.fill;
   return (
@@ -207,6 +312,9 @@ function AnnoStage({ trackId, clip }: { trackId: string; clip: Clip }) {
 
   const anno = clip.annotation!;
   const a = resolveAnno(anno);
+  // Computed rather than read from w/h, so the drag box wraps a keystroke badge
+  // whose size is derived from its text.
+  const box = annoBox(anno);
   const canvas = doc?.canvas;
 
   // Whatever footage is under the callout right now, so you can aim at it.
@@ -320,13 +428,17 @@ function AnnoStage({ trackId, clip }: { trackId: string; clip: Clip }) {
         <div
           onPointerDown={drag("move")}
           className="absolute cursor-move"
-          style={{ left: pct(a.x), top: pct(a.y), width: pct(a.w), height: pct(a.h) }}
+          style={{ left: pct(box.x), top: pct(box.y), width: pct(box.w), height: pct(box.h) }}
         >
-          <span
-            onPointerDown={drag("resize")}
-            className={cn(dot, "cursor-nwse-resize")}
-            style={{ left: "100%", top: "100%" }}
-          />
+          {/* A keystroke badge has no corner to pull: its extent comes from the
+              keys and the type size, so Size is the only thing to resize by. */}
+          {anno.kind !== "keys" && (
+            <span
+              onPointerDown={drag("resize")}
+              className={cn(dot, "cursor-nwse-resize")}
+              style={{ left: "100%", top: "100%" }}
+            />
+          )}
         </div>
       )}
     </div>

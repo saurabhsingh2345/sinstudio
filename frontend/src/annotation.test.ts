@@ -1,12 +1,15 @@
 import { describe, it, expect } from "vitest";
 import {
+  annoBox,
   ANNO_KINDS,
   arrowHead,
   clampAnno,
   isArrow,
+  keysLayout,
   newAnnotation,
   normRect,
   resolveAnno,
+  splitKeys,
 } from "./annotation";
 import type { Annotation } from "./types";
 
@@ -42,8 +45,12 @@ describe("newAnnotation", () => {
         // not to have been added at all.
         expect(Math.hypot((a.x2 ?? 0) - a.x, (a.y2 ?? 0) - a.y)).toBeGreaterThan(0.05);
       } else {
-        expect(a.w).toBeGreaterThan(0.02);
-        expect(a.h).toBeGreaterThan(0.02);
+        // Through annoBox, because a keystroke badge stores no w/h — its extent
+        // comes from its text. What the test is really asserting is that a
+        // freshly added callout of any kind occupies space.
+        const box = annoBox(a);
+        expect(box.w).toBeGreaterThan(0.02);
+        expect(box.h).toBeGreaterThan(0.02);
       }
     }
   });
@@ -51,6 +58,7 @@ describe("newAnnotation", () => {
   it("gives the labelled kinds text to show", () => {
     expect(newAnnotation("number").text).toBeTruthy();
     expect(newAnnotation("text").text).toBeTruthy();
+    expect(newAnnotation("keys").text).toBeTruthy();
   });
 });
 
@@ -151,5 +159,102 @@ describe("clampAnno", () => {
   it("leaves a shape that is already on screen untouched", () => {
     const a: Annotation = { kind: "box", x: 0.25, y: 0.25, w: 0.5, h: 0.5 };
     expect(clampAnno(a)).toEqual(a);
+  });
+});
+
+describe("splitKeys", () => {
+  it("splits a chord into one label per cap", () => {
+    expect(splitKeys("ctrl+shift+p")).toEqual(["ctrl", "shift", "p"]);
+  });
+
+  it("ignores the trailing separator you get halfway through typing", () => {
+    expect(splitKeys("ctrl+")).toEqual(["ctrl"]);
+    expect(splitKeys("  cmd  +  c  ")).toEqual(["cmd", "c"]);
+  });
+
+  // Splitting "+" on "+" yields nothing, and a badge showing no keys reads as
+  // broken. Falling back to the whole string renders the key you asked for.
+  it("still renders a lone plus", () => {
+    expect(splitKeys("+")).toEqual(["+"]);
+  });
+
+  it("is empty only when there is nothing to show", () => {
+    expect(splitKeys("   ")).toEqual([]);
+  });
+});
+
+describe("keysLayout", () => {
+  /*
+   * The twin of keysLayout() in annotation.go, asserted on identical numbers by
+   * TestKeysLayoutGolden. Widths come from rune count rather than measured
+   * glyphs precisely so these two can agree; if they drift, the preview puts
+   * keycaps where the export doesn't.
+   */
+  it("matches the renderer's golden layout for a two-key chord", () => {
+    const { caps, width, height } = keysLayout("Cmd+C", 40);
+    expect(caps.map((c) => c.label)).toEqual(["Cmd", "C"]);
+    expect(height).toBeCloseTo(64, 9);
+    expect(caps[0]).toMatchObject({ x: 0, w: 110.4 }); // 3 runes
+    expect(caps[1]!.w).toBeCloseTo(64, 9); // 1 rune → square minimum
+    expect(caps[1]!.x).toBeCloseTo(127.2, 9); // 110.4 + a 16.8 gap
+    expect(width).toBeCloseTo(191.2, 9);
+  });
+
+  it("matches the renderer once a label is wide enough to stretch a cap", () => {
+    const { caps, width } = keysLayout("Ctrl+Shift+P", 40);
+    expect(caps[0]!.w).toBeCloseTo(135.2, 9); // 4 runes
+    expect(caps[1]!.w).toBeCloseTo(160, 9); // 5 runes
+    expect(caps[2]!.w).toBeCloseTo(64, 9); // 1 rune → square minimum
+    expect(width).toBeCloseTo(392.8, 9);
+  });
+
+  // Counting bytes rather than code points would make any non-ASCII label too
+  // wide. "é" is two bytes and one key.
+  it("measures a multi-byte character as one key", () => {
+    expect(keysLayout("é", 40).caps[0]!.w).toBe(keysLayout("C", 40).caps[0]!.w);
+  });
+
+  // The renderer's font has no ⌘, so both halves spell the modifiers out. If
+  // this stopped matching annotation.go the preview would size a cap for "⌘"
+  // while the export sized one for "Cmd".
+  it("spells the Mac symbols out, the way the renderer does", () => {
+    expect(splitKeys("⌘+⇧+4")).toEqual(["Cmd", "Shift", "4"]);
+    expect(keysLayout("⌘+C", 40).caps.map((c) => c.label)).toEqual(["Cmd", "C"]);
+  });
+
+  it("draws nothing rather than an empty cap", () => {
+    expect(keysLayout("", 40).caps).toEqual([]);
+    expect(keysLayout("⌘+C", 0).caps).toEqual([]);
+  });
+});
+
+describe("annoBox", () => {
+  // A keystroke badge stores no width: its extent falls out of the text and the
+  // type size. Reading w/h directly would give zero, and a zero-sized drag box
+  // cannot be grabbed — the callout would be on screen and unmovable.
+  it("computes the box for a keystroke badge instead of reading w/h", () => {
+    const a: Annotation = { kind: "keys", x: 0.4, y: 0.78, text: "Cmd+C", textSize: 40 };
+    const box = annoBox(a);
+    expect(box.w).toBeCloseTo(191.2 / 1920, 9);
+    expect(box.h).toBeCloseTo(64 / 1080, 9);
+  });
+
+  it("keeps growing the box as more keys are added", () => {
+    const one = annoBox({ kind: "keys", x: 0, y: 0, text: "Cmd", textSize: 40 });
+    const two = annoBox({ kind: "keys", x: 0, y: 0, text: "Cmd+C", textSize: 40 });
+    expect(two.w).toBeGreaterThan(one.w);
+  });
+
+  it("passes the stored rectangle straight through for every other kind", () => {
+    expect(annoBox({ kind: "box", x: 0.1, y: 0.2, w: 0.3, h: 0.4 })).toEqual({ x: 0.1, y: 0.2, w: 0.3, h: 0.4 });
+  });
+
+  // clampAnno keeps a callout on screen by its own extent; before annoBox it
+  // measured a keystroke badge as zero-sized and let it slide fully off.
+  it("keeps a keystroke badge on screen", () => {
+    const a: Annotation = { kind: "keys", x: 5, y: 5, text: "Cmd+C", textSize: 40 };
+    const c = clampAnno(a);
+    expect(c.x).toBeLessThan(1);
+    expect(c.y).toBeLessThan(1);
   });
 });

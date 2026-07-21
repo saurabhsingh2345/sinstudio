@@ -191,6 +191,111 @@ func arrowHead(ax, ay, bx, by, t float64) (pts [][2]float64, stopX, stopY float6
 }
 
 /*
+Keycap layout, shared with keysLayout() in annotation.ts.
+
+A keystroke badge is a row of keycaps, and the only hard requirement is that the
+preview and the export put them in the same places. Glyph measurement cannot do
+that — Go measures with a font face and the browser measures with its own
+shaper, and the two disagree by a few percent per string, which compounds across
+a row and slides the last cap visibly. So a cap's width comes from its RUNE
+COUNT and the text size, both of which the two languages agree on exactly.
+
+The label is then centred inside a cap whose position both sides already agree
+on, which is where measurement is allowed to differ: a glyph a pixel off centre
+is invisible, a cap in the wrong place is not.
+
+Rune count rather than byte length matters here: "⌘" is three bytes and one key.
+*/
+const (
+	keycapHeightRatio = 1.6  // cap height, in text sizes
+	keycapCharRatio   = 0.62 // width contributed per rune
+	keycapPadRatio    = 0.9  // horizontal padding, in text sizes
+	keycapGapRatio    = 0.42 // space between caps
+	keycapRadiusRatio = 0.28 // corner rounding when none is set
+)
+
+type keycap struct {
+	label      string
+	x, y, w, h float64
+}
+
+/*
+keySymbols spells the Mac modifier symbols as words, and is the twin of the same
+map in annotation.ts.
+
+Not a style choice — a correctness one. The bundled text face is Arial, which
+has no ⌘ (U+2318) or ⇧ (U+21E7), so a badge saying "⌘+C" exported as an empty
+tofu box next to a C. The browser preview showed it perfectly, because the
+system UI font it draws with does have those glyphs; only rendering a frame
+showed the disagreement.
+
+Substituting per-host — draw the symbol where the font has it — would be worse
+than either option: fontPath() picks whatever the machine happens to have, so a
+Mac would export ⌘ and a Linux render host would export something else for the
+same project. Canonicalising in the shared layer means both halves and every
+host agree, and the width is computed from the same label that gets drawn.
+
+Restoring the symbols means embedding a font that has them in the renderer,
+which is the only way to make them safe.
+*/
+var keySymbols = map[string]string{
+	"⌘": "Cmd", "⌥": "Opt", "⇧": "Shift", "⌃": "Ctrl", "⎋": "Esc",
+	"⌫": "Bksp", "⇥": "Tab", "↩": "Enter", "␣": "Space",
+	"↑": "Up", "↓": "Down", "←": "Left", "→": "Right",
+}
+
+/*
+splitKeys turns "cmd+shift+p" into one label per cap.
+
+Empty pieces are dropped, so trailing separators while typing don't produce
+blank caps. A shortcut whose key IS "+" therefore can't be written as "ctrl++";
+the whole string is kept as a single cap when splitting yields nothing, which at
+least renders "+" alone correctly.
+*/
+func splitKeys(text string) []string {
+	var out []string
+	for _, p := range strings.Split(text, "+") {
+		if p = strings.TrimSpace(p); p != "" {
+			if word, ok := keySymbols[p]; ok {
+				p = word
+			}
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		if t := strings.TrimSpace(text); t != "" {
+			if word, ok := keySymbols[t]; ok {
+				return []string{word}
+			}
+			return []string{t}
+		}
+	}
+	return out
+}
+
+// keysLayout places one cap per key, left to right, with the group's top-left at
+// (0,0). Returns the caps and the group's total size, all in px.
+func keysLayout(text string, size float64) (caps []keycap, totalW, totalH float64) {
+	toks := splitKeys(text)
+	if len(toks) == 0 || size <= 0 {
+		return nil, 0, 0
+	}
+	h := size * keycapHeightRatio
+	gap := size * keycapGapRatio
+	x := 0.0
+	for i, t := range toks {
+		// Square-ish for a single key, widening only once the label needs it.
+		w := math.Max(h, float64(len([]rune(t)))*size*keycapCharRatio+size*keycapPadRatio)
+		caps = append(caps, keycap{label: t, x: x, y: 0, w: w, h: h})
+		x += w
+		if i < len(toks)-1 {
+			x += gap
+		}
+	}
+	return caps, x, h
+}
+
+/*
 renderAnnotationPNG draws one callout onto a full-canvas transparent PNG.
 
 Returns an error for a kind it does not know, so an unrecognised annotation
@@ -309,6 +414,36 @@ func drawAnnotation(img *image.RGBA, a schema.Annotation, w, h int) error {
 			size = 34 * ref
 		}
 		drawWrappedText(img, a.Text, cx, cy, hw*2-rad, size, hexColor(a.TextColor, "#ffffff"))
+
+	case schema.AnnoKeys:
+		// A row of keycaps: "the shortcut I just pressed", drawn rather than
+		// narrated. Colour roles differ from the other kinds — Fill is the cap
+		// body, Color its border — because that is how a key actually looks.
+		size := float64(a.TextSize) * ref
+		if a.TextSize == 0 {
+			size = 40 * ref
+		}
+		caps, _, _ := keysLayout(a.Text, size)
+		if len(caps) == 0 {
+			return nil // nothing typed yet: draw nothing rather than an empty cap
+		}
+		rad := a.Radius * ref
+		if a.Radius == 0 {
+			rad = size * keycapRadiusRatio
+		}
+		body := hexColor(a.Fill, "#1e293b")
+		body.A = uint8(clampF(float64(body.A)*op, 0, 255))
+		label := hexColor(a.TextColor, "#ffffff")
+		label.A = uint8(clampF(float64(label.A)*op, 0, 255))
+		for _, k := range caps {
+			kx, ky := x0+k.x, y0+k.y
+			cx, cy := kx+k.w/2, ky+k.h/2
+			d := func(x, y float64) float64 {
+				return sdRoundRect(x, y, cx, cy, k.w/2, k.h/2, rad)
+			}
+			paintSDF(img, d, boxAround(kx, ky, kx+k.w, ky+k.h, thick), &body, &stroke, thick)
+			drawCentredText(img, k.label, cx, cy, size, label)
+		}
 
 	default:
 		return errUnknownAnnotation

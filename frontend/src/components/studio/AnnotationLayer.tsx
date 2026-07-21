@@ -1,4 +1,4 @@
-import { arrowHead, resolveAnno } from "../../annotation";
+import { arrowHead, KEYCAP, KEYS_SIZE, keysLayout, resolveAnno } from "../../annotation";
 import type { Annotation } from "../../types";
 
 // The preview twin of backend/internal/render/annotation.go.
@@ -104,6 +104,45 @@ export function AnnotationLayer({
             opacity={a.opacity}
           />
         );
+      case "keys": {
+        // Unlike the other labels this one is SVG, not HTML: keycap text never
+        // wraps, so there are no glyphs to measure, and staying in the viewBox
+        // means it scales with the shape on a stage of any size — including the
+        // inspector's thumbnail, where HTML text would be sized to nothing.
+        const size = (a.textSize || KEYS_SIZE) * ref;
+        const { caps } = keysLayout(a.text, size);
+        if (!caps.length) return null;
+        const rad = a.radius > 0 ? a.radius * ref : size * KEYCAP.radius;
+        return (
+          <g opacity={a.opacity}>
+            {caps.map((k, i) => (
+              <g key={i}>
+                <rect
+                  x={x0 + k.x}
+                  y={y0 + k.y}
+                  width={k.w}
+                  height={k.h}
+                  rx={rad}
+                  fill={a.fill || "#1e293b"}
+                  stroke={a.color}
+                  strokeWidth={t}
+                />
+                <text
+                  x={x0 + k.x + k.w / 2}
+                  y={y0 + k.y + k.h / 2}
+                  fill={a.textColor}
+                  fontSize={size}
+                  fontFamily="system-ui, -apple-system, sans-serif"
+                  textAnchor="middle"
+                  dominantBaseline="central"
+                >
+                  {k.label}
+                </text>
+              </g>
+            ))}
+          </g>
+        );
+      }
       default:
         return null;
     }

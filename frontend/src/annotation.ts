@@ -15,6 +15,7 @@ export const ANNO_KINDS: { kind: AnnoKind; label: string }[] = [
   { kind: "highlight", label: "Highlight" },
   { kind: "number", label: "Step number" },
   { kind: "text", label: "Callout" },
+  { kind: "keys", label: "Keystrokes" },
 ];
 
 export const ANNO_COLOR = "#f5a524";
@@ -86,7 +87,135 @@ export function newAnnotation(kind: AnnoKind): Annotation {
         text: "Click here",
         textSize: 34,
       };
+    case "keys":
+      // Low and central, where a keystroke badge conventionally sits — and out
+      // of the way of whatever the shortcut is acting on.
+      return {
+        ...base,
+        x: 0.4,
+        y: 0.78,
+        // Colour roles differ here: fill is the cap body, colour its border.
+        fill: "#1e293b",
+        color: "#94a3b8",
+        thickness: 3,
+        radius: 0,
+        text: "Cmd+C",
+        textSize: 40,
+        textColor: "#ffffff",
+      };
   }
+}
+
+/*
+Keycap layout, the twin of keysLayout() in annotation.go.
+
+Widths come from RUNE COUNT and text size rather than measured glyphs, because
+Go and the browser measure text differently and a few percent per label
+compounds across a row until the last cap is visibly out of place. Both sides
+compute these numbers identically; the label is then centred inside a cap they
+already agree on, which is where a sub-pixel difference doesn't matter.
+*/
+export const KEYCAP = {
+  height: 1.6, // cap height, in text sizes
+  charWidth: 0.62, // width contributed per rune
+  pad: 0.9, // horizontal padding, in text sizes
+  gap: 0.42, // space between caps
+  radius: 0.28, // corner rounding when none is set
+} as const;
+
+/** The default text size for a keystroke badge, px at the 1080 reference. */
+export const KEYS_SIZE = 40;
+
+export interface Keycap {
+  label: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/*
+The Mac modifier symbols, spelled as words. The twin of keySymbols in
+annotation.go.
+
+Not a style choice — a correctness one. The renderer's text face is Arial, which
+has no ⌘ (U+2318) or ⇧ (U+21E7): a badge reading "⌘+C" exported as a tofu box
+next to a C while this preview drew it perfectly, because the browser has fonts
+the renderer doesn't. Drawing the symbol only where the host font has it would
+be worse still — the same project would then export differently on a Mac and on
+a Linux render host. So both halves canonicalise, and both draw the same word.
+
+Typing ⌘ still works; it simply shows as "Cmd" here too, immediately, so the
+export holds no surprise.
+*/
+export const KEY_SYMBOLS: Record<string, string> = {
+  "⌘": "Cmd",
+  "⌥": "Opt",
+  "⇧": "Shift",
+  "⌃": "Ctrl",
+  "⎋": "Esc",
+  "⌫": "Bksp",
+  "⇥": "Tab",
+  "↩": "Enter",
+  "␣": "Space",
+  "↑": "Up",
+  "↓": "Down",
+  "←": "Left",
+  "→": "Right",
+};
+
+/** Mirrors splitKeys() in annotation.go, including the single-cap fallback. */
+export function splitKeys(text: string): string[] {
+  const out = text
+    .split("+")
+    .map((p) => p.trim())
+    .filter((p) => p !== "")
+    .map((p) => KEY_SYMBOLS[p] ?? p);
+  if (out.length === 0) {
+    const t = text.trim();
+    if (!t) return [];
+    return [KEY_SYMBOLS[t] ?? t];
+  }
+  return out;
+}
+
+/** One cap per key, left to right, group top-left at (0,0). All in px. */
+export function keysLayout(text: string, size: number): { caps: Keycap[]; width: number; height: number } {
+  const toks = splitKeys(text);
+  if (toks.length === 0 || size <= 0) return { caps: [], width: 0, height: 0 };
+  const h = size * KEYCAP.height;
+  const gap = size * KEYCAP.gap;
+  const caps: Keycap[] = [];
+  let x = 0;
+  toks.forEach((t, i) => {
+    // [...t] counts code points, matching Go's []rune — "⌘" is one key.
+    const w = Math.max(h, [...t].length * size * KEYCAP.charWidth + size * KEYCAP.pad);
+    caps.push({ label: t, x, y: 0, w, h });
+    x += w;
+    if (i < toks.length - 1) x += gap;
+  });
+  return { caps, width: x, height: h };
+}
+
+/**
+ * The box a callout occupies, in canvas fractions.
+ *
+ * For most kinds that is simply the stored w/h. A keystroke badge has no stored
+ * size — its extent falls out of the text and the type size — so it is computed,
+ * rather than writing a derived width back into the document where it could
+ * drift out of step with the text it came from.
+ */
+export function annoBox(
+  a: Annotation,
+  canvasW = 1920,
+  canvasH = 1080
+): { x: number; y: number; w: number; h: number } {
+  if (a.kind === "keys") {
+    const ref = canvasH / 1080;
+    const { width, height } = keysLayout(a.text ?? "", (a.textSize || KEYS_SIZE) * ref);
+    return { x: a.x, y: a.y, w: width / canvasW, h: height / canvasH };
+  }
+  return { x: a.x, y: a.y, w: a.w ?? 0, h: a.h ?? 0 };
 }
 
 /** The box kinds are placed by a rectangle; the arrow by two points. */
@@ -155,7 +284,8 @@ export function clampAnno(a: Annotation): Annotation {
   if (isArrow(a)) {
     return { ...a, x: clamp01(a.x), y: clamp01(a.y), x2: clamp01(a.x2 ?? 0), y2: clamp01(a.y2 ?? 0) };
   }
-  const w = a.w ?? 0;
-  const h = a.h ?? 0;
+  // Via annoBox, so a keystroke badge — whose size comes from its text rather
+  // than from w/h — is kept on screen by its real extent and not by a zero.
+  const { w, h } = annoBox(a);
   return { ...a, x: Math.max(-w + 0.02, Math.min(1 - 0.02, a.x)), y: Math.max(-h + 0.02, Math.min(1 - 0.02, a.y)) };
 }

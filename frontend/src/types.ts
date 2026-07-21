@@ -111,7 +111,7 @@ export interface Redaction {
 
 // Annotation: a callout shape drawn over the video (clip has no asset when set).
 // Mirrors backend/internal/schema Annotation — keep the two in step.
-export type AnnoKind = "arrow" | "box" | "ellipse" | "highlight" | "number" | "text";
+export type AnnoKind = "arrow" | "box" | "ellipse" | "highlight" | "number" | "text" | "keys";
 
 export interface Annotation {
   kind: AnnoKind;
