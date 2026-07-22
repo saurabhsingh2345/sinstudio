@@ -378,3 +378,108 @@ describe("spring easing safety", () => {
     }
   });
 });
+
+describe("ramps have room", () => {
+  /*
+   * `at` clamps every keyframe into [0, duration], so before holds were fitted
+   * a zoom ending near the clip's end had its pull-out compressed into whatever
+   * time remained. On a real 3.7s recording that was a 0.165s pull-out against
+   * a requested 0.9s — a snap, and with a spring on the push-in, a snap that
+   * bounces. Only long recordings were unaffected, which is why it survived.
+   */
+  const rampsIn = (kf: Record<string, Keyframe[]>) => {
+    const s = kf.scale ?? [];
+    return s
+      .slice(1)
+      .map((k, i) => ({ secs: +(k.t - s[i]!.t).toFixed(3), dv: k.value - s[i]!.value }))
+      .filter((g) => Math.abs(g.dv) > 1e-9)
+      .map((g) => g.secs);
+  };
+
+  const hold = (start: number, end: number, ramp = 0.9) => [
+    { start, end, scale: 1.6, x: 200, y: -100, ramp, ease: "springOut" },
+  ];
+
+  it("never compresses a ramp, wherever the zoom falls in the clip", () => {
+    // A zoom hard against the end is the case that used to snap.
+    for (const [h, dur] of [
+      [hold(2.42, 3.52), 3.685],
+      [hold(3.5, 4.9), 5.11],
+      [hold(0, 1.2), 6],
+      [hold(4.8, 6), 6],
+    ] as const) {
+      for (const secs of rampsIn(zoomKeyframes(h as never, dur))) {
+        expect(secs).toBeCloseTo(0.9, 3);
+      }
+    }
+  });
+
+  // No zoom is better than one that snaps: a clip with no room for two ramps
+  // and a hold should simply not be zoomed.
+  it("drops a zoom that cannot fit rather than snapping it", () => {
+    expect(zoomKeyframes(hold(0.5, 1.0) as never, 1.2).scale).toBeUndefined();
+    expect(zoomKeyframes(hold(0.2, 0.4) as never, 0.8).scale).toBeUndefined();
+  });
+
+  it("still returns to full frame at the end", () => {
+    const kf = zoomKeyframes(hold(2.42, 3.52) as never, 3.685);
+    const s = kf.scale!;
+    expect(s[s.length - 1]!.value).toBeCloseTo(1, 6);
+    expect(s[s.length - 1]!.t).toBeLessThanOrEqual(3.685 + 1e-9);
+  });
+
+  it("keeps the zoom inside the clip it belongs to", () => {
+    const kf = zoomKeyframes(hold(2.42, 3.52) as never, 3.685);
+    for (const arr of Object.values(kf)) {
+      for (const k of arr) {
+        expect(k.t).toBeGreaterThanOrEqual(0);
+        expect(k.t).toBeLessThanOrEqual(3.685 + 1e-9);
+      }
+    }
+  });
+});
+
+describe("the frame never leaves the footage", () => {
+  /*
+   * "Never go out of the screen." The earlier version of this checked pan
+   * targets that had headroom left, so the clamp itself was never exercised —
+   * an overshoot had somewhere safe to go. These sit the pan exactly ON the
+   * limit, which is where a zoom that leaves the footage actually happens, and
+   * run the real recording's own segments at a spread of clip lengths.
+   */
+  const canvas = { width: 1920, height: 1080 };
+  const covers = (kf: Record<string, Keyframe[]>, duration: number, label: string) => {
+    for (let t = 0; t <= duration; t += 0.01) {
+      const s = kf.scale?.length ? kfValue(kf.scale, t) : 1;
+      const x = kf.x?.length ? kfValue(kf.x, t) : 0;
+      const y = kf.y?.length ? kfValue(kf.y, t) : 0;
+      // Below full frame the clip is smaller than the canvas; past the bound
+      // its own edge comes inside it. Either shows the background.
+      expect(s, `${label} scale @${t.toFixed(2)}`).toBeGreaterThanOrEqual(1 - 1e-9);
+      expect(Math.abs(x), `${label} x @${t.toFixed(2)}`).toBeLessThanOrEqual((canvas.width * (s - 1)) / 2 + 1e-6);
+      expect(Math.abs(y), `${label} y @${t.toFixed(2)}`).toBeLessThanOrEqual((canvas.height * (s - 1)) / 2 + 1e-6);
+    }
+  };
+
+  it("holds with the pan sitting exactly on the clamp limit", () => {
+    for (const scale of [1.2, 1.6, 2.4]) {
+      // The furthest a clip at this scale can pan before its edge shows.
+      const bx = (canvas.width * (scale - 1)) / 2;
+      const by = (canvas.height * (scale - 1)) / 2;
+      const kf = zoomKeyframes(
+        [
+          { start: 2, end: 3.5, scale, x: bx, y: -by, ramp: 0.9, ease: "springOut" },
+          { start: 4.2, end: 5.6, scale, x: -bx, y: by, ramp: 0.9, ease: "springOut" },
+        ] as never,
+        9
+      );
+      covers(kf, 9, `scale ${scale}`);
+    }
+  });
+
+  it("holds for a zoom pressed against either end of the clip", () => {
+    const bx = (canvas.width * 0.6) / 2;
+    covers(zoomKeyframes([{ start: 0, end: 1, scale: 1.6, x: bx, y: 0, ramp: 0.9, ease: "springOut" }] as never, 4), 4, "at start");
+    covers(zoomKeyframes([{ start: 3, end: 4, scale: 1.6, x: bx, y: 0, ramp: 0.9, ease: "springOut" }] as never, 4), 4, "at end");
+  });
+});

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { autoFrame } from "./autoFrame";
+import { smartFocus } from "./smartFocus";
+import { kfValue } from "./components/studio/preview-engine";
 import realTrack from "./__fixtures__/recording.cursor.json";
 
 /*
@@ -59,5 +61,39 @@ describe("autoFrame on a real recording", () => {
         expect(k.t).toBeLessThanOrEqual(dur + 1e-6);
       }
     }
+  });
+});
+
+/*
+The same coverage guarantee, driven by the real recording's own focus segments
+rather than hand-placed ones, across the clip lengths a recording actually gets
+trimmed to. This is the "never go out of the screen" promise checked against
+data nobody chose to make the test pass.
+*/
+describe("the real recording never uncovers the canvas", () => {
+  const canvas = { width: 1920, height: 1080 };
+  it.each([2.5, 3.685, 4.4, 5.11, 8, 12])("holds at a %ss clip", (dur) => {
+    const { keyframes } = smartFocus(track as never, dur, canvas);
+    if (!keyframes.scale?.length) return; // too short to zoom at all: fine
+    for (let t = 0; t <= dur; t += 0.01) {
+      const s = kfValue(keyframes.scale, t);
+      const x = keyframes.x?.length ? kfValue(keyframes.x, t) : 0;
+      const y = keyframes.y?.length ? kfValue(keyframes.y, t) : 0;
+      expect(s).toBeGreaterThanOrEqual(1 - 1e-9);
+      expect(Math.abs(x)).toBeLessThanOrEqual((canvas.width * (s - 1)) / 2 + 1e-6);
+      expect(Math.abs(y)).toBeLessThanOrEqual((canvas.height * (s - 1)) / 2 + 1e-6);
+    }
+  });
+
+  // The snap this whole phase exists to remove.
+  it.each([3.685, 5.11, 12])("uses a full ramp at a %ss clip", (dur) => {
+    const { keyframes } = smartFocus(track as never, dur, canvas);
+    const s = keyframes.scale;
+    if (!s) return;
+    const moves = s
+      .slice(1)
+      .map((k, i) => ({ secs: k.t - s[i]!.t, dv: k.value - s[i]!.value }))
+      .filter((g) => Math.abs(g.dv) > 1e-9);
+    for (const m of moves) expect(m.secs).toBeGreaterThan(0.5);
   });
 });

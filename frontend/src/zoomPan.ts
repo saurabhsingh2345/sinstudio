@@ -180,7 +180,35 @@ export function zoomKeyframes(holds: ZoomHold[], duration: number): Record<strin
     push(ys, Math.round(oy));
   };
 
-  const sorted = [...holds].sort((a, b) => a.start - b.start);
+  const ordered = [...holds].sort((a, b) => a.start - b.start);
+
+  /*
+   * A hold must have room for its ramps.
+   *
+   * Without this the ramp is whatever time happens to be left: `at` clamps
+   * every keyframe into [0, duration], so a zoom ending near the clip's end
+   * gets its pull-out compressed into the remainder. On a real 3.7s recording
+   * that produced a 0.165s pull-out against a requested 0.9s — a snap, and with
+   * a spring on the way in, a snap that bounces. Long recordings never showed
+   * it, which is why it survived.
+   *
+   * The hold moves rather than the ramp shrinking. Losing part of a hold costs
+   * a moment of dwell on something already on screen; losing the ramp costs the
+   * move itself, which is the thing being watched. A hold with nowhere left to
+   * go is dropped: no zoom at all is better than one that snaps.
+   */
+  const sorted = ordered
+    .map((h) => {
+      // On a clip too short for two full ramps, the ramp itself has to give —
+      // there is no arrangement that fits otherwise.
+      const ramp = Math.min(h.ramp, duration / 2);
+      const start = clamp(h.start, ramp, duration - ramp);
+      const end = clamp(h.end, start, duration - ramp);
+      return { ...h, start, end, ramp };
+    })
+    .filter((h) => h.end > h.start);
+
+  if (!sorted.length) return {};
 
   /*
    * Overshoot belongs on the push-in and NOWHERE else.
