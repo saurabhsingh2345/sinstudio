@@ -1923,6 +1923,41 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
   const videoRefs = useRef<Record<string, HTMLVideoElement | null>>({});
   const audioRefs = useRef<Record<string, HTMLAudioElement | null>>({});
   const [stage, setStage] = useState({ w: 320, h: 180 });
+  const areaRef = useRef<HTMLDivElement>(null);
+  const [frameSize, setFrameSize] = useState({ w: 0, h: 0 });
+
+  /*
+   * Fit the canvas's shape into the space available, in JS.
+   *
+   * CSS cannot do this: aspect-ratio holds only while ONE axis is constrained,
+   * and this box is bounded on both. Setting a width and capping the height
+   * makes the browser clamp the height and keep the width — silently breaking
+   * the ratio — which is what produced a 2.26-wide frame for a 1.55 canvas and
+   * put black bars down both sides of every clip, since the <video> inside is
+   * object-fit: contain and letterboxed itself into a box the wrong shape.
+   *
+   * contentRect rather than clientWidth: it excludes the padding, which is the
+   * space the frame must actually fit inside.
+   */
+  useLayoutEffect(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    const fit = (w: number, h: number) => {
+      if (w <= 0 || h <= 0) return;
+      // Bind on whichever axis runs out first, so the whole frame is visible.
+      const byWidth = w / h < ratio;
+      setFrameSize(byWidth ? { w, h: w / ratio } : { w: h * ratio, h });
+    };
+    const r = el.getBoundingClientRect();
+    const cs = getComputedStyle(el);
+    fit(r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
+        r.height - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom));
+    const ro = new ResizeObserver(([e]) => {
+      if (e) fit(e.contentRect.width, e.contentRect.height);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ratio]);
 
   useLayoutEffect(() => {
     const el = frameRef.current;
@@ -1932,7 +1967,7 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
     const ro = new ResizeObserver(fit);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [ratio]);
+  }, [ratio, frameSize.w, frameSize.h]);
 
   const soloActive = doc.tracks.some((t) => t.solo);
   const visuals = activeVisuals(doc.tracks, playhead);
@@ -2152,17 +2187,19 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div
+        ref={areaRef}
         className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6"
         style={{ background: "radial-gradient(ellipse at center, var(--stage), var(--stage-2))" }}
       >
         <div
-          className="relative shadow-[0_20px_80px_-20px_rgba(0,0,0,0.8)] transition-[width,height] duration-300"
+          className="relative shadow-[0_20px_80px_-20px_rgba(0,0,0,0.8)]"
           style={{
-            aspectRatio: ratio,
-            height: aspect === "16:9" ? "auto" : "min(100%, 62vh)",
-            width: aspect === "16:9" ? "min(100%, 80%)" : "auto",
-            maxHeight: "100%",
-            maxWidth: "100%",
+            // Explicit px, computed above. The frame is exactly the canvas's
+            // shape, so a clip that fills the canvas fills the frame and there
+            // is nothing for the background to show through.
+            width: frameSize.w || undefined,
+            height: frameSize.h || undefined,
+            aspectRatio: frameSize.w ? undefined : ratio,
           }}
         >
           <div ref={frameRef} className="absolute inset-0 overflow-hidden rounded-lg" style={{ background: bg }}>
