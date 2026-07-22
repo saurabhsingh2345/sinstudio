@@ -6,8 +6,10 @@ Studio is two things sharing one timeline.
 recording arrives already framed: pushed in where you clicked, drifting to
 follow you, pulling back when you move on. The camera work is ordinary
 keyframes, so every move it guesses stays draggable. Callouts, keystroke badges,
-region blur, green screen, device frames and cursor effects are all there to
-finish it. See **[docs/screen-recording.md](docs/screen-recording.md)**.
+region blur, green screen, device frames, backdrop scenes, webcam bubbles and
+cursor effects finish the picture; silence cuts, idle speed-up, noise removal
+and auto-ducking finish the sound. See
+**[docs/screen-recording.md](docs/screen-recording.md)**.
 
 **A non-linear editor that assembles** the clips produced by the sibling
 projects (`newaniAdv`, `hyper/hyperframes`, `funkycode`) into a finished video:
