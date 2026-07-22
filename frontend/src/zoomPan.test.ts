@@ -587,3 +587,54 @@ describe("contentBox", () => {
     expect(cb).toEqual({ x0: 0, x1: canvas.width, y0: 0, y1: canvas.height, k: 1 });
   });
 });
+
+describe("hand-placed zooms on a mismatched recording", () => {
+  // The shape that produced the bug report: a MacBook capture fitted into a 16:9
+  // project. It is pillarboxed, so ~125px each side of the canvas is background
+  // and not picture. Clamping to the canvas let the panel aim there.
+  const mac = { width: 3456, height: 2234 };
+  const cb = contentBox(mac, canvas);
+
+  /**
+   * The invariant the whole fix exists to hold: at scale s with offset off, the
+   * clip is drawn at width W*s centred and shifted, so the picture's edges land
+   * at (W - W*s)/2 + off + s*x0 and ... + s*x1. Covering the frame means the
+   * left edge is at or past 0 and the right at or past W. Any violation is
+   * background on screen.
+   */
+  const coversFrame = (scale: number, off: number) => {
+    const base = (canvas.width - canvas.width * scale) / 2 + off;
+    return base + scale * cb.x0 <= 0.5 && base + scale * cb.x1 >= canvas.width - 0.5;
+  };
+
+  it("keeps the rectangle out of the pillarbox bars", () => {
+    const r = clampRect({ x: 0, y: 0, w: 600, h: 337.5 }, canvas, mac);
+    expect(r.x).toBeGreaterThanOrEqual(cb.x0 - 0.01);
+    expect(r.x + r.w).toBeLessThanOrEqual(cb.x1 + 0.01);
+  });
+
+  it("never frames background, wherever the zoom is aimed", () => {
+    for (let x = -200; x <= 2100; x += 50) {
+      for (const w of [1920, 1200, 800, 400]) {
+        const t = rectToTransform({ x, y: 300, w, h: w / (16 / 9) }, canvas, mac);
+        expect(coversFrame(t.scale, t.x)).toBe(true);
+      }
+    }
+  });
+
+  it("would have framed background under the old canvas-bound clamp", () => {
+    // Guards the fix: the previous behaviour is what clamping to the full canvas
+    // still produces, and it must fail the invariant — otherwise this test is
+    // passing for the wrong reason and would not catch a regression.
+    const old = rectToTransform({ x: 0, y: 300, w: 800, h: 450 }, canvas);
+    expect(coversFrame(old.scale, old.x)).toBe(false);
+  });
+
+  it("round-trips a stop through apply/read without drifting into a bar", () => {
+    const kf = applyZoomStops(undefined, [stop({ rect: rectForZoom(2, { x: 300, y: 540 }, canvas, mac) })], 8, canvas, mac);
+    const back = readZoomStops(kf, canvas, mac);
+    expect(back).toHaveLength(1);
+    expect(back[0].rect.x).toBeGreaterThanOrEqual(cb.x0 - 0.5);
+    expect(back[0].rect.x + back[0].rect.w).toBeLessThanOrEqual(cb.x1 + 0.5);
+  });
+});

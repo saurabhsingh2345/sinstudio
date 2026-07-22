@@ -118,6 +118,16 @@ export interface DeviceFrame {
   color?: string; // body colour; empty = a near-black
 }
 
+// Bubble: the webcam-bubble treatment. Mirrors schema.Bubble — zero/absent
+// values mean the defaults in bubble.ts.
+export interface Bubble {
+  shape?: "circle" | "rounded"; // default circle
+  size?: number; // diameter as a fraction of canvas height (0 = default 0.28)
+  border?: number; // ring px at 1080 ref (0 = default 6; negative = none)
+  borderColor?: string; // empty = white
+  shadow?: number; // 0..1 (0 = default 0.5)
+}
+
 // Backdrop: the styled scene behind a clip's picture. Mirrors schema.Backdrop —
 // zero/absent values mean the defaults in backdrop.ts, so an empty object is
 // already a usable scene.
@@ -199,6 +209,7 @@ export interface Clip {
   eq?: AudioEQ; // 3-band audio equalizer
   denoise?: number; // 0..1 broadband noise-removal strength (0/absent = off; export-side afftdn)
   backdrop?: Backdrop; // styled scene behind the picture (wallpaper, inset, rounded corners, shadow)
+  bubble?: Bubble; // webcam-bubble mask (circle/rounded, ring, shadow); ignored under device
   lut?: string; // .cube color LUT filename (in the project's luts dir)
   mute?: boolean; // silence this clip's own audio (used after detaching audio)
   hold?: number; // seconds of frozen last frame appended after the source plays out

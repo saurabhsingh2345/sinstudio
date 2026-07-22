@@ -77,9 +77,11 @@ import { ChromaVideo } from "./ChromaVideo";
 import { DeviceSection } from "./DeviceSection";
 import { BackdropSection } from "./BackdropSection";
 import { SilenceSection } from "./SilenceSection";
+import { BubbleSection } from "./BubbleSection";
 import { DeviceLayer } from "./DeviceLayer";
 import { deviceLayout } from "../../device";
 import { backdropCSS, backdropLayout } from "../../backdrop";
+import { bubbleLayout } from "../../bubble";
 
 import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
@@ -2311,6 +2313,58 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                     style={{ position: "absolute", ...style }}
                   />
                 );
+              if (clip.bubble && !clip.device) {
+                /*
+                 * Webcam bubble: centre-cropped square (object-fit: cover on a
+                 * square box = the exporter's crop), masked round, ring and
+                 * shadow — positioned by the SAME bubbleLayout the exporter
+                 * composites into, scaled from canvas px to stage px.
+                 */
+                const g = bubbleLayout(clip.bubble, W, H);
+                const pct = (v: number, of: number) => `${(v / of) * 100}%`;
+                const k = box.vw / W;
+                const shadow = clip.bubble.shadow || 0.5;
+                return (
+                  <div
+                    key={clip.id}
+                    style={{
+                      position: "absolute",
+                      left: box.left,
+                      top: box.top,
+                      width: box.vw,
+                      height: box.vh,
+                      opacity: box.opacity,
+                      transform: rot ? `rotate(${rot}deg)` : undefined,
+                      background: clip.backdrop ? backdropCSS(clip.backdrop) : undefined,
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: pct(g.x, W),
+                        top: pct(g.y, H),
+                        width: pct(g.d, W),
+                        height: pct(g.d, H),
+                        borderRadius: g.radius * k,
+                        overflow: "hidden",
+                        boxSizing: "border-box",
+                        border: g.border > 0 ? `${g.border * k}px solid ${clip.bubble.borderColor || "#ffffff"}` : undefined,
+                        boxShadow: `0 ${H * 0.008 * k}px ${H * 0.025 * k}px rgba(0,0,0,${(0.4 * shadow).toFixed(3)})`,
+                        background: "#000",
+                      }}
+                    >
+                      <video
+                        ref={(el) => (videoRefs.current[clip.id] = el)}
+                        src={mediaUrl(asset.path, asset.createdAt)}
+                        poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
+                        muted={muted}
+                        playsInline
+                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                      />
+                    </div>
+                  </div>
+                );
+              }
               if (clip.backdrop && !clip.device) {
                 /*
                  * The scene: wallpaper across the whole clip box, the picture
@@ -3748,6 +3802,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
       {asset && asset.kind !== "audio" && <ChromaSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "image" && <SilenceSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <BackdropSection trackId={trackId} clip={clip} />}
+      {asset && asset.kind === "video" && <BubbleSection trackId={trackId} clip={clip} />}
       {asset && asset.kind !== "audio" && <DeviceSection trackId={trackId} clip={clip} />}
       {asset?.hasCursor && <SmartFocusSection trackId={trackId} clip={clip} assetId={asset.id} />}
       {asset?.hasCursor && (

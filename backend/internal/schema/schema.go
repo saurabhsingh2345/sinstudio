@@ -113,6 +113,11 @@ type Clip struct {
 	// the picture zoom as one object. With Device set too, only the wallpaper
 	// applies (the device supplies its own body and shadow story).
 	Backdrop *Backdrop `json:"backdrop,omitempty"`
+	// Bubble masks this clip into a webcam bubble — centre-cropped square,
+	// circular (or rounded) mask, border ring, soft shadow. Composited at
+	// canvas size before the transform, so the clip's ordinary x/y/scale (and
+	// keyframes) place the bubble. Ignored when Device is set.
+	Bubble *Bubble `json:"bubble,omitempty"`
 	// Cursor emphasises the pointer during a screen recording. It only does
 	// anything when the clip's asset has a recorded pointer track beside it
 	// (a .cursor.json sidecar); on any other clip it is inert.
@@ -238,6 +243,22 @@ type DeviceFrame struct {
 
 	// Color is the body colour as a hex triple; empty is a near-black.
 	Color string `json:"color,omitempty"`
+}
+
+// Bubble is the webcam-bubble treatment (see Clip.Bubble). Zero values mean
+// the defaults, so an empty struct is already a usable bubble.
+type Bubble struct {
+	// Shape is "circle" (default) or "rounded" (a squircle-ish card).
+	Shape string `json:"shape,omitempty"`
+	// Size is the bubble's diameter as a fraction of the canvas HEIGHT
+	// (0 = default 0.28; capped to 0.9).
+	Size float64 `json:"size,omitempty"`
+	// Border is the ring width in px at a 1080-high reference (0 = default 6;
+	// negative = none). BorderColor empty = white.
+	Border      float64 `json:"border,omitempty"`
+	BorderColor string  `json:"borderColor,omitempty"`
+	// Shadow is the drop-shadow strength 0..1 (0 = default 0.5).
+	Shadow float64 `json:"shadow,omitempty"`
 }
 
 // Backdrop is the styled scene behind a clip's picture (see Clip.Backdrop).

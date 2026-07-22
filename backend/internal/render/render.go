@@ -68,6 +68,8 @@ type visual struct {
 	device *schema.DeviceFrame
 	// Styled scene behind the picture (wallpaper, inset, rounded corners).
 	backdrop *schema.Backdrop
+	// Webcam-bubble mask (circle/rounded, ring, shadow).
+	bubble *schema.Bubble
 }
 
 // audio is a resolved audio contribution.
@@ -380,7 +382,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		 * rounding error would soften every frame for nothing.
 		 */
 		prefit := ""
-		if v.device == nil && v.backdrop == nil && v.srcW > 0 && v.srcH > 0 {
+		if v.device == nil && v.backdrop == nil && v.bubble == nil && v.srcW > 0 && v.srcH > 0 {
 			srcA := float64(v.srcW) / float64(v.srcH)
 			canA := float64(w) / float64(h)
 			if math.Abs(srcA-canA)/canA > 0.005 {
@@ -418,6 +420,32 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			devIdx = inputIdx + 1
 			extraInputs = 1
 		}
+		// A bubble is ignored under a device frame — a phone inside a circle is
+		// two framings fighting over one picture.
+		bubble := v.bubble
+		if v.device != nil {
+			bubble = nil
+		}
+		// The bubble's mask and its frame (shadow + ring) are two more inputs.
+		bbMaskIdx, bbFrameIdx := -1, -1
+		var bbGeom bubbleGeom
+		if bubble != nil {
+			bbGeom = bubbleLayout(bubble, w, h)
+			maskPNG := filepath.Join(srtDir, fmt.Sprintf("bubble-mask-%d.png", i))
+			if err := renderBubbleMaskPNG(bbGeom, maskPNG); err != nil {
+				return nil, err
+			}
+			framePNG := filepath.Join(srtDir, fmt.Sprintf("bubble-frame-%d.png", i))
+			if err := renderBubbleFramePNG(bubble, bbGeom, w, h, framePNG); err != nil {
+				return nil, err
+			}
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", maskPNG)
+			bbMaskIdx = inputIdx + 1 + extraInputs
+			extraInputs++
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", framePNG)
+			bbFrameIdx = bbMaskIdx + 1
+			extraInputs++
+		}
 		// A backdrop adds its wallpaper (and, without a device, the card's
 		// corner mask) as further inputs, numbered after the device's.
 		bgIdx, maskIdx := -1, -1
@@ -449,7 +477,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		// overlay a patch, a device insets the picture and lays a frame over it),
 		// so the source segment is cut short and handed to them. With neither, the
 		// chain stays exactly as linear as it was.
-		if redacting || v.device != nil || v.backdrop != nil {
+		if redacting || v.device != nil || v.backdrop != nil || bubble != nil {
 			src := fmt.Sprintf("[rs%d]", i)
 			fmt.Fprintf(&fc, "%s;", src)
 			last := src
@@ -460,6 +488,9 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			}
 			if v.device != nil {
 				last = writeDeviceFrame(&fc, last, i, devIdx, devGeom, w, h)
+			}
+			if bubble != nil {
+				last = writeBubble(&fc, last, i, bbMaskIdx, bbFrameIdx, bbGeom, w, h)
 			}
 			// The backdrop goes on last: it wants the finished picture — device
 			// frame and all — sitting on its wallpaper.
@@ -836,7 +867,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		cx: cx, cy: cy, ax: ax, ay: ay,
 		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
 		hold: hold, cursorFX: c.Cursor, cursorPath: p, redactions: validRedactions(c.Redactions),
-		chroma: c.Chroma, device: c.Device, backdrop: c.Backdrop,
+		chroma: c.Chroma, device: c.Device, backdrop: c.Backdrop, bubble: c.Bubble,
 	})
 	if !muted && !isBG && !c.Mute {
 		vol := c.Volume

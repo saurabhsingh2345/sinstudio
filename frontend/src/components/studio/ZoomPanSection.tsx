@@ -208,7 +208,7 @@ export function ZoomPanSection({ trackId, clip, asset }: { trackId: string; clip
     drag(e, (dx) => {
       // clampRect settles the legal width (and the height that follows from it)
       // before the anchored corner is worked back out from it.
-      const sized = clampRect({ x: 0, y: 0, w: start.w + (west ? -dx : dx), h: 0 }, canvas);
+      const sized = clampRect({ x: 0, y: 0, w: start.w + (west ? -dx : dx), h: 0 }, canvas, video);
       return clampRect(
         {
           x: west ? fixedX - sized.w : fixedX,
@@ -216,7 +216,8 @@ export function ZoomPanSection({ trackId, clip, asset }: { trackId: string; clip
           w: sized.w,
           h: sized.h,
         },
-        canvas
+        canvas,
+        video
       );
     });
   };
@@ -297,7 +298,7 @@ export function ZoomPanSection({ trackId, clip, asset }: { trackId: string; clip
             onChange={(v) => {
               const r = selected.rect;
               patchSelected({
-                rect: rectForZoom(v / 100, { x: r.x + r.w / 2, y: r.y + r.h / 2 }, canvas),
+                rect: rectForZoom(v / 100, { x: r.x + r.w / 2, y: r.y + r.h / 2 }, canvas, video),
               });
             }}
           />
@@ -351,7 +352,7 @@ export function ZoomPanSection({ trackId, clip, asset }: { trackId: string; clip
             className="h-6 w-full text-[10px] text-muted-foreground"
             onClick={() => {
               const c = defaultCentre();
-              patchSelected({ rect: rectForZoom(zoomOf(selected.rect), c, canvas) });
+              patchSelected({ rect: rectForZoom(zoomOf(selected.rect), c, canvas, video) });
             }}
             title="Centre this zoom on the pointer at the playhead"
           >
