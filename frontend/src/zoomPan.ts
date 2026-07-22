@@ -111,19 +111,30 @@ export function contentBox(
 /**
  * Force a rectangle to be something the engine can actually express: the canvas
  * aspect (one `scale` drives both axes, so a differently-shaped rectangle is
- * not representable) and wholly inside the canvas.
+ * not representable) and wholly inside the picture.
  *
  * Containment is not cosmetic — it is the same rule `centerOffset` clamps to.
  * A rectangle hanging over the edge would ask to pan further than the zoom
  * allows, and the frame's edge would come into view as visible background.
+ *
+ * `video` is the source's own pixel size. Without it the canvas is assumed to be
+ * all picture, which is only true when the recording shares the canvas's shape.
+ * A 3456x2234 capture on a 16:9 canvas is pillarboxed, and a rectangle allowed
+ * over a bar asks the camera to frame background — the same fault `centerOffsetIn`
+ * exists to prevent, arriving by way of the rectangle instead of the clamp.
  */
-export function clampRect(rect: Rect, canvas: Size): Rect {
+export function clampRect(rect: Rect, canvas: Size, video?: Size): Rect {
   const aspect = canvas.width / canvas.height;
-  const w = clamp(rect.w, canvas.width / MAX_ZOOM, canvas.width);
+  const cb = contentBox(video ?? canvas, canvas);
+  // The widest canvas-shaped rectangle that still fits inside the picture. On a
+  // pillarboxed source the width runs out first, on a letterboxed one the height
+  // does, so both bounds have to be considered.
+  const maxW = Math.min(cb.x1 - cb.x0, (cb.y1 - cb.y0) * aspect);
+  const w = clamp(rect.w, Math.min(canvas.width / MAX_ZOOM, maxW), maxW);
   const h = w / aspect;
   return {
-    x: clamp(rect.x, 0, canvas.width - w),
-    y: clamp(rect.y, 0, canvas.height - h),
+    x: clamp(rect.x, cb.x0, cb.x1 - w),
+    y: clamp(rect.y, cb.y0, cb.y1 - h),
     w,
     h,
   };
@@ -133,13 +144,22 @@ export function clampRect(rect: Rect, canvas: Size): Rect {
 export const fullFrame = (canvas: Size): Rect => ({ x: 0, y: 0, w: canvas.width, h: canvas.height });
 
 /** Rectangle → the transform that makes it fill the frame. */
-export function rectToTransform(rect: Rect, canvas: Size): { scale: number; x: number; y: number } {
-  const r = clampRect(rect, canvas);
+export function rectToTransform(
+  rect: Rect,
+  canvas: Size,
+  video?: Size
+): { scale: number; x: number; y: number } {
+  const r = clampRect(rect, canvas, video);
+  const cb = contentBox(video ?? canvas, canvas);
   const scale = clamp(canvas.width / r.w, 1, MAX_ZOOM);
   return {
     scale,
-    x: centerOffset(r.x + r.w / 2, canvas.width, scale),
-    y: centerOffset(r.y + r.h / 2, canvas.height, scale),
+    // Clamped against the CONTENT's edges, not the box's — the box bound keeps
+    // the box on screen while letting the camera frame a bar, which is how a
+    // hand-placed zoom on a mismatched recording used to fill with background.
+    // SmartFocus has always done this; the panel is catching up.
+    x: centerOffsetIn(r.x + r.w / 2, canvas.width, scale, cb.x0, cb.x1),
+    y: centerOffsetIn(r.y + r.h / 2, canvas.height, scale, cb.y0, cb.y1),
   };
 }
 
@@ -158,11 +178,16 @@ export function transformToRect(scale: number, x: number, y: number, canvas: Siz
 }
 
 /** Convenience for the UI's zoom slider, which thinks in multiples, not widths. */
-export const rectForZoom = (zoom: number, centre: { x: number; y: number }, canvas: Size): Rect => {
+export const rectForZoom = (
+  zoom: number,
+  centre: { x: number; y: number },
+  canvas: Size,
+  video?: Size
+): Rect => {
   const s = clamp(zoom, 1, MAX_ZOOM);
   const w = canvas.width / s;
   const h = canvas.height / s;
-  return clampRect({ x: centre.x - w / 2, y: centre.y - h / 2, w, h }, canvas);
+  return clampRect({ x: centre.x - w / 2, y: centre.y - h / 2, w, h }, canvas, video);
 };
 
 /** A zoom the editor placed: hold this region from `start` to `end`. */
@@ -191,12 +216,12 @@ export interface ZoomHold {
   path?: { t: number; x: number; y: number }[];
 }
 
-export const holdFromStop = (stop: ZoomStop, canvas: Size): ZoomHold => ({
+export const holdFromStop = (stop: ZoomStop, canvas: Size, video?: Size): ZoomHold => ({
   start: stop.start,
   end: stop.end,
   ramp: stop.ramp,
   ease: stop.ease,
-  ...rectToTransform(stop.rect, canvas),
+  ...rectToTransform(stop.rect, canvas, video),
 });
 
 /*
@@ -395,14 +420,18 @@ export function applyZoomStops(
   existing: Record<string, Keyframe[]> | undefined,
   stops: ZoomStop[],
   duration: number,
-  canvas: Size
+  canvas: Size,
+  video?: Size
 ): Record<string, Keyframe[]> | undefined {
   const rest = { ...(existing ?? {}) };
   delete rest.scale;
   delete rest.x;
   delete rest.y;
   if (!stops.length) return Object.keys(rest).length ? rest : undefined;
-  return { ...rest, ...zoomKeyframes(stops.map((s) => holdFromStop(s, canvas)), duration, canvas) };
+  return {
+    ...rest,
+    ...zoomKeyframes(stops.map((s) => holdFromStop(s, canvas, video)), duration, canvas),
+  };
 }
 
 const EPS = 1e-3;
@@ -425,7 +454,8 @@ const sample = (keys: Keyframe[], t: number) => (keys.length ? kfValue(keys, t) 
  */
 export function readZoomStops(
   keyframes: Record<string, Keyframe[]> | undefined,
-  canvas: Size
+  canvas: Size,
+  video?: Size
 ): ZoomStop[] {
   const scale = keyframes?.scale ?? [];
   if (scale.length < 2) return [];
@@ -449,7 +479,7 @@ export function readZoomStops(
     out.push({
       start: a.t,
       end: b.t,
-      rect: clampRect(transformToRect(a.value, ax, ay, canvas), canvas),
+      rect: clampRect(transformToRect(a.value, ax, ay, canvas), canvas, video),
       ramp: prev ? Math.max(0, +(a.t - prev.t).toFixed(3)) : DEFAULT_RAMP,
       // A keyframe's ease governs the segment LEAVING it, so the ramp into this
       // hold is eased by the key before it.

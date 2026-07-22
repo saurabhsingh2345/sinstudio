@@ -47,9 +47,21 @@ export function ZoomPanSection({ trackId, clip, asset }: { trackId: string; clip
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const duration = clipPlayDur(clip);
+
+  // The source's own pixel size. A recording that is not the canvas's shape is
+  // FITTED into it — a 3456x2234 capture on a 16:9 canvas sits centred with bars
+  // beside it — so every clamp below has to stop at the picture's edge, not the
+  // canvas's. Without this a rectangle could be placed over a bar and the camera
+  // would dutifully pan there, filling the frame with background instead of
+  // magnifying anything. SmartFocus has always clamped this way; see contentBox.
+  const video = useMemo(
+    () => (asset && asset.width > 0 && asset.height > 0 ? { width: asset.width, height: asset.height } : undefined),
+    [asset]
+  );
+
   const stops = useMemo(
-    () => (canvas ? readZoomStops(clip.keyframes, canvas) : []),
-    [clip.keyframes, canvas]
+    () => (canvas ? readZoomStops(clip.keyframes, canvas, video) : []),
+    [clip.keyframes, canvas, video]
   );
 
   // Clip-local time; the panel is about this clip, not the project.
@@ -81,7 +93,7 @@ export function ZoomPanSection({ trackId, clip, asset }: { trackId: string; clip
 
   const commit = (next: ZoomStop[]) =>
     updateClip(trackId, clip.id, {
-      keyframes: applyZoomStops(clip.keyframes, next, duration, canvas),
+      keyframes: applyZoomStops(clip.keyframes, next, duration, canvas, video),
     });
 
   const patchSelected = (patch: Partial<ZoomStop>) => {
@@ -121,7 +133,7 @@ export function ZoomPanSection({ trackId, clip, asset }: { trackId: string; clip
     const next = upsertStop(stops, {
       start,
       end,
-      rect: rectForZoom(2, defaultCentre(), canvas),
+      rect: rectForZoom(2, defaultCentre(), canvas, video),
       ramp: DEFAULT_RAMP,
       ease: DEFAULT_EASE,
     });
@@ -163,7 +175,8 @@ export function ZoomPanSection({ trackId, clip, asset }: { trackId: string; clip
           before,
           stops.map((s) => (s === selected ? { ...s, rect: next } : s)),
           duration,
-          canvas
+          canvas,
+          video
         ),
       });
     };
@@ -180,7 +193,7 @@ export function ZoomPanSection({ trackId, clip, asset }: { trackId: string; clip
   const onMoveDown = (e: React.PointerEvent) => {
     if (!selected) return;
     const start = selected.rect;
-    drag(e, (dx, dy) => clampRect({ ...start, x: start.x + dx, y: start.y + dy }, canvas));
+    drag(e, (dx, dy) => clampRect({ ...start, x: start.x + dx, y: start.y + dy }, canvas, video));
   };
 
   const onCornerDown = (corner: Corner) => (e: React.PointerEvent) => {
