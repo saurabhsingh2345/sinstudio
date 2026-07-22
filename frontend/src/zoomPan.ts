@@ -53,12 +53,59 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
  * clip correctly refuses to pan at all.
  */
 export function centerOffset(point: number, size: number, scale: number): number {
-  const bound = (size * (scale - 1)) / 2;
-  const v = clamp(scale * (size / 2 - point), -bound, bound);
+  return centerOffsetIn(point, size, scale, 0, size);
+}
+
+/**
+ * centerOffset, aware that the picture may not fill its own box.
+ *
+ * A recording whose shape differs from the canvas is letterboxed into it —
+ * the content occupies [c0, c1] of the box on this axis and the bars fill the
+ * rest. Panning to the plain canvas bound then frames a bar: the math kept the
+ * BOX on screen while the black crept in from its edge, magnified by the zoom.
+ * That is exactly the "camera runs to the side of the page and the frame goes
+ * black" failure.
+ *
+ * Derivation: the box edge sits at (size-size*s)/2 + off, so the content edges
+ * sit s*c0 and s*c1 past it. Keeping the viewport [0, size] inside the content
+ * needs off ≤ size*(s-1)/2 - s*c0 and off ≥ size*(1+s)/2 - s*c1. With content
+ * filling the box (c0=0, c1=size) both collapse to the familiar ±size*(s-1)/2.
+ *
+ * When the scale is too small to fill the viewport with content at all, the
+ * bounds cross; the honest answer is the middle — bars show symmetrically,
+ * which is the letterbox the clip already had at full frame, not a new fault.
+ */
+export function centerOffsetIn(point: number, size: number, scale: number, c0: number, c1: number): number {
+  const hi = (size * (scale - 1)) / 2 - scale * c0;
+  const lo = (size * (1 + scale)) / 2 - scale * c1;
+  const v = lo > hi ? (lo + hi) / 2 : clamp(scale * (size / 2 - point), lo, hi);
   // Clamping against a zero bound yields -0, which is numerically fine but
   // serializes into the document as "-0". Normalize so saved keyframes read
   // cleanly.
   return v === 0 ? 0 : v;
+}
+
+/**
+ * Where a fitted picture's content sits inside a canvas-shaped box, per axis.
+ *
+ * The renderer fits a mismatched source into the canvas (aspect preserved,
+ * centred, bars transparent) rather than stretching it; this is the one place
+ * that geometry is computed, shared by the zoom clamps and the cursor mapping
+ * so they cannot disagree about where the picture ends.
+ */
+export function contentBox(
+  video: { width: number; height: number },
+  canvas: Size
+): { x0: number; x1: number; y0: number; y1: number; k: number } {
+  if (!(video.width > 0) || !(video.height > 0)) {
+    return { x0: 0, x1: canvas.width, y0: 0, y1: canvas.height, k: 1 };
+  }
+  const k = Math.min(canvas.width / video.width, canvas.height / video.height);
+  const w = video.width * k;
+  const h = video.height * k;
+  const x0 = (canvas.width - w) / 2;
+  const y0 = (canvas.height - h) / 2;
+  return { x0, x1: x0 + w, y0, y1: y0 + h, k };
 }
 
 /**
@@ -152,15 +199,48 @@ export const holdFromStop = (stop: ZoomStop, canvas: Size): ZoomHold => ({
   ...rectToTransform(stop.rect, canvas),
 });
 
+/*
+ * How fast the camera may move, in canvas-widths per second — a PEAK, not a
+ * mean, because peaks are what the eye objects to. The ratios convert a curve's
+ * mean speed to its peak: springOut does 90% of its travel in the first ~30% of
+ * its time, so its peak runs ~3x its mean, and a ramp that "fits" on paper can
+ * still whip. The quintic smootherstep used for pans tops out lower.
+ *
+ * These exist because the emitter used to let geometry alone pick the speed:
+ * a pan between two nearby-in-time holds took whatever gap happened to be
+ * left, however short — 900 pixels in a fifth of a second was a legal and
+ * common outcome, and it read as the camera being yanked.
+ */
+export const MAX_CAM_SPEED = 2.2;
+export const SPRING_PEAK = 3.0;
+export const PAN_PEAK = 1.9;
+
+/** The most a hold may shorten to buy its neighbouring pan travel time. */
+const HOLD_GIVE = 0.4;
+
 /**
  * Compile held zooms into scale/x/y keyframes.
  *
  * Shared with SmartFocus, which differs only in where its holds come from —
  * so an auto zoom and a hand-placed one produce identically-shaped motion, and
  * there is one copy of the rules about when to pull back and when to pan.
+ *
+ * `canvas` lets the emitter reason about speed in canvas-widths; without it
+ * the speed caps are skipped (offsets alone don't say how big a pixel is).
+ *
+ * `adaptSpeed` is on for auto camera work and OFF for hand-placed stops: the
+ * caps exist to protect timings nobody chose, and a ramp the user typed into
+ * the panel is not one of those. It also keeps the panel's round-trip honest —
+ * readZoomStops must recover exactly what applyZoomStops wrote.
  */
-export function zoomKeyframes(holds: ZoomHold[], duration: number): Record<string, Keyframe[]> {
+export function zoomKeyframes(
+  holds: ZoomHold[],
+  duration: number,
+  canvas?: Size,
+  adaptSpeed = false
+): Record<string, Keyframe[]> {
   if (!holds.length) return {};
+  const speedAware = adaptSpeed && !!canvas && canvas.width > 0;
 
   const scale: Keyframe[] = [];
   const xs: Keyframe[] = [];
@@ -204,9 +284,20 @@ export function zoomKeyframes(holds: ZoomHold[], duration: number): Record<strin
    */
   const sorted = ordered
     .map((h) => {
+      // A push to a far corner at a deep zoom travels much further than one to
+      // a spot near centre, and a fixed ramp makes the far one proportionally
+      // faster. Stretch the ramp (never shrink it) until the spring's peak
+      // stays under the cap — bounded, so a pathological travel cannot turn a
+      // zoom into a slow cruise.
+      let ramp = h.ramp;
+      if (speedAware) {
+        const travel = Math.hypot(h.x, h.y) + 0.35 * canvas!.width * Math.max(0, h.scale - 1);
+        const need = (SPRING_PEAK * travel) / (MAX_CAM_SPEED * canvas!.width);
+        ramp = Math.min(Math.max(h.ramp, need), 1.8 * h.ramp);
+      }
       // On a clip too short for two full ramps, the ramp itself has to give —
       // there is no arrangement that fits otherwise.
-      const ramp = Math.min(h.ramp, duration / 2);
+      ramp = Math.min(ramp, duration / 2);
       const start = clamp(h.start, ramp, duration - ramp);
       const end = clamp(h.end, start, duration - ramp);
       return { ...h, start, end, ramp };
@@ -214,6 +305,32 @@ export function zoomKeyframes(holds: ZoomHold[], duration: number): Record<strin
     .filter((h) => h.end > h.start);
 
   if (!sorted.length) return {};
+
+  /*
+   * A pan between holds happens in the gap between them, so the gap IS the pan
+   * duration — and gaps come from when the user happened to click, not from
+   * how far apart the targets are. When the gap is too short for the travel,
+   * the holds on either side each give up a bounded slice of their dwell to
+   * widen it. Losing a beat of looking at something already on screen is
+   * cheap; the pan is the part being watched.
+   */
+  if (speedAware) {
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = sorted[i - 1];
+      const h = sorted[i];
+      const gap = h.start - prev.end;
+      if (gap >= prev.ramp + h.ramp) continue; // pulls out to full frame instead
+      const from = prev.path?.length ? prev.path[prev.path.length - 1] : prev;
+      const dist = Math.hypot(h.x - from.x, h.y - from.y);
+      const need = (PAN_PEAK * dist) / (MAX_CAM_SPEED * canvas!.width);
+      const deficit = need - gap;
+      if (deficit <= 0) continue;
+      const a = Math.min(deficit / 2, HOLD_GIVE * (prev.end - prev.start));
+      const b = Math.min(deficit - a, HOLD_GIVE * (h.end - h.start));
+      prev.end -= a;
+      h.start += b;
+    }
+  }
 
   /*
    * Overshoot belongs on the push-in and NOWHERE else.
@@ -250,12 +367,16 @@ export function zoomKeyframes(holds: ZoomHold[], duration: number): Record<strin
     // reads as a flinch, and both endpoints are clamped at the same scale, so
     // interpolating between them can never expose background either — provided
     // the interpolation stays BETWEEN them, which is why this ease is safe.
-    // A hold either sits still or drifts along its path. The drift is eased,
-    // never sprung: every point is clamped to what the scale can cover, and
-    // overshooting a clamped point is what shows background.
+    // A hold either sits still or drifts along its path. The drift's points
+    // come from a spring simulation whose SAMPLES already carry the
+    // acceleration — so they are joined linearly. Easing between them would
+    // re-add a stop at every keyframe, which is exactly the stop-go pulse the
+    // spring replaced. They are never sprung either: every point is clamped to
+    // what the scale can cover, and overshooting a clamped point is what shows
+    // background.
     const path = (h.path ?? []).filter((p) => p.t > h.start && p.t < h.end);
-    at(h.start, h.scale, h.x, h.y, path.length ? "easeInOut" : "linear");
-    for (const p of path) at(p.t, h.scale, p.x, p.y, "easeInOut");
+    at(h.start, h.scale, h.x, h.y, "linear");
+    for (const p of path) at(p.t, h.scale, p.x, p.y, "linear");
     // The hold ends wherever the drift left it; going back to the anchor would
     // undo the following in one snap right before pulling out.
     const last = path[path.length - 1];
@@ -281,7 +402,7 @@ export function applyZoomStops(
   delete rest.x;
   delete rest.y;
   if (!stops.length) return Object.keys(rest).length ? rest : undefined;
-  return { ...rest, ...zoomKeyframes(stops.map((s) => holdFromStop(s, canvas)), duration) };
+  return { ...rest, ...zoomKeyframes(stops.map((s) => holdFromStop(s, canvas)), duration, canvas) };
 }
 
 const EPS = 1e-3;

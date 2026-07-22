@@ -329,8 +329,9 @@ func buildCursorFX(
 				if canvasW > 0 {
 					z = cw / float64(canvasW)
 				}
-				px := left + float64(cx)/math.Max(1, float64(track.Video.Width))*cw
-				py := top + float64(cy)/math.Max(1, float64(track.Video.Height))*ch
+				bx, by, bw, bh := contentFrac(track.Video.Width, track.Video.Height, canvasW, canvasH)
+				px := left + (bx+float64(cx)/math.Max(1, float64(track.Video.Width))*bw)*cw
+				py := top + (by+float64(cy)/math.Max(1, float64(track.Video.Height))*bh)*ch
 				ringSize := int(float64(size) * z)
 				// Grow from a quarter size to full over the ring's life while
 				// fading out — the shape a click reads as. Both run on timeline
@@ -386,6 +387,36 @@ func buildCursorFX(
 	return plan, nil
 }
 
+// contentFrac says where a fitted source's picture sits inside the
+// canvas-shaped clip box, as fractions of the box: x0/y0 offset, fw/fh extent.
+//
+// A recording whose shape is not the canvas's is fitted with bars (see the
+// prefit in render.go), so "fraction of the video" and "fraction of the box"
+// stop being the same number — and a cursor mapped by the naive fraction drifts
+// off its target toward the edges, worst exactly where the bars are. The
+// half-percent tolerance mirrors the prefit's: below it the stream really is
+// stretched, and the naive fraction is the exact answer.
+//
+// The same geometry lives in the frontend's contentBox (zoomPan.ts); they must
+// agree or preview and export place effects differently.
+func contentFrac(vw, vh, w, h int) (x0, y0, fw, fh float64) {
+	x0, y0, fw, fh = 0, 0, 1, 1
+	if vw <= 0 || vh <= 0 || w <= 0 || h <= 0 {
+		return
+	}
+	srcA := float64(vw) / float64(vh)
+	canA := float64(w) / float64(h)
+	if math.Abs(srcA-canA)/canA <= 0.005 {
+		return
+	}
+	k := math.Min(float64(w)/float64(vw), float64(h)/float64(vh))
+	fw = float64(vw) * k / float64(w)
+	fh = float64(vh) * k / float64(h)
+	x0 = (1 - fw) / 2
+	y0 = (1 - fh) / 2
+	return
+}
+
 // cursorCommands emits one sendcmd entry per sample, positioning a named
 // overlay so its hotspot (offX/offY from its top-left, at unit scale) sits on
 // the pointer.
@@ -403,6 +434,7 @@ func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dur f
 	out := make([]string, 0, len(track.Samples))
 	var lastX, lastY, lastW int
 	var have bool
+	bx, by, bw, bh := contentFrac(track.Video.Width, track.Video.Height, w, h)
 	for _, s := range track.Samples {
 		ts := float64(s.T) / 1000
 		if ts < 0 || ts > dur {
@@ -412,10 +444,10 @@ func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dur f
 		fx := 0.0
 		fy := 0.0
 		if track.Video.Width > 0 {
-			fx = float64(s.X) / float64(track.Video.Width)
+			fx = bx + float64(s.X)/float64(track.Video.Width)*bw
 		}
 		if track.Video.Height > 0 {
-			fy = float64(s.Y) / float64(track.Video.Height)
+			fy = by + float64(s.Y)/float64(track.Video.Height)*bh
 		}
 		// Zoom factor relative to a canvas-filling clip, so a 1:1 clip leaves
 		// the overlays at their authored size.

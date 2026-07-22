@@ -1,5 +1,6 @@
 import type { CursorSample, CursorSidecar } from "../../cursor";
 import type { Clip } from "../../types";
+import { contentBox } from "../../zoomPan";
 
 // Cursor effects, drawn live on the preview canvas.
 //
@@ -159,9 +160,31 @@ export function drawCursorFX(
 
   const vw = track.video.width || 1;
   const vh = track.video.height || 1;
+  /*
+   * Where the picture sits inside the clip box. A recording whose shape is
+   * not the canvas's is FITTED with bars (render.go's prefit; the preview's
+   * object-fit), so "fraction of the video" and "fraction of the box" stop
+   * being the same number. Mirrors cursorfx.go's contentFrac, tolerance and
+   * all — below half a percent the export really does stretch, and the naive
+   * fraction is the exact answer.
+   */
+  const stageW = Math.max(1, ctx.canvas.width);
+  const stageH = Math.max(1, ctx.canvas.height);
+  let fx0 = 0;
+  let fy0 = 0;
+  let cfw = 1;
+  let cfh = 1;
+  const canA = stageW / stageH;
+  if (Math.abs(vw / vh - canA) / canA > 0.005) {
+    const cb = contentBox({ width: vw, height: vh }, { width: stageW, height: stageH });
+    fx0 = cb.x0 / stageW;
+    fy0 = cb.y0 / stageH;
+    cfw = (cb.x1 - cb.x0) / stageW;
+    cfh = (cb.y1 - cb.y0) / stageH;
+  }
   // Pointer position on the stage, via the clip's box.
-  const px = box.left + (at.x / vw) * box.vw;
-  const py = box.top + (at.y / vh) * box.vh;
+  const px = box.left + (fx0 + (at.x / vw) * cfw) * box.vw;
+  const py = box.top + (fy0 + (at.y / vh) * cfh) * box.vh;
   // How magnified the clip is, so effects grow with the content they mark.
   const zoom = box.vw / Math.max(1, ctx.canvas.width);
   const unit = canvasScale * zoom;
@@ -216,8 +239,8 @@ export function drawCursorFX(
       const prog = age / dur;
       const c = cursorAt(samples, ct);
       if (!c) continue;
-      const cx = box.left + (c.x / vw) * box.vw;
-      const cy = box.top + (c.y / vh) * box.vh;
+      const cx = box.left + (fx0 + (c.x / vw) * cfw) * box.vw;
+      const cy = box.top + (fy0 + (c.y / vh) * cfh) * box.vh;
       const r = ((size * (0.25 + 0.75 * prog)) / 2) * unit;
       ctx.strokeStyle = withAlpha(col, 1 - prog);
       ctx.lineWidth = Math.max(1, size * 0.09 * unit);

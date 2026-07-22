@@ -1,6 +1,6 @@
 import type { CursorSample, CursorSidecar } from "./cursor";
 import type { Keyframe } from "./types";
-import { centerOffset, zoomKeyframes, type ZoomHold } from "./zoomPan";
+import { centerOffset, centerOffsetIn, contentBox, zoomKeyframes, type ZoomHold } from "./zoomPan";
 
 // centerOffset moved to zoomPan (the manual zoom editor needs the same
 // geometry); re-exported so it still reads as part of this module's vocabulary.
@@ -305,8 +305,22 @@ export function focusKeyframes(
   opts: SmartFocusOptions
 ): Record<string, Keyframe[]> {
   if (!segs.length) return {};
-  const sx = video.width > 0 ? canvas.width / video.width : 1;
-  const sy = video.height > 0 ? canvas.height / video.height : 1;
+
+  /*
+   * The video is FITTED into the canvas, not stretched — a 3:2 capture on a
+   * 16:9 canvas sits centred with bars beside it. Two things follow, both of
+   * which were bugs when this mapped each axis independently:
+   *
+   *   - a cursor position maps through one uniform factor plus the content
+   *     offset, or every focus point on a mismatched recording lands a little
+   *     off, worse toward the edges;
+   *   - the pan clamp has to stop at the CONTENT's edge, not the box's. The
+   *     box bound kept the box on screen while the camera framed the bar —
+   *     zoom toward the side of the page and the frame filled with black.
+   */
+  const cb = contentBox(video, canvas);
+  const px = (v: number) => cb.x0 + v * cb.k;
+  const py = (v: number) => cb.y0 + v * cb.k;
 
   // Each focus point becomes a held zoom; the shared compiler decides when to
   // pull back to full frame and when to pan straight across (see zoomPan.ts).
@@ -320,22 +334,22 @@ export function focusKeyframes(
       start: seg.start,
       end: seg.end,
       scale,
-      x: centerOffset(seg.x * sx, canvas.width, scale),
-      y: centerOffset(seg.y * sy, canvas.height, scale),
+      x: centerOffsetIn(px(seg.x), canvas.width, scale, cb.x0, cb.x1),
+      y: centerOffsetIn(py(seg.y), canvas.height, scale, cb.y0, cb.y1),
       ramp: opts.ramp,
       ease: opts.ease,
       // Every followed position goes through the same clamp as the anchor, at
-      // THIS segment's scale — so drifting can no more uncover the canvas than
+      // THIS segment's scale — so drifting can no more uncover the content than
       // the fixed hold could.
       path: seg.follow?.map((f) => ({
         t: f.t,
-        x: centerOffset(f.x * sx, canvas.width, scale),
-        y: centerOffset(f.y * sy, canvas.height, scale),
+        x: centerOffsetIn(px(f.x), canvas.width, scale, cb.x0, cb.x1),
+        y: centerOffsetIn(py(f.y), canvas.height, scale, cb.y0, cb.y1),
       })),
     };
   });
 
-  return zoomKeyframes(holds, duration);
+  return zoomKeyframes(holds, duration, canvas, true);
 }
 
 /** Convenience: track → keyframes in one step. */
@@ -374,16 +388,90 @@ export function pointerAt(samples: CursorSample[], t: number): { x: number; y: n
 }
 
 /**
+ * The stiffness that makes a critically-damped spring cover `damping` of a
+ * step within `interval` seconds.
+ *
+ * damping/interval are the two knobs the options expose — "how much of the way
+ * do you go, and how quickly" — and a spring has one parameter. This solves the
+ * step response 1-(1+u)e^-u = damping for u, so the exposed numbers keep the
+ * meaning they had when the follower moved in discrete steps: 0.45 over 0.35s
+ * still covers just under half the distance in just over a third of a second.
+ */
+function springStiffness(damping: number, interval: number): number {
+  const d = clamp(damping, 0.05, 0.95);
+  let lo = 0.01;
+  let hi = 50;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (1 - (1 + mid) * Math.exp(-mid) < d) lo = mid;
+    else hi = mid;
+  }
+  return lo / interval;
+}
+
+/**
+ * Drop every point of a camera path that linear interpolation between its
+ * neighbours already reproduces to within `tol` pixels.
+ *
+ * The simulation below runs at 30Hz because that is what smooth motion needs;
+ * the document does not need 30 keyframes a second to describe it. A settled
+ * camera collapses to nothing and a steady drift to a handful of segments,
+ * which keeps the exported filtergraph a size ffmpeg is happy to parse.
+ */
+function decimatePath(
+  pts: { t: number; x: number; y: number }[],
+  tol: number
+): { t: number; x: number; y: number }[] {
+  if (pts.length <= 2) return pts;
+  const keep = new Array(pts.length).fill(false);
+  keep[0] = keep[pts.length - 1] = true;
+  const stack: [number, number][] = [[0, pts.length - 1]];
+  while (stack.length) {
+    const [a, b] = stack.pop()!;
+    if (b - a < 2) continue;
+    const pa = pts[a];
+    const pb = pts[b];
+    const span = pb.t - pa.t || 1;
+    let worst = -1;
+    let worstD = tol;
+    for (let i = a + 1; i < b; i++) {
+      const u = (pts[i].t - pa.t) / span;
+      const d = Math.hypot(pts[i].x - (pa.x + (pb.x - pa.x) * u), pts[i].y - (pa.y + (pb.y - pa.y) * u));
+      if (d > worstD) {
+        worstD = d;
+        worst = i;
+      }
+    }
+    if (worst >= 0) {
+      keep[worst] = true;
+      stack.push([a, worst], [worst, b]);
+    }
+  }
+  return pts.filter((_, i) => keep[i]);
+}
+
+/**
  * Where the camera should sit through a hold, if it is to follow the pointer.
  *
  * Returns points in video px, or an empty list when the pointer never leaves
  * the deadzone — which is the common case and deliberately costs nothing.
  *
- * The camera moves only the distance BEYOND the deadzone, not the whole
- * distance to the pointer. That is what makes the deadzone a soft boundary
- * rather than a trigger: crossing it by a pixel moves the camera by a fraction
- * of a pixel, instead of snapping it the entire deadzone's width the instant
- * the threshold is passed.
+ * The camera is a critically-damped spring aimed at a point `deadzone` short
+ * of the pointer. That one sentence carries all three behaviours that matter:
+ *
+ *   - inside the deadzone the aim point is the camera itself, so nothing moves;
+ *   - crossing the boundary by a pixel aims one pixel of travel, not a jump —
+ *     the boundary stays soft;
+ *   - the camera settles a deadzone's width behind the pointer rather than on
+ *     top of it. Sitting on top of it is chasing, and chasing reads as jitter.
+ *
+ * It used to re-aim in discrete steps, one every `interval`, each segment eased
+ * to a stop. Every step therefore ACCELERATED FROM REST and braked again — a
+ * visible stop-go pulse, which on a real recording read as scratchy camera
+ * work. A spring is smooth in position and velocity by construction, so the
+ * motion carries through instead of pulsing. The simulation runs at 30Hz and is
+ * decimated afterwards; what lands in the document is a few keyframes, not a
+ * waveform.
  */
 export function followPath(
   samples: CursorSample[],
@@ -392,24 +480,42 @@ export function followPath(
   damping: number,
   interval: number
 ): { t: number; x: number; y: number }[] {
-  const out: { t: number; x: number; y: number }[] = [];
-  if (!(interval > 0) || !(deadzone >= 0)) return out;
+  if (!(interval > 0) || !(deadzone >= 0)) return [];
 
+  const omega = springStiffness(damping, interval);
+  const dt = 1 / 30;
   let cx = seg.x;
   let cy = seg.y;
+  let vx = 0;
+  let vy = 0;
+  const raw: { t: number; x: number; y: number }[] = [];
+  let moved = false;
+
   // Start and end are excluded: the hold already keys its own endpoints, and a
   // point on top of either would collapse into it and lose the other.
-  for (let t = seg.start + interval; t < seg.end - interval / 2; t += interval) {
+  for (let t = seg.start + dt; t < seg.end - dt / 2; t += dt) {
     const p = pointerAt(samples, t);
     if (!p) continue;
     const dx = p.x - cx;
     const dy = p.y - cy;
     const d = Math.hypot(dx, dy);
-    if (d <= deadzone) continue;
-    const travel = ((d - deadzone) * damping) / d;
-    cx += dx * travel;
-    cy += dy * travel;
-    out.push({ t: +t.toFixed(3), x: Math.round(cx), y: Math.round(cy) });
+    // Aim `deadzone` short of the pointer; inside it, aim where we already are
+    // (the spring then just bleeds off whatever velocity it still carries).
+    const pull = d > deadzone ? (d - deadzone) / d : 0;
+    const ax = omega * omega * dx * pull - 2 * omega * vx;
+    const ay = omega * omega * dy * pull - 2 * omega * vy;
+    vx += ax * dt;
+    vy += ay * dt;
+    cx += vx * dt;
+    cy += vy * dt;
+    if (Math.hypot(cx - seg.x, cy - seg.y) > 0.5) moved = true;
+    if (moved) raw.push({ t: +t.toFixed(3), x: cx, y: cy });
   }
-  return out;
+  if (!moved) return [];
+
+  // Tolerance rides the deadzone because both are quoted in the recording's own
+  // pixels: the caller has already scaled the deadzone to this capture, and a
+  // fixed tolerance would over-thin a 4K path and under-thin a 720p one.
+  const tol = Math.max(1, deadzone / 100);
+  return decimatePath(raw, tol).map((p) => ({ t: p.t, x: Math.round(p.x), y: Math.round(p.y) }));
 }

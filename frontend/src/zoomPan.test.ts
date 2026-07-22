@@ -3,9 +3,11 @@ import { kfValue } from "./components/studio/preview-engine";
 import type { Keyframe } from "./types";
 import {
   DEFAULT_EASE,
+  MAX_CAM_SPEED,
   MAX_ZOOM,
   applyZoomStops,
   clampRect,
+  contentBox,
   fullFrame,
   readZoomStops,
   rectForZoom,
@@ -481,5 +483,107 @@ describe("the frame never leaves the footage", () => {
     const bx = (canvas.width * 0.6) / 2;
     covers(zoomKeyframes([{ start: 0, end: 1, scale: 1.6, x: bx, y: 0, ramp: 0.9, ease: "springOut" }] as never, 4), 4, "at start");
     covers(zoomKeyframes([{ start: 3, end: 4, scale: 1.6, x: bx, y: 0, ramp: 0.9, ease: "springOut" }] as never, 4), 4, "at end");
+  });
+});
+
+describe("camera speed", () => {
+  /** Fastest instantaneous |dx/dt| of a keyframed property, sampled at 100Hz. */
+  const maxSpeed = (keys: Keyframe[], to: number) => {
+    let max = 0;
+    let prev = kfValue(keys, 0);
+    for (let t = 0.01; t <= to; t += 0.01) {
+      const v = kfValue(keys, t);
+      max = Math.max(max, Math.abs(v - prev) / 0.01);
+      prev = v;
+    }
+    return max;
+  };
+
+  /*
+   * A pan between holds used to take whatever gap the user's clicks happened to
+   * leave — 672 canvas pixels in a tenth of a second was a legal outcome, and
+   * it read as the camera being yanked. With adaptSpeed the holds each give up
+   * a slice of dwell so the pan can respect the speed cap.
+   */
+  it("caps pan speed by borrowing time from the holds around it", () => {
+    const holds = [
+      { start: 2, end: 3, scale: 1.35, x: 336, y: 0, ramp: 0.9, ease: "springOut" },
+      { start: 3.1, end: 4.2, scale: 1.35, x: -336, y: 0, ramp: 0.9, ease: "springOut" },
+    ] as never;
+    const cap = MAX_CAM_SPEED * canvas.width;
+    // The guard guards something: without adaptation this pan really is a yank.
+    expect(maxSpeed(zoomKeyframes(holds, 8, canvas).x!, 8)).toBeGreaterThan(cap * 1.5);
+    expect(maxSpeed(zoomKeyframes(holds, 8, canvas, true).x!, 8)).toBeLessThanOrEqual(cap * 1.05);
+  });
+
+  it("never adapts hand-placed stops — the panel round-trip stays exact", () => {
+    // Two stops close enough in time that adaptation WOULD move their edges.
+    const stops: ZoomStop[] = [
+      stop({ start: 2, end: 3, rect: { x: 0, y: 0, w: 960, h: 540 } }),
+      stop({ start: 3.1, end: 4.2, rect: { x: 960, y: 540, w: 960, h: 540 } }),
+    ];
+    const got = readZoomStops(applyZoomStops(undefined, stops, 8, canvas), canvas);
+    expect(got).toHaveLength(2);
+    got.forEach((g, i) => {
+      expect(g.start).toBeCloseTo(stops[i].start, 3);
+      expect(g.end).toBeCloseTo(stops[i].end, 3);
+    });
+  });
+
+  /*
+   * Follow-path points are joined LINEARLY. The points come from a spring
+   * simulation whose samples already carry the acceleration; easing between
+   * them re-adds a stop at every keyframe — a visible stop-go pulse, which is
+   * the exact defect the spring replaced.
+   */
+  it("joins drift points without stopping at each one", () => {
+    const kf = zoomKeyframes(
+      [
+        {
+          start: 1,
+          end: 6,
+          scale: 1.5,
+          x: 0,
+          y: 0,
+          ramp: 0.9,
+          ease: "springOut",
+          path: [
+            { t: 2, x: 100, y: 0 },
+            { t: 3, x: 200, y: 0 },
+            { t: 4, x: 300, y: 0 },
+          ],
+        },
+      ] as never,
+      8
+    );
+    // A steady 100px/s drift should stay near 100px/s throughout — an eased
+    // join dips to ~0 at every point.
+    let min = Infinity;
+    for (let t = 2.2; t <= 3.8; t += 0.01) {
+      min = Math.min(min, Math.abs(kfValue(kf.x!, t + 0.01) - kfValue(kf.x!, t)) / 0.01);
+    }
+    expect(min).toBeGreaterThan(60);
+  });
+});
+
+describe("contentBox", () => {
+  // Twins with render's TestContentFracGolden — the same geometry must come out
+  // of both languages or preview and export place things differently.
+  it("matches the renderer's golden numbers", () => {
+    const cb = contentBox({ width: 1440, height: 1080 }, canvas);
+    expect(cb.x0 / canvas.width).toBeCloseTo(0.125, 9);
+    expect((cb.x1 - cb.x0) / canvas.width).toBeCloseTo(0.75, 9);
+    expect(cb.y0).toBe(0);
+    expect(cb.y1).toBe(canvas.height);
+    expect(cb.k).toBe(1);
+    const wide = contentBox({ width: 1920, height: 800 }, canvas);
+    expect(wide.x0).toBe(0);
+    expect(wide.y0 / canvas.height).toBeCloseTo(0.12963, 4);
+    expect((wide.y1 - wide.y0) / canvas.height).toBeCloseTo(0.74074, 4);
+  });
+
+  it("degenerates to the full canvas when the source is unknown", () => {
+    const cb = contentBox({ width: 0, height: 0 }, canvas);
+    expect(cb).toEqual({ x0: 0, x1: canvas.width, y0: 0, y1: canvas.height, k: 1 });
   });
 });

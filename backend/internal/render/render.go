@@ -44,6 +44,7 @@ type visual struct {
 	start, end        float64
 	x, y              int
 	sw, sh            int
+	srcW, srcH        int // the source file's own pixels; 0 when unknown
 	opacity           float64
 	speed             float64
 	fadeIn, fadeOut   float64
@@ -141,6 +142,12 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	// annotations must not share a numbering or they overwrite each other.
 	annoIdx := 0
 
+	// Source dimensions, for fitting a clip whose shape isn't the canvas's.
+	srcDims := map[string][2]int{}
+	for _, a := range doc.Assets {
+		srcDims[a.ID] = [2]int{a.Width, a.Height}
+	}
+
 	for _, t := range tracks {
 		suppressed := soloActive && !t.Solo && t.Kind != schema.TrackBackground
 		if t.Hidden || suppressed {
@@ -155,7 +162,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				if c.Disabled {
 					continue
 				}
-				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir)
+				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID])
 			}
 		case schema.TrackVideo, schema.TrackOverlay:
 			for _, c := range t.Clips {
@@ -174,7 +181,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 					}
 					continue
 				}
-				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck, opts.LUTDir)
+				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID])
 			}
 		case schema.TrackAudio:
 			if t.Muted {
@@ -354,6 +361,31 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			se := kfScaleExpr(v.start, v.keyframes["scale"])
 			scaleSeg = fmt.Sprintf("scale=w='max(2,%d*%s)':h='max(2,%d*%s)':eval=frame:flags=bicubic", w, se, h, se)
 		}
+		/*
+		 * A source whose shape is not the canvas's is FITTED — aspect kept,
+		 * centred, the bars transparent — never stretched. Stretching was what
+		 * this used to do, and it meant the export distorted exactly the clips
+		 * the preview letterboxed: two different pictures from one document.
+		 * The bars are transparent rather than black so whatever is under the
+		 * clip shows through, which is also what the preview's object-fit does.
+		 *
+		 * It runs AFTER chroma (which must key the source's own pixels) and
+		 * after redactions (whose geometry is fractions of the source's own
+		 * frame), and not at all under a device frame, which pads the picture
+		 * into its screen itself. The half-percent tolerance mirrors
+		 * canvasForSource: capture pipelines round dimensions, and refitting a
+		 * rounding error would soften every frame for nothing.
+		 */
+		prefit := ""
+		if v.device == nil && v.srcW > 0 && v.srcH > 0 {
+			srcA := float64(v.srcW) / float64(v.srcH)
+			canA := float64(w) / float64(h)
+			if math.Abs(srcA-canA)/canA > 0.005 {
+				prefit = fmt.Sprintf(
+					"scale=%d:%d:force_original_aspect_ratio=decrease:flags=bicubic,format=rgba,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black@0,",
+					w, h, w, h)
+			}
+		}
 		// Redactions branch the chain (split → crop → resample → overlay), so the
 		// source segment is cut short and handed to them; without any, the chain
 		// stays exactly as linear as it was.
@@ -403,9 +435,9 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			if v.device != nil {
 				last = writeDeviceFrame(&fc, last, i, devIdx, devGeom, w, h)
 			}
-			fmt.Fprintf(&fc, "%s%s,format=rgba", last, scaleSeg)
+			fmt.Fprintf(&fc, "%s%s%s,format=rgba", last, prefit, scaleSeg)
 		} else {
-			fmt.Fprintf(&fc, ",%s,format=rgba", scaleSeg)
+			fmt.Fprintf(&fc, ",%s%s,format=rgba", prefit, scaleSeg)
 		}
 		// Hold: clone the last frame for `hold` more seconds so the clip covers
 		// trailing audio with a freeze-frame instead of cutting to background.
@@ -715,7 +747,7 @@ func codecArgs(format string, withAudio bool) []string {
 	return a
 }
 
-func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool, lutDir string) {
+func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool, lutDir string, src [2]int) {
 	p, ok := resolve(c.AssetID)
 	if !ok {
 		return
@@ -760,7 +792,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 	}
 	*visuals = append(*visuals, visual{
 		path: p, in: c.In, out: c.Out, start: c.Start, end: c.Start + span + hold,
-		x: x, y: y, sw: sw, sh: sh, opacity: op,
+		x: x, y: y, sw: sw, sh: sh, srcW: src[0], srcH: src[1], opacity: op,
 		speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
 		cx: cx, cy: cy, ax: ax, ay: ay,

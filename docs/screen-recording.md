@@ -159,10 +159,13 @@ A held zoom drifts to keep you in frame, but only once the pointer has genuinely
 travelled about a ninth of the frame. Below that nothing moves at all: reading a
 line or nudging a slider should not move the camera.
 
-Past it, the frame travels only part of the distance *beyond* the deadzone — so
-crossing the boundary by a pixel moves the camera by a fraction of a pixel
-instead of snapping, and it settles behind the pointer rather than chasing it.
-Chasing exactly is what reads as jitter.
+The camera is a spring aimed a deadzone short of the pointer. Three behaviours
+fall out of that one sentence: inside the deadzone nothing moves; crossing it by
+a pixel asks for a pixel of travel rather than a jump; and the camera settles
+behind the pointer instead of on top of it — sitting on the pointer is chasing,
+and chasing reads as jitter. Being a spring, the motion is smooth in speed as
+well as position: it builds, carries, and settles, rather than stepping and
+stopping.
 
 Following does nothing on a *pause* segment, by construction: a pause is a
 stationary pointer. It earns its keep where you clicked something and then moved
@@ -176,8 +179,23 @@ part of a move ends on a hard limit: pulling out ends at full frame, and a pan
 is clamped to exactly what the current zoom can cover. Overshooting either would
 show the background behind your recording for a few frames.
 
+The camera also has a speed limit, quoted in frame-widths per second. A push to
+a far corner takes longer than one to the middle, and a pan between two zooms
+placed close together in time borrows a beat from the holds on either side
+rather than sprinting the gap — losing a moment of looking at something already
+on screen is cheap; the move is the part being watched.
+
 A zoom that cannot fit its full travel inside the clip is dropped rather than
 rushed. No zoom is better than one that snaps.
+
+### When the recording is not the shape of the canvas
+
+A capture whose aspect differs from the canvas is **fitted** — centred, aspect
+kept, with transparent bars beside or above it — never stretched. The camera
+knows where the picture ends: a zoom near the edge of the screen stops at the
+edge of the *content*, so it cannot fill the frame with the letterbox bar. The
+first recording in a project avoids the situation entirely by reshaping the
+canvas to match the screen.
 
 ### Defaults
 

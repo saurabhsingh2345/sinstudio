@@ -12,6 +12,7 @@ import {
 } from "./smartFocus";
 import type { CursorSample } from "./cursor";
 import { kfValue } from "./components/studio/preview-engine";
+import { contentBox } from "./zoomPan";
 
 const opts = (over: Partial<SmartFocusOptions> = {}): SmartFocusOptions => ({
   ...SMART_FOCUS_DEFAULTS,
@@ -439,6 +440,48 @@ describe("revisited areas earn a deeper zoom", () => {
   });
 });
 
+describe("a recording whose shape is not the canvas's", () => {
+  /*
+   * A 4:3 capture on a 16:9 canvas is FITTED, with bars beside it. The zoom
+   * math used to assume the video filled the canvas on both axes — so a dwell
+   * near the video's edge panned the camera to the BOX's bound, which framed
+   * the bar: zoom toward the side of the page and the frame filled with black.
+   * The clamp must stop at the content's edge, not the box's.
+   */
+  it("never frames the letterbox bars", () => {
+    const video = { width: 1440, height: 1080 };
+    const canvas = { width: 1920, height: 1080 };
+    // Dwell hard against the video's right edge — the case that used to fail.
+    const samples = park(1000, 3, 1420, 540);
+    const { keyframes, segments } = smartFocus({ samples, video }, 10, canvas, SMART_FOCUS_DEFAULTS);
+    expect(segments.length).toBeGreaterThan(0);
+    const cb = contentBox(video, canvas);
+    for (const seg of segments) {
+      for (let t = seg.start; t <= seg.end; t += 0.05) {
+        const s = kfValue(keyframes.scale!, t);
+        // Below this scale the content cannot span the viewport at all — the
+        // bars it shows are the letterbox the clip already had at full frame.
+        if (s * (cb.x1 - cb.x0) < canvas.width - 1e-6) continue;
+        const x = kfValue(keyframes.x!, t);
+        const left = (canvas.width - canvas.width * s) / 2 + x;
+        expect(left + s * cb.x0, `content left @${t.toFixed(2)}`).toBeLessThanOrEqual(1e-6);
+        expect(left + s * cb.x1, `content right @${t.toFixed(2)}`).toBeGreaterThanOrEqual(canvas.width - 1e-6);
+      }
+    }
+  });
+
+  it("maps a cursor position through the fit, not a per-axis stretch", () => {
+    const video = { width: 1440, height: 1080 };
+    const canvas = { width: 1920, height: 1080 };
+    // A dwell at the exact centre of the video must land the camera dead
+    // centre: fitted content is centred, so no pan at all is the right answer.
+    const { keyframes } = smartFocus({ samples: park(1000, 3, 720, 540), video }, 10, canvas, SMART_FOCUS_DEFAULTS);
+    for (let t = 0; t <= 10; t += 0.1) {
+      expect(Math.abs(kfValue(keyframes.x!, t))).toBeLessThanOrEqual(1);
+    }
+  });
+});
+
 describe("following the cursor within a hold", () => {
   /*
    * A fixed hold is a tripod; following is an operator keeping the subject in
@@ -479,12 +522,17 @@ describe("following the cursor within a hold", () => {
   });
 
   // The boundary must be soft: just past the deadzone should barely move.
+  // Measured on total travel, not the first emitted point — the spring's early
+  // samples are tiny by construction, so the first point says nothing about
+  // whether the boundary snapped.
   it("eases out of the deadzone instead of jumping at it", () => {
     const just = followPath(still(900 + 210, 500), seg, 200, 0.45, 0.6);
     const far = followPath(still(900 + 900, 500), seg, 200, 0.45, 0.6);
-    const firstStep = (p: typeof just) => (p.length ? p[0]!.x - 900 : 0);
-    expect(firstStep(just)).toBeLessThan(10);
-    expect(firstStep(far)).toBeGreaterThan(100);
+    const travel = (p: typeof just) => (p.length ? Math.max(...p.map((q) => q.x)) - 900 : 0);
+    // Ten pixels past the boundary asks for at most ten pixels of travel...
+    expect(travel(just)).toBeLessThanOrEqual(10);
+    // ...while a genuine departure is followed most of the way.
+    expect(travel(far)).toBeGreaterThan(300);
   });
 
   it("keeps every point strictly inside the hold", () => {
@@ -493,6 +541,30 @@ describe("following the cursor within a hold", () => {
       expect(p.t).toBeGreaterThan(seg.start);
       expect(p.t).toBeLessThan(seg.end);
     }
+  });
+
+  /*
+   * The camera is a spring, not a stepper. The stepped follower this replaced
+   * covered 45% of the remaining distance in its very FIRST move — its fastest
+   * segment was the first one, which is a camera jumping and then coasting.
+   * A spring builds speed, peaks mid-travel and settles, so its fastest
+   * segment is somewhere in the middle. This is the observable difference
+   * between the two, and it is what "scratchy" was.
+   */
+  it("accelerates into a move instead of jumping", () => {
+    const path = followPath(still(1700, 500), seg, 200, 0.45, 0.35);
+    expect(path.length).toBeGreaterThan(2);
+    const pts = [{ t: seg.start, x: seg.x, y: seg.y }, ...path];
+    let fastest = 0;
+    let fastestAt = 0;
+    for (let i = 1; i < pts.length; i++) {
+      const v = Math.hypot(pts[i]!.x - pts[i - 1]!.x, pts[i]!.y - pts[i - 1]!.y) / (pts[i]!.t - pts[i - 1]!.t);
+      if (v > fastest) {
+        fastest = v;
+        fastestAt = i;
+      }
+    }
+    expect(fastestAt).toBeGreaterThan(1);
   });
 
   it("can be turned off", () => {
