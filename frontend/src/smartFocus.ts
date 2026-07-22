@@ -41,7 +41,11 @@ export interface SmartFocusOptions {
 }
 
 export const SMART_FOCUS_DEFAULTS: SmartFocusOptions = {
-  zoom: 1.6,
+  // 1.6x was too much. On a screen recording the content is already dense —
+  // text, chrome, a cursor — and pushing in that far throws most of the context
+  // out of frame, so the viewer loses where they are while being shown where to
+  // look. 1.35 is enough to say "here" and still keep the surroundings.
+  zoom: 1.35,
   // A zoom cycle costs ramp + hold + ramp, so these two also decide how many
   // moves fit in a clip. 0.5 was tried and is too quick: the spring already
   // front-loads the travel, so a half-second ramp arrives before the eye has

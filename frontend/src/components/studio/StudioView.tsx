@@ -100,6 +100,7 @@ import { assetLabel, anchorFrac, clipPlayDur, clipSrcDur, mediaUrl } from "../..
 import { MOTION_PRESETS } from "../../motionPresets";
 import { SMART_FOCUS_DEFAULTS, smartFocus, type SmartFocusOptions } from "../../smartFocus";
 import { autoFrame } from "../../autoFrame";
+import { canvasForSource } from "../../canvasFit";
 import {
   isRecordingSupported,
   listInputs,
@@ -971,6 +972,34 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
       const canvas = doc?.canvas;
       if (!doc || !canvas) return;
 
+      // Shape the frame to the recording before anything else looks at it.
+      // A 3:2 screen in a 16:9 canvas is letterboxed with black down both
+      // sides, and that reads as the zoom escaping the footage when it is
+      // nothing of the kind. Only for the first visual clip: after that the
+      // canvas is a decision someone made.
+      const arriving = new Set(placed.map((i) => i.assetId));
+      // Anything visual that was here BEFORE this recording. Counting the
+      // clips just placed would see a second recording as a first one and
+      // reshape a canvas that already has a timeline built against it.
+      const preExisting = doc.tracks
+        .filter((t) => t.kind === "video" || t.kind === "overlay" || t.kind === "background")
+        .flatMap((t) => t.clips ?? [])
+        .filter((c) => !arriving.has(c.assetId));
+      const firstVideo = placed.find((i) => {
+        const a = doc.assets.find((x) => x.id === i.assetId);
+        return a && a.kind === "video" && a.width > 0;
+      });
+      if (firstVideo && preExisting.length === 0) {
+        const a = doc.assets.find((x) => x.id === firstVideo.assetId)!;
+        const fitted = canvasForSource({ width: a.width, height: a.height }, canvas);
+        if (fitted) {
+          useStudio.getState().mutate((d) => {
+            d.canvas = { ...d.canvas, ...fitted };
+          });
+          toast.info(`Canvas set to ${fitted.width}x${fitted.height} to match your screen`);
+        }
+      }
+
       for (const item of placed) {
         const asset = doc.assets.find((a) => a.id === item.assetId);
         if (!asset?.hasCursor) continue;
@@ -993,7 +1022,13 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
             found.clip,
             track as never,
             clipPlayDur(found.clip),
-            { width: canvas.width, height: canvas.height }
+            // Re-read: the canvas may have just been reshaped to the recording,
+            // and framing computed against the old one would aim every zoom at
+            // a frame that no longer exists.
+            (() => {
+              const c = useStudio.getState().doc?.canvas ?? canvas;
+              return { width: c.width, height: c.height };
+            })()
           );
           if (!framed) continue;
           useStudio.getState().updateClip(found.trackId, found.clip.id, framed.patch);
