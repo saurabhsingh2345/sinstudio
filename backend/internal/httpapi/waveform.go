@@ -49,7 +49,7 @@ func waveStore(key string, peaks []float64) {
 // per file (ffmpeg → mono PCM → bucketed absolute peaks) and cached in memory.
 // The frontend slices/stretches it to a clip's trim + zoom.
 func (s *Server) waveform(w http.ResponseWriter, r *http.Request) {
-	doc, err := s.Store.GetProject(r.PathValue("id"))
+	doc, err := s.Store.GetProject(r.Context(), r.PathValue("id"))
 	if err != nil {
 		httpErr(w, 404, err)
 		return

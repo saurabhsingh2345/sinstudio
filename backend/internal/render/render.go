@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"studio/internal/jobs"
 	"studio/internal/schema"
@@ -23,10 +24,10 @@ type AssetResolver func(assetID string) (string, bool)
 
 // Options tune a single export (preset geometry, container format, range).
 type Options struct {
-	Preset string  `json:"preset"` // "" (source) | shorts | square | 4k | portrait4k
-	Format string  `json:"format"` // "" (mp4) | mp4 | webm | gif | mov
-	From    float64 `json:"from"`    // range start seconds
-	To      float64 `json:"to"`      // range end seconds (0 = end)
+	Preset   string  `json:"preset"`   // "" (source) | shorts | square | 4k | portrait4k
+	Format   string  `json:"format"`   // "" (mp4) | mp4 | webm | gif | mov
+	From     float64 `json:"from"`     // range start seconds
+	To       float64 `json:"to"`       // range end seconds (0 = end)
 	FPS      int     `json:"fps"`      // override output fps (0 = doc fps)
 	FrameAt  float64 `json:"frameAt"`  // >0: render a single PNG frame at this time
 	Loudnorm bool    `json:"loudnorm"` // apply EBU R128 loudness normalization to the mix
@@ -137,10 +138,16 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				bgColor = t.BackgroundColor
 			}
 			for _, c := range t.Clips {
+				if c.Disabled {
+					continue
+				}
 				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir)
 			}
 		case schema.TrackVideo, schema.TrackOverlay:
 			for _, c := range t.Clips {
+				if c.Disabled {
+					continue
+				}
 				if c.Title != nil {
 					if err := addTitleClip(&visuals, c, w, h, srtDir, titleIdx); err == nil {
 						titleIdx++
@@ -154,6 +161,9 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				continue
 			}
 			for _, c := range t.Clips {
+				if c.Disabled {
+					continue
+				}
 				p, ok := resolve(c.AssetID)
 				if !ok {
 					continue
@@ -228,7 +238,11 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	}
 	if opts.FrameAt < 0 || opts.FrameAt >= dur {
 		if opts.FrameAt >= dur {
-			opts.FrameAt = dur - 0.001 // clamp a past-the-end frame grab to the last frame
+			// Clamp a past-the-end frame grab back onto the LAST REAL FRAME. Backing
+			// off by a hair (dur-0.001) lands between the final frame and the end of
+			// the stream, so `-ss` finds nothing to decode and ffmpeg writes an empty
+			// file — which is what an all-disabled/empty timeline used to produce.
+			opts.FrameAt = math.Max(0, dur-1.0/float64(fps))
 		} else {
 			opts.FrameAt = 0
 		}
@@ -1020,7 +1034,15 @@ func Run(ctx context.Context, j *jobs.Job, plan *Plan) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	// Both pipes must be drained to EOF before Wait: exec closes them there, and
+	// Wait returning is no guarantee that these goroutines have finished writing.
+	// Reading errBuf without that guarantee is a data race, and the practical
+	// symptom is the worst possible one — a truncated ffmpeg error at exactly the
+	// moment you need the whole thing to diagnose a failed export.
+	var readers sync.WaitGroup
+	readers.Add(2)
 	go func() {
+		defer readers.Done()
 		sc := bufio.NewScanner(stdout)
 		for sc.Scan() {
 			line := sc.Text()
@@ -1035,11 +1057,13 @@ func Run(ctx context.Context, j *jobs.Job, plan *Plan) error {
 	}()
 	var errBuf strings.Builder
 	go func() {
+		defer readers.Done()
 		sc := bufio.NewScanner(stderr)
 		for sc.Scan() {
 			errBuf.WriteString(sc.Text() + "\n")
 		}
 	}()
+	readers.Wait()
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("ffmpeg: %w: %s", err, strings.TrimSpace(errBuf.String()))
 	}

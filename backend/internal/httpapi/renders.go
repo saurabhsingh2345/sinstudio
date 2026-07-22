@@ -21,7 +21,7 @@ type renderEntry struct {
 // are excluded.
 func (s *Server) listRenders(w http.ResponseWriter, r *http.Request) {
 	projID := r.PathValue("id")
-	if _, err := s.Store.GetProject(projID); err != nil {
+	if _, err := s.Store.GetProject(r.Context(), projID); err != nil {
 		httpErr(w, 404, err)
 		return
 	}
@@ -55,7 +55,7 @@ func (s *Server) listRenders(w http.ResponseWriter, r *http.Request) {
 // must be an export-* file so this can't be used to delete anything else.
 func (s *Server) deleteRender(w http.ResponseWriter, r *http.Request) {
 	projID := r.PathValue("id")
-	if _, err := s.Store.GetProject(projID); err != nil {
+	if _, err := s.Store.GetProject(r.Context(), projID); err != nil {
 		httpErr(w, 404, err)
 		return
 	}

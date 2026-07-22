@@ -25,11 +25,26 @@ import (
 	"studio/internal/transcribe"
 )
 
+// envInt reads a positive integer from the environment, falling back to def when
+// unset or unparseable.
+func envInt(key string, def int) int {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
+
 func main() {
-	addr := flag.String("addr", ":8787", "listen address")
+	// 8788, not 8787: a sibling project (courseSmith) serves on 8787, and because
+	// Go binds the IPv6 wildcard the two can start simultaneously without either
+	// failing — leaving which app you reach up to the browser's address-family choice.
+	addr := flag.String("addr", ":8788", "listen address")
 	root := flag.String("root", "..", "studio project root (parent of backend/); used to locate sibling generators")
 	mediaDir := flag.String("media", "", "media root (default <root>/media)")
 	frontDir := flag.String("front", "", "built frontend dir to serve (default <root>/frontend/dist if present)")
+	pluginDir := flag.String("plugins", "", "runtime plugin dir, one <id>/plugin.json per plugin (default <root>/plugins)")
 	flag.Parse()
 
 	absRoot, err := filepath.Abs(*root)
@@ -44,15 +59,41 @@ func main() {
 	if media == "" {
 		media = filepath.Join(absRoot, "media")
 	}
-	st, err := store.New(media)
+	dbURL := strings.TrimSpace(os.Getenv("STUDIO_DATABASE_URL"))
+	if dbURL == "" {
+		log.Fatal("STUDIO_DATABASE_URL is required (e.g. postgres://studio:studio@localhost:5544/studio?sslmode=disable); " +
+			"`docker compose up -d postgres` starts one")
+	}
+	dbCtx, dbCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	st, err := store.New(dbCtx, dbURL, media)
+	dbCancel()
 	if err != nil {
 		log.Fatalf("store: %v", err)
+	}
+	defer st.Close()
+
+	// Adopt any pre-Postgres timeline.json documents. Idempotent and
+	// non-destructive — the JSON files stay put as a backup.
+	if n, err := st.ImportLegacy(context.Background()); err != nil {
+		log.Fatalf("import legacy projects: %v", err)
+	} else if n > 0 {
+		log.Printf("imported %d legacy project(s) from timeline.json", n)
 	}
 
 	reg, err := generator.NewRegistry(absRoot)
 	if err != nil {
 		log.Fatalf("generators: %v", err)
 	}
+	// Layer runtime plugins over the built-in ones so adding a generator is a
+	// dropped-in folder rather than a rebuild.
+	plugins := *pluginDir
+	if plugins == "" {
+		plugins = strings.TrimSpace(os.Getenv("STUDIO_PLUGINS_DIR"))
+	}
+	if plugins == "" {
+		plugins = filepath.Join(absRoot, "plugins")
+	}
+	reg.SetPluginDir(plugins)
 
 	// Watch dirs where the sibling apps drop browser-downloaded clips (so they
 	// can auto-import). The user's Downloads folder is watched by default;
@@ -91,12 +132,11 @@ func main() {
 	if v := strings.TrimSpace(os.Getenv("STUDIO_ALLOWED_ORIGINS")); v != "" {
 		origins = strings.Split(v, ",")
 	}
-	exportWorkers := 2
-	if v := strings.TrimSpace(os.Getenv("STUDIO_EXPORT_WORKERS")); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			exportWorkers = n
-		}
-	}
+	// Per-lane worker concurrency. Each lane is bounded separately so a long
+	// export can't starve clip generation; tune per machine.
+	exportWorkers := envInt("STUDIO_EXPORT_WORKERS", 2)
+	pluginWorkers := envInt("STUDIO_PLUGIN_WORKERS", 4)
+	transcribeWorkers := envInt("STUDIO_TRANSCRIBE_WORKERS", 1)
 
 	jobMgr := jobs.NewManager()
 	srv := &httpapi.Server{
@@ -108,14 +148,23 @@ func main() {
 		FrontDir:       front,
 		Auth:           auth,
 		AllowedOrigins: origins,
-		ExportWorkers:  exportWorkers,
+
+		ExportWorkers:     exportWorkers,
+		PluginWorkers:     pluginWorkers,
+		TranscribeWorkers: transcribeWorkers,
 	}
 
 	log.Printf("studio backend on %s", *addr)
 	log.Printf("  root=%s", absRoot)
 	log.Printf("  media=%s", st.Root())
+	log.Printf("  plugins    %s", plugins)
 	for _, a := range reg.List() {
 		log.Printf("  generator %-12s available=%v (%s)", a.ID, a.Available, a.CWD)
+	}
+	// Surface bad manifests loudly: a plugin that failed to load is invisible in
+	// the UI otherwise, and "my plugin didn't show up" is a miserable thing to debug.
+	for _, e := range reg.Errors() {
+		log.Printf("  PLUGIN ERROR %s: %s", e.Path, e.Error)
 	}
 	for _, src := range lib.Sources() {
 		log.Printf("  library   %-16s %s", src.ID, src.Dir)
@@ -133,6 +182,7 @@ func main() {
 	} else {
 		log.Printf("  cors       localhost dev origins only")
 	}
+	log.Printf("  workers    render=%d plugin=%d transcribe=%d", exportWorkers, pluginWorkers, transcribeWorkers)
 
 	// Graceful shutdown: on SIGINT/SIGTERM, stop accepting connections, cancel
 	// in-flight jobs, and stop every supervised sibling app so nothing is orphaned.

@@ -6,6 +6,8 @@ import type {
   JobEvent,
   LibraryEntry,
   LibrarySource,
+  PluginLoadError,
+  PluginState,
   RenderEntry,
 } from "./types";
 
@@ -14,6 +16,16 @@ import type {
 let onUnauthorized: (() => void) | null = null;
 export function setUnauthorizedHandler(fn: () => void) {
   onUnauthorized = fn;
+}
+
+// A rejected save is not a generic failure: it means someone else saved this
+// project first, and the server hands back the current document so the editor
+// can show the conflict instead of silently losing work.
+export class ConflictError extends Error {
+  constructor(readonly current: EditDoc) {
+    super("project was modified by someone else");
+    this.name = "ConflictError";
+  }
 }
 
 async function j<T>(res: Response): Promise<T> {
@@ -33,11 +45,31 @@ export const api = {
       j<EditDoc>(r)
     ),
   getProject: (id: string) => fetch(`/api/projects/${id}`).then((r) => j<EditDoc>(r)),
-  saveProject: (doc: EditDoc) =>
-    fetch(`/api/projects/${doc.id}`, { method: "PUT", body: JSON.stringify(doc) }).then((r) =>
-      j<{ ok: boolean; version: number }>(r)
+  saveProject: async (doc: EditDoc) => {
+    const res = await fetch(`/api/projects/${doc.id}`, { method: "PUT", body: JSON.stringify(doc) });
+    if (res.status === 409) {
+      const body = await res.json().catch(() => ({}));
+      throw new ConflictError(body.current as EditDoc);
+    }
+    return j<{ ok: boolean; version: number }>(res);
+  },
+  deleteAsset: (projId: string, assetId: string) =>
+    fetch(`/api/projects/${projId}/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" }).then(
+      (r) => j<{ ok: boolean }>(r)
     ),
   generators: () => fetch("/api/generators").then((r) => j<GeneratorStatus[]>(r)),
+  plugins: () => fetch("/api/plugins").then((r) => j<PluginState>(r)),
+  // key groups previews of the same thing so a newer one supersedes the render
+  // still in flight instead of queueing behind it.
+  previewClip: (projId: string, generatorId: string, input: string, params: Record<string, string>, key: string) =>
+    fetch(`/api/projects/${projId}/preview`, {
+      method: "POST",
+      body: JSON.stringify({ generatorId, input, params, key }),
+    }).then((r) => j<{ jobId: string }>(r)),
+  reloadPlugins: () =>
+    fetch("/api/plugins/reload", { method: "POST" }).then((r) =>
+      j<{ generators: number; errors: PluginLoadError[] }>(r)
+    ),
   capabilities: () => fetch("/api/capabilities").then((r) => j<{ transcribe: boolean; transcribeError: string }>(r)),
 
   // Sibling-app supervisor (run/manage newaniAdv, funkycode, hyperframes).
@@ -62,6 +94,14 @@ export const api = {
     fetch(`/api/projects/${projId}/generate`, {
       method: "POST",
       body: JSON.stringify({ generatorId, input, params }),
+    }).then((r) => j<{ jobId: string }>(r)),
+  // rerender re-runs the generator that produced an existing asset with edited
+  // input/params, overwriting the same media file in place. The generator id is
+  // read server-side from the asset's source, so only the edits are sent.
+  rerender: (projId: string, assetId: string, input: string, params: Record<string, string>) =>
+    fetch(`/api/projects/${projId}/rerender`, {
+      method: "POST",
+      body: JSON.stringify({ assetId, input, params }),
     }).then((r) => j<{ jobId: string }>(r)),
   waveform: (projId: string, assetId: string) =>
     fetch(`/api/projects/${projId}/waveform?asset=${assetId}`).then((r) => j<{ peaks: number[] }>(r)),

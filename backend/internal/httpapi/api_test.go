@@ -15,11 +15,7 @@ import (
 
 func testServer(t *testing.T, token string) *Server {
 	t.Helper()
-	st, err := store.New(t.TempDir())
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	return &Server{Store: st, Jobs: jobs.NewManager(), Auth: NewAuth(token)}
+	return &Server{Store: store.NewTest(t), Jobs: jobs.NewManager(), Auth: NewAuth(token)}
 }
 
 func do(h http.Handler, method, path, cookie string, body any) *httptest.ResponseRecorder {

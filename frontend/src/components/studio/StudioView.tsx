@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ChevronLeft,
   ChevronDown,
@@ -39,6 +39,8 @@ import {
   Package,
   Palette,
   RotateCw,
+  Moon,
+  Sun,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -65,17 +67,36 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
+import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
-import type { AppStatus, Asset, CaptionCue, Clip, EditDoc, GeneratorStatus, LibraryEntry, ParamSpec, Track } from "../../types";
+import type {
+  AppStatus,
+  Asset,
+  CaptionCue,
+  Clip,
+  EditDoc,
+  GeneratorStatus,
+  LibraryEntry,
+  ParamSpec,
+  PluginState,
+  PreviewSpec,
+  Track,
+} from "../../types";
 import { SAMPLES } from "../../generatorSamples";
 import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { api } from "../../api";
+import { PluginDocEditor } from "./PluginDocEditor";
+import { parseDoc, seedDoc, serializeDoc, type Doc } from "../../pluginDoc";
+import { useLivePreview, type LivePreview } from "../../useLivePreview";
 import { toast } from "../../toast";
 import { revealedText } from "../../titleAnim";
 import { getPeaks } from "../../peaks";
 import { awaitJob } from "../../jobs";
 import { AppStudio } from "../AppStudio";
 import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel } from "./preview-engine";
+import { Timeline } from "./Timeline";
+import type { LaneKind, Selection } from "./selection";
+import { findClip } from "./selection";
 import { ExportDialog } from "../ExportDialog";
 import { RendersModal } from "../RendersModal";
 import { LibraryModal } from "../LibraryModal";
@@ -96,15 +117,8 @@ import {
 } from "./bridge";
 
 // ───────────────────────────── Selection model ────────────────────────────
-
-type LaneKind = "video" | "audio" | "subtitle";
-type Selection =
-  | { kind: "clip"; trackId: string; clipId: string }
-  | { kind: "lane"; trackId: string; clipId: string; lane: LaneKind }
-  | { kind: "overlay"; trackId: string; clipId: string }
-  | { kind: "soundtrack"; trackId: string }
-  | { kind: "cue"; cueId: string }
-  | { kind: "none" };
+// Selection/LaneKind/findClip now live in ./selection so the Timeline can share
+// them without a circular import.
 
 const ASPECTS = {
   "9:16": { label: "9:16 · Vertical", Icon: RectangleVertical },
@@ -128,6 +142,12 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [showExport, setShowExport] = useState(false);
   const [showRenders, setShowRenders] = useState(false);
+
+  // Shared with the Arc dashboard/wizard (localStorage `arc-theme`) so the whole
+  // app stays on one theme. `dark` keeps the original editor palette; `light`
+  // resolves the `.studio-light` tokens in tailwind.css.
+  const [theme, toggleTheme] = useArcTheme();
+  const themeClass = theme === "dark" ? "dark" : "studio-light";
 
   useEffect(() => {
     load(projectId).catch((e) => toast.error(String(e?.message || e)));
@@ -201,7 +221,7 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
 
   if (!doc) {
     return (
-      <div className="dark grid h-screen w-screen place-items-center bg-background text-muted-foreground">
+      <div className={`${themeClass} grid h-screen w-screen place-items-center bg-background text-muted-foreground`}>
         <div className="flex items-center gap-2 text-sm">
           <Sparkles className="h-4 w-4 animate-pulse text-brand" /> Loading project…
         </div>
@@ -212,10 +232,12 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
   const aspect = aspectOf(doc.canvas);
 
   return (
-    <div className="dark flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
+    <div className={`${themeClass} flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground`}>
       <TopBar
         doc={doc}
         aspect={aspect}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         onHome={onHome}
         onExport={() => setShowExport(true)}
         onRenders={() => setShowRenders(true)}
@@ -248,28 +270,29 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
   );
 }
 
-// helpers to reach into the live doc
-function findClip(doc: EditDoc | null, trackId: string, clipId: string): Clip | undefined {
-  return doc?.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
-}
-
 // ───────────────────────────── Top bar ────────────────────────────────────
 
 function TopBar({
   doc,
   aspect,
+  theme,
+  onToggleTheme,
   onHome,
   onExport,
   onRenders,
 }: {
   doc: EditDoc;
   aspect: AspectKey;
+  theme: "light" | "dark";
+  onToggleTheme: () => void;
   onHome?: () => void;
   onExport: () => void;
   onRenders: () => void;
 }) {
   const saving = useStudio((s) => s.saving);
   const dirty = useStudio((s) => s.dirty);
+  const conflict = useStudio((s) => s.conflict);
+  const resolveConflict = useStudio((s) => s.resolveConflict);
   const undo = useStudio((s) => s.undo);
   const redo = useStudio((s) => s.redo);
   const mutate = useStudio((s) => s.mutate);
@@ -283,7 +306,7 @@ function TopBar({
     });
   };
 
-  const status = saving ? "Saving…" : dirty ? "Unsaved" : "Saved";
+  const status = conflict ? "Conflict" : saving ? "Saving…" : dirty ? "Unsaved" : "Saved";
 
   return (
     <header className="flex h-12 shrink-0 items-center gap-3 border-b hairline bg-panel/80 px-3 backdrop-blur">
@@ -300,10 +323,30 @@ function TopBar({
         </div>
         <div className="text-sm font-medium">{doc.name}</div>
         <div className="ml-1 flex items-center gap-1.5 rounded-full border hairline bg-panel-2 px-2 py-0.5 text-[11px] text-muted-foreground">
-          <span className={cn("h-1.5 w-1.5 rounded-full", saving ? "bg-amber-400" : dirty ? "bg-muted-foreground" : "bg-signal")} />
+          <span
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              conflict ? "bg-red-500" : saving ? "bg-amber-400" : dirty ? "bg-muted-foreground" : "bg-signal"
+            )}
+          />
           {status} · v{doc.version}
         </div>
       </div>
+
+      {/* Someone else saved this project while it was open. Autosave has stopped
+          rather than overwrite their work; the local doc is kept until the user
+          chooses to discard it. */}
+      {conflict && (
+        <div className="flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-[11px] text-red-200">
+          <span>Someone else saved this project. Your changes are not being saved.</span>
+          <button
+            onClick={resolveConflict}
+            className="rounded border border-red-400/50 px-1.5 py-0.5 font-medium hover:bg-red-500/20"
+          >
+            Reload theirs
+          </button>
+        </div>
+      )}
 
       <div className="mx-2 h-5 w-px bg-hairline" />
 
@@ -339,6 +382,13 @@ function TopBar({
         <span className="tabular rounded-md border hairline bg-panel-2 px-2 py-1 text-[11px] text-muted-foreground">
           {doc.canvas.width}×{doc.canvas.height} · {doc.canvas.fps}fps
         </span>
+
+        <IconBtn
+          title={`Switch to ${theme === "light" ? "dark" : "light"} theme`}
+          onClick={onToggleTheme}
+        >
+          {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+        </IconBtn>
 
         <Button variant="ghost" size="sm" className="h-8" onClick={onRenders}>
           <Layers className="mr-1.5 h-4 w-4" /> Renders
@@ -653,7 +703,7 @@ function MediaCard({ asset, onAdd, onRemove }: { asset: Asset; onAdd: () => void
     >
       <div className="relative grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-md bg-gradient-to-br from-panel-3 to-panel">
         {asset.thumbnail ? (
-          <img src={mediaUrl(asset.thumbnail)} alt="" className="absolute inset-0 h-full w-full object-cover" />
+          <img src={mediaUrl(asset.thumbnail, asset.createdAt)} alt="" className="absolute inset-0 h-full w-full object-cover" />
         ) : (
           <div
             className="absolute inset-0 opacity-60"
@@ -702,10 +752,30 @@ function PluginsPanel({ projectId }: { projectId: string }) {
   const [appsLoaded, setAppsLoaded] = useState(false);
   const [studioFor, setStudioFor] = useState<AppStatus | null>(null);
   const [genFor, setGenFor] = useState<string | null>(null);
+  const [pluginState, setPluginState] = useState<PluginState | null>(null);
+  const [reloading, setReloading] = useState(false);
 
-  useEffect(() => {
+  const loadPlugins = useCallback(() => {
     api.generators().then(setGens).catch(() => {});
+    api.plugins().then(setPluginState).catch(() => setPluginState(null));
   }, []);
+  useEffect(loadPlugins, [loadPlugins]);
+
+  // Plugins are loaded from a directory at runtime, so a manifest can be added or
+  // fixed without restarting — this picks the change up without a page reload.
+  const reload = async () => {
+    setReloading(true);
+    try {
+      const { generators, errors } = await api.reloadPlugins();
+      loadPlugins();
+      if (errors.length) toast.error(`${errors.length} plugin(s) failed to load.`);
+      else toast.success(`${generators} plugin(s) loaded.`);
+    } catch (e) {
+      toast.error(`Reload failed: ${(e as Error).message}`);
+    } finally {
+      setReloading(false);
+    }
+  };
   // Poll live dev-server status for the plugin cards' live/booting dots.
   useEffect(() => {
     let alive = true;
@@ -778,14 +848,39 @@ function PluginsPanel({ projectId }: { projectId: string }) {
 
   return (
     <>
-      <div className="px-3 pt-3 pb-2 text-[11px] leading-relaxed text-muted-foreground">
-        Open an app inside Studio, create there, and its clips import automatically.
+      <div className="flex items-start justify-between gap-2 px-3 pt-3 pb-2">
+        <div className="text-[11px] leading-relaxed text-muted-foreground">
+          Generate a clip here and it stays editable — click it on the timeline to change
+          its properties and re-render.
+        </div>
+        <button
+          onClick={reload}
+          disabled={reloading}
+          title={pluginState?.dir ? `Re-scan ${pluginState.dir}` : "Re-scan the plugin directory"}
+          className="shrink-0 rounded border hairline px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-panel-2 disabled:opacity-40"
+        >
+          {reloading ? "…" : "Reload"}
+        </button>
       </div>
       <div className="scrollbar-thin flex-1 overflow-y-auto px-2 pb-3">
         {gens.length === 0 ? (
           <div className="px-2 py-6 text-center text-[11px] text-muted-foreground">No plugins configured.</div>
         ) : (
           <div className="space-y-1.5">
+            {/* A plugin whose manifest failed to load is simply absent from the
+                list, which is impossible to debug. Say so instead. */}
+            {!!pluginState?.errors.length && (
+              <div className="space-y-1 rounded-lg border border-red-500/40 bg-red-500/10 p-2 text-[11px]">
+                <div className="font-medium text-red-300">
+                  {pluginState.errors.length} plugin(s) failed to load
+                </div>
+                {pluginState.errors.map((e) => (
+                  <div key={e.path} className="text-[10px] text-red-200/80">
+                    <span className="font-mono">{e.path.split("/").slice(-2).join("/")}</span> — {e.error}
+                  </div>
+                ))}
+              </div>
+            )}
             {gens.map((g) => {
               const app = apps[g.id];
               const live = app?.state === "running" && app?.healthy;
@@ -870,6 +965,11 @@ function GenerateForm({
   gen: GeneratorStatus;
   onDone: (asset: Asset | null) => Promise<void> | void;
 }) {
+  const hasSchema = !!gen.fields?.length;
+  // With a schema, authoring starts from the schema's own defaults so a new clip
+  // is renderable immediately; the canned sample is only for raw-document
+  // generators, which have nothing else to go on.
+  const [doc, setDoc] = useState<Doc>(() => seedDoc(parseDoc(undefined, gen.docRoot), gen.fields ?? []));
   const [input, setInput] = useState(() => SAMPLES[gen.inputKind] ?? "");
   const [params, setParams] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -877,13 +977,14 @@ function GenerateForm({
   const setParam = (flag: string, v: string) => setParams((p) => ({ ...p, [flag]: v }));
 
   const run = async () => {
-    if (!input.trim()) {
+    const payload = hasSchema ? serializeDoc(doc) : input;
+    if (!payload.trim()) {
       toast.error("Input is empty.");
       return;
     }
     setBusy(true);
     try {
-      const { jobId } = await api.generate(projectId, gen.id, input, params);
+      const { jobId } = await api.generate(projectId, gen.id, payload, params);
       const data = await awaitJob(jobId);
       await onDone((data?.asset as Asset) ?? null);
     } catch (e) {
@@ -895,12 +996,16 @@ function GenerateForm({
 
   return (
     <div className="mt-2 space-y-2 rounded-md border hairline bg-panel/60 p-2">
-      <Textarea
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        spellCheck={false}
-        className="scrollbar-thin h-36 resize-y bg-panel-2 font-mono text-[11px] leading-snug"
-      />
+      {hasSchema ? (
+        <PluginDocEditor fields={gen.fields!} doc={doc} onChange={setDoc} />
+      ) : (
+        <Textarea
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          spellCheck={false}
+          className="scrollbar-thin h-36 resize-y bg-panel-2 font-mono text-[11px] leading-snug"
+        />
+      )}
       {gen.params.length > 0 && (
         <div className="space-y-1.5">
           {gen.params.map((spec) => (
@@ -983,17 +1088,53 @@ function CenterColumn({
   onSelect: (s: Selection) => void;
   total: number;
 }) {
+  // Bottom editor view: the new Premiere-style Timeline (default) or the legacy
+  // card Spine. Persisted so a session keeps whichever the user prefers.
+  const [view, setView] = useState<"timeline" | "spine">(
+    () => (localStorage.getItem("studio-editor-view") as "timeline" | "spine") || "timeline"
+  );
+  const pick = (v: "timeline" | "spine") => {
+    setView(v);
+    localStorage.setItem("studio-editor-view", v);
+  };
+
   return (
-    <section className="flex min-h-0 flex-col bg-background">
+    <section className="relative flex min-h-0 min-w-0 flex-col overflow-hidden bg-background">
       <PreviewStage doc={doc} aspect={aspect} selection={selection} total={total} />
-      <SpineArea
-        doc={doc}
-        selection={selection}
-        expanded={expanded}
-        onToggleExpand={onToggleExpand}
-        onSelect={onSelect}
-        total={total}
-      />
+
+      <div className="flex shrink-0 items-center gap-1 border-t hairline bg-panel/60 px-3 pt-1.5">
+        <button
+          onClick={() => pick("timeline")}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+            view === "timeline" ? "bg-panel-3 text-foreground" : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          Timeline
+        </button>
+        <button
+          onClick={() => pick("spine")}
+          className={cn(
+            "rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors",
+            view === "spine" ? "bg-panel-3 text-foreground" : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          Spine
+        </button>
+      </div>
+
+      {view === "timeline" ? (
+        <Timeline doc={doc} selection={selection} onSelect={onSelect} total={total} />
+      ) : (
+        <SpineArea
+          doc={doc}
+          selection={selection}
+          expanded={expanded}
+          onToggleExpand={onToggleExpand}
+          onSelect={onSelect}
+          total={total}
+        />
+      )}
     </section>
   );
 }
@@ -1191,7 +1332,10 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-[radial-gradient(ellipse_at_center,_oklch(0.22_0.01_265),_oklch(0.13_0.008_265))] p-6">
+      <div
+        className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden p-6"
+        style={{ background: "radial-gradient(ellipse at center, var(--stage), var(--stage-2))" }}
+      >
         <div
           className="relative shadow-[0_20px_80px_-20px_rgba(0,0,0,0.8)] transition-[width,height] duration-300"
           style={{
@@ -1259,13 +1403,13 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                 transform: rot ? `rotate(${rot}deg)` : undefined,
               };
               if (asset.kind === "image") {
-                return <img key={clip.id} src={mediaUrl(asset.path)} style={{ position: "absolute", ...style, objectFit: "contain" }} />;
+                return <img key={clip.id} src={mediaUrl(asset.path, asset.createdAt)} style={{ position: "absolute", ...style, objectFit: "contain" }} />;
               }
               return (
                 <video
                   key={clip.id}
                   ref={(el) => (videoRefs.current[clip.id] = el)}
-                  src={mediaUrl(asset.path)}
+                  src={mediaUrl(asset.path, asset.createdAt)}
                   muted={!!track.muted || (soloActive && !track.solo) || !!clip.mute}
                   playsInline
                   style={{ position: "absolute", ...style }}
@@ -1278,7 +1422,7 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
             {audios.map(({ clip }) => {
               const asset = doc.assets.find((a) => a.id === clip.assetId);
               if (!asset) return null;
-              return <audio key={clip.id} ref={(el) => (audioRefs.current[clip.id] = el)} src={mediaUrl(asset.path)} preload="auto" />;
+              return <audio key={clip.id} ref={(el) => (audioRefs.current[clip.id] = el)} src={mediaUrl(asset.path, asset.createdAt)} preload="auto" />;
             })}
 
             <div className="pointer-events-none absolute inset-[4%] rounded border border-dashed border-white/12" />
@@ -1716,7 +1860,7 @@ function ClipBlock({
           className="relative h-[76px] w-[72px] shrink-0 overflow-hidden rounded-md"
           style={{ background: `linear-gradient(140deg, hsl(${hue} 60% 32%), hsl(${(hue + 30) % 360} 65% 14%))` }}
         >
-          {asset?.thumbnail && <img src={mediaUrl(asset.thumbnail)} alt="" className="absolute inset-0 h-full w-full object-cover" />}
+          {asset?.thumbnail && <img src={mediaUrl(asset.thumbnail, asset.createdAt)} alt="" className="absolute inset-0 h-full w-full object-cover" />}
           {clip.title ? (
             <Type className="absolute right-1.5 top-1.5 h-3 w-3 text-white/70" />
           ) : (
@@ -2424,10 +2568,189 @@ function fillHoldToEnd(trackId: string, clip: Clip) {
   useStudio.getState().updateClip(trackId, clip.id, { hold: hold || undefined });
 }
 
+// PreviewPane shows the cheap render of the current document. It is deliberately
+// explicit that a preview is not the finished clip — the generator's note says
+// how it differs — so nobody ships something believing they saw the real thing.
+function PreviewPane({ preview, spec }: { preview: LivePreview; spec?: PreviewSpec }) {
+  if (!spec) {
+    return (
+      <div className="rounded-md border hairline bg-panel/50 px-2 py-1.5 text-[10px] text-muted-foreground">
+        No preview for this generator — re-render to see changes.
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-1">
+      <div className="relative overflow-hidden rounded-md border hairline bg-black">
+        {preview.url ? (
+          <video src={preview.url} controls loop className="block max-h-48 w-full" />
+        ) : (
+          <div className="grid h-24 place-items-center text-[10px] text-muted-foreground">
+            {preview.rendering ? "Rendering preview…" : "Edit to preview"}
+          </div>
+        )}
+        {preview.url && preview.rendering && (
+          <div className="absolute right-1 top-1 rounded bg-black/70 px-1.5 py-0.5 text-[9px] text-white">
+            updating…
+          </div>
+        )}
+      </div>
+      <div className="flex items-center justify-between text-[9px] text-muted-foreground">
+        <span>Preview{spec.note ? ` · ${spec.note}` : ""} — not the final render.</span>
+        {preview.error && <span className="text-red-400">preview failed</span>}
+      </div>
+    </div>
+  );
+}
+
+// LivePluginSection keeps a generated clip editable: it surfaces the plugin
+// document that produced it, so properties can be changed and the clip
+// re-rendered in place rather than regenerated as a new one.
+//
+// The editor is driven by the field schema the generator publishes, so every
+// plugin — including ones added later — gets this with no code here. A generator
+// with no schema still gets a raw document editor rather than nothing.
+function LivePluginSection({ asset }: { asset: Asset }) {
+  const [gens, setGens] = useState<GeneratorStatus[]>([]);
+  useEffect(() => {
+    api.generators().then(setGens).catch(() => setGens([]));
+  }, []);
+  const gen = gens.find((g) => g.id === asset.source);
+
+  if (gen && asset.genInput !== undefined) return <PluginLiveEditor asset={asset} gen={gen} />;
+
+  // Imported media with no source document. Say so: rendering nothing here looks
+  // identical to a broken inspector, and the reason is actionable — a plugin can
+  // ship a .studio.json sidecar and its clips arrive editable.
+  if (asset.source && asset.source !== "import" && asset.source !== "library") return null;
+  return (
+    <Section label="Plugin">
+      <div className="text-[10px] leading-relaxed text-muted-foreground">
+        This clip was imported as finished media, so its properties can't be edited here —
+        Studio never saw the document that produced it. Clips generated in Studio, or
+        imported with a <code className="font-mono">.studio.json</code> sidecar, stay editable.
+      </div>
+    </Section>
+  );
+}
+
+function PluginLiveEditor({ asset, gen }: { asset: Asset; gen: GeneratorStatus }) {
+  const projectId = useStudio((s) => s.doc?.id) ?? "";
+  const hasSchema = !!gen.fields?.length;
+
+  const [doc, setDoc] = useState<Doc>(() => parseDoc(asset.genInput, gen.docRoot));
+  const [raw, setRaw] = useState(() => asset.genInput ?? "");
+  const [params, setParams] = useState<Record<string, string>>(() => ({ ...(asset.genParams ?? {}) }));
+  const [busy, setBusy] = useState(false);
+  const preview = useLivePreview(projectId, gen.id, `asset:${asset.id}`, !!gen.preview);
+
+  // Ask for a cheap preview whenever the edit settles. The hook debounces and
+  // supersedes, so this is safe to call on every change.
+  useEffect(() => {
+    preview.request(hasSchema ? serializeDoc(doc) : raw, params);
+  }, [doc, raw, params]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-seed the draft when the committed provenance changes (i.e. after a
+  // re-render replaces the asset). Doesn't fire while editing, since only our own
+  // re-render mutates genInput.
+  useEffect(() => {
+    setDoc(parseDoc(asset.genInput, gen.docRoot));
+    setRaw(asset.genInput ?? "");
+    setParams({ ...(asset.genParams ?? {}) });
+  }, [asset.id, asset.genInput]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const rerender = async () => {
+    // With a schema we re-serialize the edited document, which preserves any key
+    // the schema doesn't describe. Without one the user edited the text directly.
+    const input = hasSchema ? serializeDoc(doc) : raw;
+    if (!input.trim()) {
+      toast.error("The plugin document is empty.");
+      return;
+    }
+    if (!hasSchema && gen.rawKind !== "text" && gen.rawKind !== "html") {
+      try {
+        JSON.parse(input);
+      } catch (e) {
+        toast.error(`Invalid JSON: ${(e as Error).message}`);
+        return;
+      }
+    }
+    setBusy(true);
+    try {
+      const { jobId } = await api.rerender(projectId, asset.id, input, params);
+      const data = await awaitJob(jobId);
+      let next: Asset | null = (data?.asset as Asset) ?? null;
+      // The SSE terminal event can be missed, in which case awaitJob resolves via
+      // its poll fallback with a null payload. The backend has already replaced the
+      // asset in place, so re-fetch and pull it by id — re-render must reliably
+      // REPLACE the existing clip's asset, never silently no-op (which looks like
+      // "it didn't work" and tempts a re-generate that adds a duplicate clip).
+      if (!next) {
+        try {
+          const fresh = await api.getProject(projectId);
+          next = fresh.assets.find((a) => a.id === asset.id) ?? null;
+        } catch {
+          /* leave next null */
+        }
+      }
+      if (next) useStudio.getState().updateAsset(next);
+      preview.clear(); // the clip itself is now up to date
+      toast.success(`Re-rendered ${gen.name} clip.`);
+    } catch (e) {
+      toast.error(`Re-render failed: ${(e as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section label={`${gen.name} · live`}>
+      <div className="text-[10px] leading-relaxed text-muted-foreground">
+        Edit the properties that generated this clip, then re-render it in place.
+      </div>
+
+      <PreviewPane preview={preview} spec={gen.preview} />
+
+      {hasSchema ? (
+        <PluginDocEditor fields={gen.fields!} doc={doc} onChange={setDoc} />
+      ) : (
+        <Textarea
+          className="h-40 resize-y font-mono text-[11px]"
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          spellCheck={false}
+        />
+      )}
+
+      {!!gen.params.length && (
+        <div className="space-y-1 border-t hairline pt-2">
+          {gen.params.map((spec) => (
+            <ParamControl
+              key={spec.flag}
+              spec={spec}
+              value={params[spec.flag] ?? spec.default ?? ""}
+              onChange={(v) => setParams((p) => ({ ...p, [spec.flag]: v }))}
+            />
+          ))}
+        </div>
+      )}
+
+      <button
+        onClick={rerender}
+        disabled={busy}
+        className="w-full rounded-md bg-brand px-3 py-1.5 text-[11px] font-medium text-white hover:opacity-90 disabled:opacity-50"
+      >
+        {busy ? "Re-rendering…" : "Re-render clip"}
+      </button>
+    </Section>
+  );
+}
+
 function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
   const updateClip = useStudio((s) => s.updateClip);
   const updateEffect = useStudio((s) => s.updateEffect);
   const resetEffects = useStudio((s) => s.resetEffects);
+  const asset = useStudio((s) => s.doc?.assets.find((a) => a.id === clip.assetId));
   const tr = clip.transform;
   const setTr = (patch: Partial<Clip["transform"]>) => updateClip(trackId, clip.id, { transform: { ...tr, ...patch } });
   const eff = clip.effects ?? {};
@@ -2435,6 +2758,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
 
   return (
     <>
+      {asset && <LivePluginSection asset={asset} />}
       <Section label="Transform">
         <div className="grid grid-cols-2 gap-2">
           <Field label="X"><NumInput value={tr.x} step={5} suffix="px" onChange={(v) => setTr({ x: v })} /></Field>

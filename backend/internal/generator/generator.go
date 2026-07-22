@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"studio/internal/jobs"
 )
@@ -30,6 +31,43 @@ type ParamSpec struct {
 	Options []string `json:"options,omitempty"` // for enum
 }
 
+// FieldSpec describes one editable property of a generator's *input document*
+// (as opposed to ParamSpec, which describes a CLI flag). A generator that
+// publishes fields gets a structured editor in Studio for free — both when
+// authoring a new clip and when re-editing an existing one — with no
+// per-generator UI code. That is what makes the plugin count scalable.
+//
+// The fields are a *view* over the document, deliberately not a full schema of
+// it: the editor reads and writes only the paths named here and leaves every
+// other key untouched. So a generator can add a property Studio has never heard
+// of without its clips being damaged the next time someone edits them. Being an
+// incomplete description is the point, not a limitation.
+type FieldSpec struct {
+	Path    string      `json:"path"`              // dot path into the document, e.g. "fps" or "scenes[].code"
+	Label   string      `json:"label"`             // human label
+	Type    string      `json:"type"`              // string|text|number|bool|enum|array
+	Default any         `json:"default,omitempty"` // value for a newly-created item
+	Options []string    `json:"options,omitempty"` // for enum
+	Hint    string      `json:"hint,omitempty"`    // help text under the control
+	Mono    bool        `json:"mono,omitempty"`    // render text in a monospace editor (code)
+	Fields  []FieldSpec `json:"fields,omitempty"`  // for type "array": the shape of each item
+	ItemOf  string      `json:"itemOf,omitempty"`  // for type "array": label of one item, e.g. "Scene"
+}
+
+// Preview describes how to render a cheap, throwaway version of a clip while
+// someone is editing its properties. Every generator here takes seconds to
+// minutes for a real render, so the editor can only feel live if there is a
+// deliberately worse render to show in the meantime.
+//
+// It is expressed as param overrides rather than a separate command, because
+// that is what the cheap path actually is for these tools: fewer frames, no
+// voice, a smaller resolution. A generator with no Preview block simply has no
+// preview, and the editor says so instead of pretending.
+type Preview struct {
+	Params map[string]string `json:"params"` // merged over the user's params
+	Note   string            `json:"note"`   // how the preview differs, shown in the UI
+}
+
 // Adapter is a generator manifest.
 type Adapter struct {
 	ID          string      `json:"id"`
@@ -42,6 +80,10 @@ type Adapter struct {
 	InputMode   string      `json:"inputMode"`   // "file" (default) | "dir" (write input as <tmpdir>/index.html, pass the dir)
 	OutputExt   string      `json:"outputExt"`   // e.g. "mp4"
 	Params      []ParamSpec `json:"params"`      // exposed flags
+	Fields      []FieldSpec `json:"fields"`      // editable properties of the input document (empty = raw editor)
+	Preview     *Preview    `json:"preview"`     // optional cheap render for live editing
+	DocRoot     string      `json:"docRoot"`     // "object" (default) or "array": shape of the input document
+	RawKind     string      `json:"rawKind"`     // when no fields: "json" (default) | "text" | "html"
 	SamplePath  string      `json:"samplePath"`  // optional sample input file (relative to cwd)
 	BuildHint   string      `json:"buildHint"`   // shown if the CLI is missing
 	ProbeBinary string      `json:"probeBinary"` // optional file that must exist under cwd (e.g. dist cli)
@@ -49,39 +91,64 @@ type Adapter struct {
 
 // Registry holds loaded adapters keyed by id.
 type Registry struct {
-	root     string // studio root (parent of backend/)
-	adapters map[string]Adapter
-	order    []string
+	root string // studio root (parent of backend/)
+
+	// Guards the loaded set, which Reload replaces while requests are reading it.
+	mu        sync.RWMutex
+	adapters  map[string]Adapter
+	order     []string
+	pluginDir string      // optional runtime plugin directory
+	errs      []LoadError // load failures from the last scan
 }
 
-// NewRegistry loads all embedded adapter manifests. root is the studio project
-// root, used to resolve each adapter's relative cwd.
+// NewRegistry loads the built-in adapter manifests. root is the studio project
+// root, used to resolve each adapter's relative cwd. Call SetPluginDir to layer
+// runtime plugins on top.
 func NewRegistry(root string) (*Registry, error) {
-	r := &Registry{root: root, adapters: map[string]Adapter{}}
-	entries, err := fs.ReadDir(adapterFS, "adapters")
+	adapters, order, err := loadBuiltin()
 	if err != nil {
 		return nil, err
 	}
+	return &Registry{root: root, adapters: adapters, order: order}, nil
+}
+
+// loadBuiltin reads the compiled-in manifests, in filename order.
+func loadBuiltin() (map[string]Adapter, []string, error) {
+	entries, err := fs.ReadDir(adapterFS, "adapters")
+	if err != nil {
+		return nil, nil, err
+	}
+	adapters := map[string]Adapter{}
+	var order []string
 	for _, e := range entries {
 		data, err := adapterFS.ReadFile("adapters/" + e.Name())
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		var a Adapter
 		if err := json.Unmarshal(data, &a); err != nil {
-			return nil, fmt.Errorf("adapter %s: %w", e.Name(), err)
+			return nil, nil, fmt.Errorf("adapter %s: %w", e.Name(), err)
 		}
-		r.adapters[a.ID] = a
-		r.order = append(r.order, a.ID)
+		adapters[a.ID] = a
+		order = append(order, a.ID)
 	}
-	return r, nil
+	return adapters, order, nil
 }
 
 // List returns adapters in load order, with availability annotated.
 func (r *Registry) List() []AdapterStatus {
-	out := make([]AdapterStatus, 0, len(r.order))
-	for _, id := range r.order {
-		a := r.adapters[id]
+	r.mu.RLock()
+	order := append([]string(nil), r.order...)
+	byID := make(map[string]Adapter, len(r.adapters))
+	for k, v := range r.adapters {
+		byID[k] = v
+	}
+	r.mu.RUnlock()
+
+	// Availability stats the filesystem, so it runs outside the lock.
+	out := make([]AdapterStatus, 0, len(order))
+	for _, id := range order {
+		a := byID[id]
 		out = append(out, AdapterStatus{Adapter: a, Available: r.available(a) == nil})
 	}
 	return out
@@ -95,6 +162,8 @@ type AdapterStatus struct {
 
 // Get returns an adapter by id.
 func (r *Registry) Get(id string) (Adapter, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	a, ok := r.adapters[id]
 	return a, ok
 }
@@ -118,7 +187,7 @@ func (r *Registry) available(a Adapter) error {
 // Generate writes inputContent to a temp file, runs the generator CLI in its
 // cwd producing outputPath, and streams stdout/stderr to the job as logs.
 func (r *Registry) Generate(ctx context.Context, j *jobs.Job, id, inputContent string, params map[string]string, outputPath string) error {
-	a, ok := r.adapters[id]
+	a, ok := r.Get(id)
 	if !ok {
 		return fmt.Errorf("unknown generator %q", id)
 	}

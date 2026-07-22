@@ -3,7 +3,16 @@
   "name": "HyperFrames",
   "description": "HTML/GSAP compositions to MP4 (also alpha MOV/WebM for overlays) via Chrome capture.",
   "cwd": "../hyper/hyperframes",
-  "command": ["node", "packages/cli/dist/cli.js", "render", "{input}", "--output", "{output}", "--workers", "1"],
+  "command": [
+    "node",
+    "packages/cli/dist/cli.js",
+    "render",
+    "{input}",
+    "--output",
+    "{output}",
+    "--workers",
+    "1"
+  ],
   "inputKind": "htmlComposition",
   "inputExt": ".html",
   "inputMode": "dir",
@@ -11,20 +20,42 @@
   "probeBinary": "packages/cli/dist/cli.js",
   "buildHint": "Run `bun install && bun run build` in hyper/hyperframes to produce the CLI.",
   "params": [
-    { "flag": "--fps", "label": "FPS", "type": "string", "default": "30" },
+    {
+      "flag": "--fps",
+      "label": "FPS",
+      "type": "string",
+      "default": "30"
+    },
     {
       "flag": "--resolution",
       "label": "Resolution",
       "type": "enum",
       "default": "landscape",
-      "options": ["landscape", "portrait", "square", "landscape-4k", "portrait-4k"]
+      "options": [
+        "landscape",
+        "portrait",
+        "square",
+        "landscape-4k",
+        "portrait-4k"
+      ]
     },
     {
       "flag": "--format",
       "label": "Format",
       "type": "enum",
       "default": "mp4",
-      "options": ["mp4", "webm", "mov"]
+      "options": [
+        "mp4",
+        "webm",
+        "mov"
+      ]
     }
-  ]
+  ],
+  "rawKind": "html",
+  "preview": {
+    "params": {
+      "--resolution": "landscape"
+    },
+    "note": "1080p landscape"
+  }
 }

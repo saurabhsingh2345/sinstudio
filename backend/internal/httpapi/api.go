@@ -4,8 +4,10 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,9 +30,6 @@ import (
 // can't fill the disk. 4 GiB covers long 4K clips with headroom.
 const maxUploadBytes = 4 << 30
 
-// exportTimeout bounds a single export render.
-const exportTimeout = 30 * time.Minute
-
 // Server bundles the backend dependencies.
 type Server struct {
 	Store          *store.Store
@@ -41,22 +40,36 @@ type Server struct {
 	FrontDir       string   // optional built frontend to serve (SPA)
 	Auth           *Auth    // optional shared-token gate (nil/empty = open)
 	AllowedOrigins []string // CORS allowlist ("" entry or empty = localhost dev only)
-	ExportWorkers  int      // export queue concurrency (default 2)
 
-	exports     *exportQueue
-	exportsOnce sync.Once
+	// Per-lane worker concurrency; see the lane constants in queue.go.
+	ExportWorkers     int // ffmpeg exports (default 2)
+	PluginWorkers     int // generator subprocesses (default 4)
+	TranscribeWorkers int // whisper (default 1)
+
+	work     *workQueue
+	workOnce sync.Once
 }
 
-// exportQueueRef lazily builds the bounded export queue on first use.
-func (s *Server) exportQueue() *exportQueue {
-	s.exportsOnce.Do(func() {
-		w := s.ExportWorkers
-		if w < 1 {
-			w = 2
-		}
-		s.exports = newExportQueue(s, w)
+// queue lazily builds the bounded work queue on first use.
+func (s *Server) queue() *workQueue {
+	s.workOnce.Do(func() {
+		s.work = newWorkQueue(s, map[string]int{
+			laneRender:     orDefault(s.ExportWorkers, 2),
+			lanePlugin:     orDefault(s.PluginWorkers, 4),
+			laneTranscribe: orDefault(s.TranscribeWorkers, 1),
+			// One preview at a time: a newer preview supersedes the one in flight,
+			// so extra workers would only render states nobody is waiting for.
+			lanePreview: 1,
+		})
 	})
-	return s.exports
+	return s.work
+}
+
+func orDefault(n, def int) int {
+	if n < 1 {
+		return def
+	}
+	return n
 }
 
 // Routes builds the HTTP handler.
@@ -72,6 +85,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/auth", s.authState)
 	mux.HandleFunc("GET /api/capabilities", s.capabilities)
 	mux.HandleFunc("GET /api/generators", s.listGenerators)
+	mux.HandleFunc("GET /api/plugins", s.pluginState)
+	mux.HandleFunc("POST /api/plugins/reload", s.reloadPlugins)
 
 	// Sibling-app supervisor: run/manage newaniAdv, funkycode, hyperframes.
 	mux.HandleFunc("GET /api/apps", s.listApps)
@@ -86,7 +101,10 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("PUT /api/projects/{id}", s.saveProject)
 
 	mux.HandleFunc("POST /api/projects/{id}/assets", s.importAsset)
+	mux.HandleFunc("DELETE /api/projects/{id}/assets/{assetId}", s.deleteAsset)
 	mux.HandleFunc("POST /api/projects/{id}/generate", s.generate)
+	mux.HandleFunc("POST /api/projects/{id}/rerender", s.rerender)
+	mux.HandleFunc("POST /api/projects/{id}/preview", s.previewClip)
 	mux.HandleFunc("POST /api/projects/{id}/transcribe", s.transcribe)
 	mux.HandleFunc("POST /api/projects/{id}/export", s.export)
 	mux.HandleFunc("GET /api/projects/{id}/waveform", s.waveform)
@@ -106,7 +124,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/jobs", s.listJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.getJob)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.cancelJob)
-	mux.HandleFunc("POST /api/jobs/{id}/retry", s.retryExport)
+	mux.HandleFunc("POST /api/jobs/{id}/retry", s.retryJob)
 
 	// Media files (assets, thumbs, renders).
 	mux.Handle("GET /media/", http.StripPrefix("/media/",
@@ -142,8 +160,27 @@ func (s *Server) capabilities(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// pluginState reports the runtime plugin directory and any manifests that failed
+// to load, so a broken plugin is visible in the UI instead of silently absent.
+func (s *Server) pluginState(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, 200, map[string]any{
+		"dir":    s.Gens.PluginDir(),
+		"errors": s.Gens.Errors(),
+	})
+}
+
+// reloadPlugins re-scans the plugin directory, so editing a manifest doesn't
+// need a restart.
+func (s *Server) reloadPlugins(w http.ResponseWriter, r *http.Request) {
+	s.Gens.Reload()
+	writeJSON(w, 200, map[string]any{
+		"generators": len(s.Gens.List()),
+		"errors":     s.Gens.Errors(),
+	})
+}
+
 func (s *Server) listProjects(w http.ResponseWriter, r *http.Request) {
-	list, err := s.Store.ListProjects()
+	list, err := s.Store.ListProjects(r.Context())
 	if err != nil {
 		httpErr(w, 500, err)
 		return
@@ -156,7 +193,7 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
-	doc, err := s.Store.CreateProject(body.Name)
+	doc, err := s.Store.CreateProject(r.Context(), body.Name)
 	if err != nil {
 		httpErr(w, 500, err)
 		return
@@ -165,22 +202,30 @@ func (s *Server) createProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getProject(w http.ResponseWriter, r *http.Request) {
-	doc, err := s.Store.GetProject(r.PathValue("id"))
+	doc, err := s.Store.GetProject(r.Context(), r.PathValue("id"))
 	if err != nil {
 		httpErr(w, 404, err)
 		return
 	}
 	// Backfill hasAudio for assets that predate the field so the UI can flag
-	// silent clips. In-memory only — the client persists it on its next save, so
-	// this doesn't bump the version out from under the editor.
+	// silent clips. Persisted on the asset row rather than left for the client to
+	// save back: the client's PUT no longer carries the asset set at all, and an
+	// asset write doesn't touch the project revision, so this can't conflict with
+	// an editor's in-flight save.
 	for i := range doc.Assets {
 		a := &doc.Assets[i]
 		if a.HasAudio != nil || (a.Kind != "video" && a.Kind != "audio") {
 			continue
 		}
-		if info, err := media.Probe(r.Context(), s.Store.Abs(a.Path)); err == nil {
+		if info, err := probeCached(r.Context(), s.Store.Abs(a.Path)); err == nil {
 			has := info.HasAudio
 			a.HasAudio = &has
+			// Persist it on the asset row. Previously this was in-memory only and
+			// relied on the client saving the doc back, which no longer carries
+			// the asset set at all.
+			if err := s.Store.UpdateAsset(r.Context(), doc.ID, *a); err != nil {
+				log.Printf("backfill hasAudio for %s: %v", a.ID, err)
+			}
 		}
 	}
 	writeJSON(w, 200, doc)
@@ -194,11 +239,31 @@ func (s *Server) saveProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	doc.ID = id
-	if err := s.Store.SaveProject(&doc); err != nil {
+	// The client sends the revision it loaded; if the stored one has moved on,
+	// someone else saved this timeline in between and blindly overwriting would
+	// silently discard their work. Answer 409 with the current document so the
+	// client can show the conflict and reload.
+	revision, err := s.Store.SaveProject(r.Context(), &doc, doc.Version)
+	switch {
+	case errors.Is(err, store.ErrConflict):
+		current, cerr := s.Store.GetProject(r.Context(), id)
+		if cerr != nil {
+			httpErr(w, 500, cerr)
+			return
+		}
+		writeJSON(w, 409, map[string]any{
+			"error":   "project was modified by someone else",
+			"current": current,
+		})
+		return
+	case errors.Is(err, store.ErrNotFound):
+		httpErr(w, 404, err)
+		return
+	case err != nil:
 		httpErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "version": doc.Version})
+	writeJSON(w, 200, map[string]any{"ok": true, "version": revision})
 }
 
 // ---- assets ----
@@ -207,7 +272,7 @@ func (s *Server) saveProject(w http.ResponseWriter, r *http.Request) {
 // and registers it on the project.
 func (s *Server) importAsset(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := s.Store.GetProject(id); err != nil {
+	if _, err := s.Store.GetProject(r.Context(), id); err != nil {
 		httpErr(w, 404, err)
 		return
 	}
@@ -244,12 +309,31 @@ func (s *Server) importAsset(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 500, err)
 		return
 	}
-	doc, err := s.Store.AddAsset(id, *asset)
+	if err := s.Store.AddAsset(r.Context(), id, *asset); err != nil {
+		httpErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"asset": asset})
+}
+
+// deleteAsset removes an asset from a project. The removal is a soft delete and
+// the media file is deliberately left on disk: an accidental removal costs
+// nothing to undo, and any finished render still referencing the file keeps
+// working. Reclaiming the bytes is a separate, deliberate step.
+//
+// This exists because the asset set no longer round-trips through the client's
+// document save — dropping an asset from the PUT body is now a no-op.
+func (s *Server) deleteAsset(w http.ResponseWriter, r *http.Request) {
+	err := s.Store.DeleteAsset(r.Context(), r.PathValue("id"), r.PathValue("assetId"))
+	if errors.Is(err, store.ErrNotFound) {
+		httpErr(w, 404, fmt.Errorf("unknown asset"))
+		return
+	}
 	if err != nil {
 		httpErr(w, 500, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"asset": asset, "version": doc.Version})
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // registerAsset probes a file and builds an Asset (with thumbnail).
@@ -289,7 +373,7 @@ func (s *Server) registerAsset(ctx context.Context, projID, assetID, path, name,
 
 func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 	projID := r.PathValue("id")
-	if _, err := s.Store.GetProject(projID); err != nil {
+	if _, err := s.Store.GetProject(r.Context(), projID); err != nil {
 		httpErr(w, 404, err)
 		return
 	}
@@ -302,56 +386,109 @@ func (s *Server) generate(w http.ResponseWriter, r *http.Request) {
 		httpErr(w, 400, err)
 		return
 	}
-	adapter, ok := s.Gens.Get(body.GeneratorID)
-	if !ok {
-		httpErr(w, 400, fmt.Errorf("unknown generator %q", body.GeneratorID))
+	jobID, err := s.queue().Enqueue(r.Context(), generatePayload{
+		ProjID:      projID,
+		GeneratorID: body.GeneratorID,
+		Input:       body.Input,
+		Params:      body.Params,
+	})
+	if err != nil {
+		httpErr(w, 400, err)
 		return
 	}
+	writeJSON(w, 202, map[string]any{"jobId": jobID})
+}
 
-	job := s.Jobs.New("generate", 15*time.Minute)
-	dir, _ := s.Store.AssetsDir(projID)
-	assetID := store.NewID("asset_")
-	// A generator exposing a --format param writes that container, not its
-	// default OutputExt — name the file accordingly or ffprobe/browsers choke.
-	ext := adapter.OutputExt
-	for _, spec := range adapter.Params {
-		if spec.Flag == "--format" {
-			if v := body.Params["--format"]; v != "" {
-				ext = v
-			}
+// rerender regenerates an existing generated asset in place: it re-runs the
+// asset's original generator with (possibly edited) input/params, overwrites the
+// same media file, and refreshes the asset's probed metadata. Every clip that
+// references the asset picks up the new render. The generator id is read from the
+// asset's Source, so the client only sends the (edited) input + params.
+func (s *Server) rerender(w http.ResponseWriter, r *http.Request) {
+	projID := r.PathValue("id")
+	doc, err := s.Store.GetProject(r.Context(), projID)
+	if err != nil {
+		httpErr(w, 404, err)
+		return
+	}
+	var body struct {
+		AssetID string            `json:"assetId"`
+		Input   string            `json:"input"`
+		Params  map[string]string `json:"params"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	var asset *schema.Asset
+	for i := range doc.Assets {
+		if doc.Assets[i].ID == body.AssetID {
+			asset = &doc.Assets[i]
 			break
 		}
 	}
-	out := filepath.Join(dir, assetID+"."+ext)
+	if asset == nil {
+		httpErr(w, 404, fmt.Errorf("unknown asset %q", body.AssetID))
+		return
+	}
 
-	go func() {
-		ctx := job.Context()
-		job.Progress(0.05, "starting "+adapter.Name)
-		if err := s.Gens.Generate(ctx, job, body.GeneratorID, body.Input, body.Params, out); err != nil {
-			job.Fail(err)
-			return
-		}
-		job.Progress(0.9, "registering clip")
-		asset, err := s.registerAsset(ctx, projID, assetID, out, adapter.Name+" clip", body.GeneratorID)
-		if err != nil {
-			job.Fail(err)
-			return
-		}
-		if _, err := s.Store.AddAsset(projID, *asset); err != nil {
-			job.Fail(err)
-			return
-		}
-		job.Done(map[string]any{"asset": asset})
-	}()
+	jobID, err := s.queue().Enqueue(r.Context(), rerenderPayload{
+		ProjID:  projID,
+		AssetID: asset.ID,
+		Source:  asset.Source,
+		Name:    asset.Name,
+		Input:   body.Input,
+		Params:  body.Params,
+	})
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 202, map[string]any{"jobId": jobID})
+}
 
-	writeJSON(w, 202, map[string]any{"jobId": job.ID})
+// previewClip renders a throwaway, deliberately cheaper version of a clip from
+// the document currently being edited. The result is not an asset — it exists so
+// the editor can show what the properties currently say without waiting for a
+// real render.
+func (s *Server) previewClip(w http.ResponseWriter, r *http.Request) {
+	projID := r.PathValue("id")
+	if _, err := s.Store.GetProject(r.Context(), projID); err != nil {
+		httpErr(w, 404, err)
+		return
+	}
+	var body struct {
+		GeneratorID string            `json:"generatorId"`
+		Input       string            `json:"input"`
+		Params      map[string]string `json:"params"`
+		Key         string            `json:"key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	if body.Key == "" {
+		body.Key = projID + ":" + body.GeneratorID
+	}
+	jobID, err := s.queue().Preview(r.Context(), previewPayload{
+		ProjID:      projID,
+		GeneratorID: body.GeneratorID,
+		Input:       body.Input,
+		Params:      body.Params,
+		Key:         body.Key,
+	})
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 202, map[string]any{"jobId": jobID})
 }
 
 // ---- transcription ----
 
 func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 	projID := r.PathValue("id")
-	doc, err := s.Store.GetProject(projID)
+	doc, err := s.Store.GetProject(r.Context(), projID)
 	if err != nil {
 		httpErr(w, 404, err)
 		return
@@ -374,40 +511,7 @@ func (s *Server) transcribe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	job := s.Jobs.New("transcribe", 30*time.Minute)
-	go func() {
-		ctx := job.Context()
-		job.Progress(0.1, "extracting audio")
-		work, err := os.MkdirTemp("", "studio-transcribe-*") // isolated scratch (avoids clobbering concurrent jobs)
-		if err != nil {
-			job.Fail(err)
-			return
-		}
-		defer os.RemoveAll(work)
-		cues, err := transcribe.Transcribe(ctx, s.Store.Abs(srcRel), work)
-		if err != nil {
-			job.Fail(err)
-			return
-		}
-		job.Done(map[string]any{"cues": cues})
-	}()
-	writeJSON(w, 202, map[string]any{"jobId": job.ID})
-}
-
-// ---- export ----
-
-func (s *Server) export(w http.ResponseWriter, r *http.Request) {
-	projID := r.PathValue("id")
-	doc, err := s.Store.GetProject(projID)
-	if err != nil {
-		httpErr(w, 404, err)
-		return
-	}
-	var opts render.Options
-	_ = json.NewDecoder(r.Body).Decode(&opts) // body optional
-
-	// Route through the bounded export queue (compiles now, fails fast on bad opts).
-	jobID, err := s.exportQueue().Enqueue(projID, doc, opts)
+	jobID, err := s.queue().Enqueue(r.Context(), transcribePayload{ProjID: projID, SrcRel: srcRel})
 	if err != nil {
 		httpErr(w, 400, err)
 		return
@@ -415,9 +519,31 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 202, map[string]any{"jobId": jobID})
 }
 
-// retryExport re-runs a previously-submitted export as a fresh queued job.
-func (s *Server) retryExport(w http.ResponseWriter, r *http.Request) {
-	jobID, err := s.exportQueue().Retry(r.PathValue("id"))
+// ---- export ----
+
+func (s *Server) export(w http.ResponseWriter, r *http.Request) {
+	projID := r.PathValue("id")
+	doc, err := s.Store.GetProject(r.Context(), projID)
+	if err != nil {
+		httpErr(w, 404, err)
+		return
+	}
+	var opts render.Options
+	_ = json.NewDecoder(r.Body).Decode(&opts) // body optional
+
+	// Route through the bounded render lane (compiles now, fails fast on bad opts).
+	jobID, err := s.queue().Enqueue(r.Context(), exportPayload{ProjID: projID, Doc: doc, Opts: opts})
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 202, map[string]any{"jobId": jobID})
+}
+
+// retryJob re-runs a previously-submitted task as a fresh queued job, with the
+// same inputs. Works for any queued kind, not just exports.
+func (s *Server) retryJob(w http.ResponseWriter, r *http.Request) {
+	jobID, err := s.queue().Retry(r.Context(), r.PathValue("id"))
 	if err != nil {
 		httpErr(w, 404, err)
 		return

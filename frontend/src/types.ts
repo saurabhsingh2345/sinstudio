@@ -77,6 +77,7 @@ export interface Clip {
   mute?: boolean; // silence this clip's own audio (used after detaching audio)
   hold?: number; // seconds of frozen last frame appended after the source plays out
   sourceClip?: string; // detached audio clip → the video clip it came from (UI grouping)
+  disabled?: boolean; // excluded from render/preview without deleting (per-clip enable toggle)
   title?: Title; // when set, this is a text clip (no asset)
 }
 
@@ -147,6 +148,12 @@ export interface Asset {
   thumbnail?: string;
   source: string;
   createdAt: string;
+  // Generation provenance — present on assets produced by a generator plugin so
+  // they stay "live" and re-renderable. genInput is the generator input (e.g.
+  // the FunkyCode scenes JSON); genParams are the CLI flag values. source doubles
+  // as the generator id for generated assets.
+  genInput?: string;
+  genParams?: Record<string, string>;
 }
 
 export interface Canvas {
@@ -181,6 +188,30 @@ export interface ParamSpec {
   options?: string[];
 }
 
+// FieldSpec describes one editable property of a generator's input document.
+// It is a *view* over the document, not a model of it: the editor touches only
+// the paths named here and leaves everything else intact, so a generator can
+// carry properties Studio doesn't know about without them being destroyed.
+export interface FieldSpec {
+  path: string; // dot path, with one optional "[]" array hop: "scenes[].code"
+  label: string;
+  type: "string" | "text" | "number" | "bool" | "enum" | "array";
+  default?: unknown;
+  options?: string[];
+  hint?: string;
+  mono?: boolean; // render as a monospace code editor
+  fields?: FieldSpec[]; // for type "array": the shape of each item
+  itemOf?: string; // for type "array": singular label, e.g. "Scene"
+}
+
+// How a generator renders a cheap, throwaway version of a clip while its
+// properties are being edited. Absent when the generator has no cheaper mode —
+// the editor then says so rather than pretending.
+export interface PreviewSpec {
+  params?: Record<string, string>;
+  note?: string;
+}
+
 export interface GeneratorStatus {
   id: string;
   name: string;
@@ -188,6 +219,12 @@ export interface GeneratorStatus {
   inputKind: string;
   outputExt: string;
   params: ParamSpec[];
+  // Empty when the generator publishes no schema: the document is then edited
+  // raw, in the format rawKind names.
+  fields?: FieldSpec[];
+  docRoot?: "object" | "array";
+  preview?: PreviewSpec;
+  rawKind?: "json" | "text" | "html";
   available: boolean;
   buildHint?: string;
 }
@@ -226,7 +263,12 @@ export interface RenderEntry {
   created: string;
 }
 
-export const mediaUrl = (rel?: string) => (rel ? `/media/${rel}` : "");
+// mediaUrl builds a URL under the media root. Pass `v` (a version token that
+// changes when the file is rewritten in place — e.g. a re-rendered asset's
+// createdAt) to cache-bust: re-render overwrites the SAME path, so without a
+// changing query the browser keeps serving the stale cached video/thumbnail.
+export const mediaUrl = (rel?: string, v?: string | number) =>
+  rel ? `/media/${rel}${v != null && v !== "" ? `?v=${encodeURIComponent(String(v))}` : ""}` : "";
 export const newId = (p: string) =>
   p + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 
@@ -248,3 +290,16 @@ export const clipSrcDur = (c: Clip): number => {
   const d = (c.out - c.in) / sp;
   return d > 0 ? d : 0;
 };
+
+// A plugin manifest that failed to load. Loading is non-fatal, so these are
+// reported rather than thrown — a plugin nobody can see is worse than a visible
+// error.
+export interface PluginLoadError {
+  path: string;
+  error: string;
+}
+
+export interface PluginState {
+  dir: string;
+  errors: PluginLoadError[];
+}

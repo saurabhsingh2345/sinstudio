@@ -3,7 +3,13 @@
   "name": "newaniAdv",
   "description": "Narrated code/tutorial clips from a JSON lesson DSL (deterministic canvas + Kokoro TTS).",
   "cwd": "../newaniAdv",
-  "command": ["npx", "tsx", "scripts/render-video.mts", "{input}", "{output}"],
+  "command": [
+    "npx",
+    "tsx",
+    "scripts/render-video.mts",
+    "{input}",
+    "{output}"
+  ],
   "inputKind": "lessonJson",
   "inputExt": ".json",
   "outputExt": "mp4",
@@ -14,9 +20,70 @@
       "label": "Voice",
       "type": "enum",
       "default": "af_heart",
-      "options": ["af_heart", "af_bella", "am_michael", "bf_emma", "bm_george"]
+      "options": [
+        "af_heart",
+        "af_bella",
+        "am_michael",
+        "bf_emma",
+        "bm_george"
+      ]
     },
-    { "flag": "--shorts", "label": "Vertical (1080x1920)", "type": "bool", "default": "" },
-    { "flag": "--no-voice", "label": "Mute narration", "type": "bool", "default": "" }
-  ]
+    {
+      "flag": "--shorts",
+      "label": "Vertical (1080x1920)",
+      "type": "bool",
+      "default": ""
+    },
+    {
+      "flag": "--no-voice",
+      "label": "Mute narration",
+      "type": "bool",
+      "default": ""
+    }
+  ],
+  "docRoot": "object",
+  "fields": [
+    {
+      "path": "title",
+      "label": "Title",
+      "type": "string",
+      "default": ""
+    },
+    {
+      "path": "fps",
+      "label": "FPS",
+      "type": "number",
+      "default": 30
+    },
+    {
+      "path": "backgroundColor",
+      "label": "Background",
+      "type": "string",
+      "default": "#0b0f14"
+    },
+    {
+      "path": "captions",
+      "label": "Captions",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "path": "sfx",
+      "label": "Sound effects",
+      "type": "bool",
+      "default": true
+    },
+    {
+      "path": "music",
+      "label": "Music",
+      "type": "bool",
+      "default": false
+    }
+  ],
+  "preview": {
+    "params": {
+      "--no-voice": "true"
+    },
+    "note": "no voiceover"
+  }
 }

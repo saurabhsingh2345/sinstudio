@@ -51,8 +51,8 @@ const logCap = 500 // per-app rolling log lines kept in memory
 
 // proc is the live state of one supervised app.
 type proc struct {
-	man     Manifest
-	mu      sync.Mutex
+	man      Manifest
+	mu       sync.Mutex
 	cmd      *exec.Cmd
 	state    State
 	pid      int
