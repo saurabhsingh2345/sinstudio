@@ -37,6 +37,17 @@ export interface SmartFocusOptions {
    *  clusterRadius is px at a 1920-wide reference, scaled like dwellRadius. */
   clusterGap: number;
   clusterRadius: number;
+  /**
+   * How much deeper to push for each RETURN to an area, and how far that can go.
+   *
+   * Coming back to the same place is the strongest statement a recording makes
+   * about what matters in it — stronger than any single click, because it is the
+   * difference between passing over something and working on it. A flat zoom
+   * treats a spot glanced at once and a spot returned to five times identically,
+   * which is the camera declining to read the room.
+   */
+  revisitStep: number;
+  revisitMax: number;
   ease: string;
 }
 
@@ -60,6 +71,10 @@ export const SMART_FOCUS_DEFAULTS: SmartFocusOptions = {
   dwellRadius: 60,
   clusterGap: 2.5,
   clusterRadius: 320,
+  // A second visit is worth a noticeable push; the ceiling stops a spot that
+  // was returned to a dozen times from filling the frame with four pixels.
+  revisitStep: 0.18,
+  revisitMax: 1.95,
   // Spring on the way in. A smoothstep arrival reads as a machine moving a
   // camera; a small overshoot and settle reads as someone pushing in on the
   // thing they wanted you to look at. zoomKeyframes applies this ONLY to the
@@ -73,6 +88,10 @@ export interface FocusSegment {
   end: number;
   x: number; // focus point, video px
   y: number;
+  /** How many times attention landed on this area across the whole recording. */
+  visits?: number;
+  /** Zoom for this segment. Absent means the flat default. */
+  zoom?: number;
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -205,9 +224,39 @@ export function findFocusSegments(
     out.push({ ...s });
   }
   // Never key past the clip.
-  return out
+  const kept = out
     .map((s) => ({ ...s, start: clamp(s.start, 0, duration), end: clamp(s.end, 0, duration) }))
     .filter((s) => s.end > s.start);
+
+  /*
+   * Attention that comes BACK is worth more than attention passing through.
+   *
+   * Events close in BOTH time and space have already been merged, so anything
+   * still separate at this point is a genuine return: the pointer left and came
+   * back later. Counting those purely spatially is what tells a spot glanced at
+   * once apart from one being worked on, and the zoom escalates with the count.
+   *
+   * The radius is the cluster radius, so "the same area" means the same thing
+   * here as it does when merging — and it has already been scaled to the
+   * recording's own resolution.
+   */
+  return kept.map((seg) => {
+    const visits = kept.filter((o) => Math.hypot(o.x - seg.x, o.y - seg.y) <= clusterRadius).length;
+    return {
+      ...seg,
+      visits,
+      // First visit is the baseline; each return past it pushes further, to a
+      // ceiling that keeps some context in frame.
+      //
+      // The ceiling bounds the ESCALATION, never the chosen zoom: asked for 2x
+      // with a 1.95 ceiling, this must give 2x and not quietly less. A cap that
+      // can reduce the setting above it is a setting that silently doesn't work.
+      zoom: Math.min(
+        Math.max(opts.zoom, opts.revisitMax),
+        opts.zoom + Math.max(0, visits - 1) * opts.revisitStep
+      ),
+    };
+  });
 }
 
 /**
@@ -229,15 +278,22 @@ export function focusKeyframes(
 
   // Each focus point becomes a held zoom; the shared compiler decides when to
   // pull back to full frame and when to pan straight across (see zoomPan.ts).
-  const holds: ZoomHold[] = segs.map((seg) => ({
-    start: seg.start,
-    end: seg.end,
-    scale: opts.zoom,
-    x: centerOffset(seg.x * sx, canvas.width, opts.zoom),
-    y: centerOffset(seg.y * sy, canvas.height, opts.zoom),
-    ramp: opts.ramp,
-    ease: opts.ease,
-  }));
+  const holds: ZoomHold[] = segs.map((seg) => {
+    // A revisited area earns a deeper push (see findFocusSegments). The pan has
+    // to be clamped against THIS segment's scale, not the default — the further
+    // in it goes the further it may travel, and using the wrong one would
+    // either waste the headroom or run past it.
+    const scale = seg.zoom && seg.zoom > 0 ? seg.zoom : opts.zoom;
+    return {
+      start: seg.start,
+      end: seg.end,
+      scale,
+      x: centerOffset(seg.x * sx, canvas.width, scale),
+      y: centerOffset(seg.y * sy, canvas.height, scale),
+      ramp: opts.ramp,
+      ease: opts.ease,
+    };
+  });
 
   return zoomKeyframes(holds, duration);
 }

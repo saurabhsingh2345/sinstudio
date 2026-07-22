@@ -327,3 +327,113 @@ describe("focus radii scale with the recording", () => {
     expect(findFocusSegments({ samples }, 5, SMART_FOCUS_DEFAULTS).length).toBeGreaterThan(0);
   });
 });
+
+describe("revisited areas earn a deeper zoom", () => {
+  /*
+   * Coming back to a place is the strongest statement a recording makes about
+   * what matters in it — stronger than any single click, because it is the
+   * difference between passing over something and working on it. A flat zoom
+   * treats a spot glanced at once and a spot returned to five times the same,
+   * which is the camera declining to read the room.
+   */
+  const canvas = { width: 1920, height: 1080 };
+  const video = { width: 1920, height: 1080 };
+
+  /*
+   * A visit: click somewhere, then sweep away and back again.
+   *
+   * Both halves matter, and both were wrong in earlier versions of this
+   * fixture. Each press needs a RELEASE, because clickEvents fires on press
+   * edges and a run of down samples is one held button rather than several
+   * clicks. And the pointer has to LEAVE, because a motionless pointer is one
+   * enormous dwell that swallows every click inside it and collapses the whole
+   * recording into a single segment — which is what "returning to an area"
+   * means anyway: you cannot return without having left.
+   */
+  const visits = (times: number, x = 500, y = 400) => {
+    const samples: CursorSample[] = [];
+    for (let i = 0; i < times; i++) {
+      const t0 = i * 8000;
+      samples.push({ t: t0, x, y, down: 1 });
+      samples.push({ t: t0 + 120, x, y });
+      // Away...
+      for (let k = 1; k <= 12; k++) samples.push({ t: t0 + 120 + k * 400, x: x + k * 90, y: y + k * 30 });
+      // ...and back, without pausing long enough anywhere to register a dwell.
+      for (let k = 11; k >= 1; k--) samples.push({ t: t0 + 120 + (24 - k) * 400, x: x + k * 90, y: y + k * 30 });
+    }
+    return samples;
+  };
+
+  it("pushes further the more often an area is returned to", () => {
+    const zoomFor = (n: number) => {
+      const segs = findFocusSegments({ samples: visits(n), video }, 90, SMART_FOCUS_DEFAULTS);
+      return Math.max(...segs.map((s) => s.zoom ?? 0));
+    };
+    const one = zoomFor(1);
+    const two = zoomFor(2);
+    const four = zoomFor(4);
+    expect(one).toBeCloseTo(SMART_FOCUS_DEFAULTS.zoom, 6);
+    expect(two).toBeGreaterThan(one);
+    expect(four).toBeGreaterThan(two);
+  });
+
+  it("counts the visits it found", () => {
+    const segs = findFocusSegments({ samples: visits(3), video }, 90, SMART_FOCUS_DEFAULTS);
+    expect(segs.length).toBe(3);
+    for (const s of segs) expect(s.visits).toBe(3);
+  });
+
+  // Two places worked on separately must not inflate each other.
+  it("does not credit a return to a different part of the screen", () => {
+    const samples = [
+      ...visits(3, 300, 300),
+      ...visits(1, 1500, 800).map((v) => ({ ...v, t: v.t + 40000 })),
+    ].sort((a, b) => a.t - b.t);
+    const segs = findFocusSegments({ samples, video }, 90, SMART_FOCUS_DEFAULTS);
+    const near = segs.filter((s) => s.x < 900);
+    const far = segs.filter((s) => s.x >= 900);
+    expect(near.every((s) => (s.visits ?? 0) >= 3)).toBe(true);
+    expect(far.every((s) => s.visits === 1)).toBe(true);
+    expect(Math.max(...far.map((s) => s.zoom!))).toBeCloseTo(SMART_FOCUS_DEFAULTS.zoom, 6);
+  });
+
+  it("stops escalating at the ceiling", () => {
+    const segs = findFocusSegments({ samples: visits(12), video }, 200, SMART_FOCUS_DEFAULTS);
+    expect(Math.max(...segs.map((s) => s.zoom!))).toBeLessThanOrEqual(SMART_FOCUS_DEFAULTS.revisitMax + 1e-9);
+  });
+
+  /*
+   * The ceiling bounds the escalation, never the chosen zoom. Asked for 2.4x
+   * with a 1.95 ceiling this must give 2.4 — a cap that can reduce the setting
+   * above it is a setting that silently does not work. This is exactly what
+   * broke when the escalation first went in.
+   */
+  it("never reduces a zoom that was asked for explicitly", () => {
+    const opts = { ...SMART_FOCUS_DEFAULTS, zoom: 2.4 };
+    const segs = findFocusSegments({ samples: visits(1), video }, 40, opts);
+    expect(segs[0]!.zoom).toBeCloseTo(2.4, 6);
+  });
+
+  /*
+   * A deeper zoom may pan further, so the clamp has to be computed against the
+   * segment's OWN scale. Using the default would either waste the headroom or,
+   * far worse, run past it and show the background.
+   */
+  it("still never uncovers the canvas at the deeper zoom", () => {
+    // A corner, revisited: maximum escalation and maximum pan at once.
+    const { keyframes } = smartFocus(
+      { samples: visits(5, 60, 60), video },
+      120,
+      canvas,
+      SMART_FOCUS_DEFAULTS
+    );
+    for (let t = 0; t <= 120; t += 0.05) {
+      const s = kfValue(keyframes.scale!, t);
+      const x = keyframes.x?.length ? kfValue(keyframes.x, t) : 0;
+      const y = keyframes.y?.length ? kfValue(keyframes.y, t) : 0;
+      expect(s).toBeGreaterThanOrEqual(1 - 1e-9);
+      expect(Math.abs(x)).toBeLessThanOrEqual((canvas.width * (s - 1)) / 2 + 1e-6);
+      expect(Math.abs(y)).toBeLessThanOrEqual((canvas.height * (s - 1)) / 2 + 1e-6);
+    }
+  });
+});
