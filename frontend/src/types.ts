@@ -109,6 +109,15 @@ export interface Redaction {
   amount?: number; // 0..1 strength (0 = unset)
 }
 
+// ChromaKey: a background colour removed so the clip below shows through.
+// Mirrors backend/internal/schema ChromaKey — keep the two in step.
+export interface ChromaKey {
+  color?: string; // the screen's colour; empty = standard chroma green
+  similarity?: number; // 0..1 — how far from `color` still counts as background
+  blend?: number; // 0..1 — softness of the edge between kept and keyed
+  spill?: number; // 0..1 — neutralise the screen's light bouncing on the subject
+}
+
 // Annotation: a callout shape drawn over the video (clip has no asset when set).
 // Mirrors backend/internal/schema Annotation — keep the two in step.
 export type AnnoKind = "arrow" | "box" | "ellipse" | "highlight" | "number" | "text" | "keys";
@@ -176,6 +185,7 @@ export interface Clip {
   title?: Title; // when set, this is a text clip (no asset)
   annotation?: Annotation; // when set, this is a callout clip (no asset)
   redactions?: Redaction[]; // blurred/pixelated regions of this clip's picture
+  chroma?: ChromaKey; // when set, this colour is keyed out of the clip
 }
 
 export interface ExportOptions {

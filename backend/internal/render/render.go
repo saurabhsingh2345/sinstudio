@@ -61,6 +61,8 @@ type visual struct {
 	cursor            *cursorPlan // compiled emphasis overlays, nil if none
 	// Regions blurred/pixelated in the clip's own picture, before any transform.
 	redactions []schema.Redaction
+	// Background colour keyed out of this clip, before any scaling.
+	chroma *schema.ChromaKey
 }
 
 // audio is a resolved audio contribution.
@@ -364,6 +366,10 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB",
 				inputIdx, v.in, v.out, sp, v.start)
 		}
+		// Key first, on the source's own pixels. After a scale, the subject's
+		// edges are already blended with the screen and no threshold can tell a
+		// real edge from a green-tinted one — see chroma.go.
+		fc.WriteString(chromaFilters(v.chroma))
 		if redacting {
 			// Applied here — on the clip's own pixels, at its own resolution, before
 			// any scaling — so a blurred region stays on the content it hides when
@@ -737,6 +743,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		cx: cx, cy: cy, ax: ax, ay: ay,
 		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
 		hold: hold, cursorFX: c.Cursor, cursorPath: p, redactions: validRedactions(c.Redactions),
+		chroma: c.Chroma,
 	})
 	if !muted && !isBG && !c.Mute {
 		vol := c.Volume

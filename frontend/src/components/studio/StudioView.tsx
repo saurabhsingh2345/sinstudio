@@ -72,6 +72,8 @@ import { AnnotationLayer } from "./AnnotationLayer";
 import { AnnotationInspector } from "./AnnotationInspector";
 import { RedactionLayer } from "./RedactionLayer";
 import { RedactSection } from "./RedactSection";
+import { ChromaSection } from "./ChromaSection";
+import { ChromaVideo } from "./ChromaVideo";
 
 import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
@@ -2089,15 +2091,28 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                 filter: cssFilter(clip.effects, stage.h, H),
                 transform: rot ? `rotate(${rot}deg)` : undefined,
               };
+              const muted = !!track.muted || (soloActive && !track.solo) || !!clip.mute;
               const media =
                 asset.kind === "image" ? (
                   <img key={clip.id} src={mediaUrl(asset.path, asset.createdAt)} style={{ position: "absolute", ...style, objectFit: "contain" }} />
+                ) : clip.chroma ? (
+                  // CSS cannot make a colour transparent, so a keyed clip is
+                  // drawn through a shader rather than approximated. The <video>
+                  // still exists and is still driven by the preview engine.
+                  <ChromaVideo
+                    key={clip.id}
+                    src={mediaUrl(asset.path, asset.createdAt)}
+                    muted={muted}
+                    style={style}
+                    chroma={clip.chroma}
+                    onVideo={(el) => (videoRefs.current[clip.id] = el)}
+                  />
                 ) : (
                   <video
                     key={clip.id}
                     ref={(el) => (videoRefs.current[clip.id] = el)}
                     src={mediaUrl(asset.path, asset.createdAt)}
-                    muted={!!track.muted || (soloActive && !track.solo) || !!clip.mute}
+                    muted={muted}
                     playsInline
                     style={{ position: "absolute", ...style }}
                   />
@@ -3422,6 +3437,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
 
       {asset && asset.kind !== "audio" && <ZoomPanSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <RedactSection trackId={trackId} clip={clip} asset={asset} />}
+      {asset && asset.kind !== "audio" && <ChromaSection trackId={trackId} clip={clip} asset={asset} />}
       {asset?.hasCursor && <SmartFocusSection trackId={trackId} clip={clip} assetId={asset.id} />}
       {asset?.hasCursor && (
         <CursorFXSection trackId={trackId} clip={clip} ownsCursor={!!asset.cursorHidden} />

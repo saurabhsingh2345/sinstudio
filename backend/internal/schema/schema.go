@@ -97,6 +97,9 @@ type Clip struct {
 	// Redactions blur or pixelate regions of this clip's picture. Applied to the
 	// clip's own pixels before any transform, so they travel with the content.
 	Redactions []Redaction `json:"redactions,omitempty"`
+	// Chroma removes a background colour from this clip, so whatever sits below
+	// it on the timeline shows through. Applied before any scaling.
+	Chroma *ChromaKey `json:"chroma,omitempty"`
 	// Cursor emphasises the pointer during a screen recording. It only does
 	// anything when the clip's asset has a recorded pointer track beside it
 	// (a .cursor.json sidecar); on any other clip it is inert.
@@ -203,6 +206,28 @@ type Redaction struct {
 
 	// Amount is 0..1 strength (0 = unset → a sensible default).
 	Amount float64 `json:"amount,omitempty"`
+}
+
+// ChromaKey removes a background colour so the clip below shows through — the
+// green screen behind a talking head. Applied to the clip's own pixels before
+// any scaling, because keying interpolated pixels cannot separate a real edge
+// from a blended one.
+type ChromaKey struct {
+	// Color is the screen's colour as a hex triple. Empty means the standard
+	// chroma green, which is what a bought screen actually is.
+	Color string `json:"color,omitempty"`
+
+	// Similarity is how far from Color still counts as background, 0..1.
+	// Too low leaves a fringe; too high starts eating the subject.
+	Similarity float64 `json:"similarity,omitempty"`
+
+	// Blend softens the edge between kept and keyed, 0..1. A hard cut looks
+	// cut out; a little blend is what makes the composite believable.
+	Blend float64 `json:"blend,omitempty"`
+
+	// Spill neutralises the screen's light bouncing onto the subject, 0..1.
+	// Independent of the key: a well-keyed shot can still have green ears.
+	Spill float64 `json:"spill,omitempty"`
 }
 
 // Annotation kinds. Anything not recognised draws nothing rather than
