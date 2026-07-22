@@ -30,7 +30,7 @@ describe("autoFrame on a real recording", () => {
     expect(r).not.toBeNull();
     // Two presses in five seconds: there is something to zoom on.
     expect(r!.zooms).toBeGreaterThan(0);
-    expect(r!.patch.cursor?.highlight).toBeDefined();
+    expect(r!.patch.cursor?.clicks).toBeDefined();
   });
 
   it("writes a zoom that goes in and comes back to full frame", () => {

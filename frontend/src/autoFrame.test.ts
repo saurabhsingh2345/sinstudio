@@ -63,8 +63,10 @@ describe("autoFrame", () => {
     const r = autoFrame(screen, {}, wandering, 4, canvas);
     expect(r).not.toBeNull();
     expect(r!.zooms).toBe(0);
-    expect(r!.patch.cursor?.highlight).toBeDefined();
     expect(r!.patch.cursor?.clicks).toBeDefined();
+    // The amber highlight disc is deliberately NOT automatic: it glows over the
+    // content on every frame, which reads as a smudge trailing the cursor.
+    expect(r!.patch.cursor?.highlight).toBeUndefined();
     // No zooms means no keyframes written — the clip is not silently animated.
     expect(r!.patch.keyframes).toBeUndefined();
   });

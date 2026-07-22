@@ -53,7 +53,12 @@ export function autoFrame(
   // is there, and a recording that ignores it is not the one that was made. A
   // short clip with no clear focus still wants its clicks visible.
   out.cursor = {
-    highlight: {},
+    // Click rings only. The highlight — a 96px amber disc under the pointer —
+    // is deliberately NOT on by default: it glows over the content on every
+    // frame whether anything is happening or not, and on a screen recording
+    // that reads as a smudge following the cursor rather than as emphasis.
+    // A ring fires on a press and is gone, which is the moment worth marking.
+    // It stays one toggle away in Cursor Effects for anyone who wants it.
     clicks: {},
     // Studio only draws its own pointer when the real one was verifiably kept
     // out of the capture — drawing a second cursor over a burned-in one is
