@@ -1,6 +1,15 @@
 # Studio — Editing Engine
 
-A non-linear video editor that **assembles** the clips produced by the sibling
+Studio is two things sharing one timeline.
+
+**A screen recorder that edits its own footage.** Record your screen, and the
+recording arrives already framed: pushed in where you clicked, drifting to
+follow you, pulling back when you move on. The camera work is ordinary
+keyframes, so every move it guesses stays draggable. Callouts, keystroke badges,
+region blur, green screen, device frames and cursor effects are all there to
+finish it. See **[docs/screen-recording.md](docs/screen-recording.md)**.
+
+**A non-linear editor that assembles** the clips produced by the sibling
 projects (`newaniAdv`, `hyper/hyperframes`, `funkycode`) into a finished video:
 generate/import clips → arrange on a multi-track timeline → add music, a
 transcript/caption track, and background layers → **export an MP4 server-side
@@ -19,6 +28,9 @@ with FFmpeg**.
 studio/
   backend/    Go API + generator orchestration + FFmpeg export
   frontend/   React editor (timeline, preview, assets, transcript, inspector)
+  plugins/    generator manifests, loaded at runtime  (see plugins/README.md)
+  tools/      cursord — the optional local pointer helper the recorder uses
+  docs/       screen-recording.md
   media/      per-project media: assets, thumbs, renders, luts  (gitignored)
 ```
 
