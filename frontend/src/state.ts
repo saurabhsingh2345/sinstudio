@@ -6,6 +6,7 @@ import { buildTitleAnim } from "./titleAnim";
 import { newAnnotation } from "./annotation";
 import { buildMotionPreset, type MotionPreset } from "./motionPresets";
 import { clearPeaks } from "./peaks";
+import { cutClipSilences, planSilenceCuts, type SilenceSpan } from "./silence";
 import { clearCursorTracks } from "./cursorTracks";
 
 interface StudioState {
@@ -57,6 +58,8 @@ interface StudioState {
   splitAtPlayhead: () => void;
   deleteSelected: () => void;
   rippleDelete: () => void;
+  /** Replace a clip with its non-silent segments and pull everything after it left. */
+  removeSilences: (trackId: string, clipId: string, silences: SilenceSpan[]) => number;
   copySelected: () => void;
   paste: () => void;
   nudgePlayhead: (delta: number) => void;
@@ -579,6 +582,36 @@ export const useStudio = create<StudioState>((set, get) => ({
       unmuteOrphanedSources(d, removed);
     });
     set({ selClip: null, selClips: [] });
+  },
+
+  /*
+   * The jump-cut pass, as ONE mutate — one undo brings the whole take back.
+   * The clip becomes its kept segments back to back, and everything after it
+   * on the same track ripples left by the time removed, so the cut tightens
+   * the timeline instead of leaving a hole where each pause was.
+   */
+  removeSilences: (trackId, clipId, silences) => {
+    const { doc } = get();
+    if (!doc) return 0;
+    const track = doc.tracks.find((t) => t.id === trackId);
+    const clip = track?.clips?.find((c) => c.id === clipId);
+    if (!track || !clip) return 0;
+    const plan = planSilenceCuts(clip, silences);
+    if (!plan) return 0;
+    const clipEnd = clip.start + clipPlayDur(clip);
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      const c = t?.clips?.find((c) => c.id === clipId);
+      if (!t || !t.clips || !c) return;
+      const segments = cutClipSilences(c, plan, () => newId("clip_"));
+      const idx = t.clips.findIndex((x) => x.id === clipId);
+      t.clips.splice(idx, 1, ...segments);
+      for (const other of t.clips) {
+        if (segments.includes(other)) continue;
+        if (other.start >= clipEnd - 1e-6) other.start = +(other.start - plan.removed).toFixed(4);
+      }
+    });
+    return plan.removed;
   },
 
   copySelected: () => {
