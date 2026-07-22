@@ -6,6 +6,7 @@ import {
   clusterEvents,
   dwellEvents,
   findFocusSegments,
+  followPath,
   smartFocus,
   type SmartFocusOptions,
 } from "./smartFocus";
@@ -428,6 +429,94 @@ describe("revisited areas earn a deeper zoom", () => {
       SMART_FOCUS_DEFAULTS
     );
     for (let t = 0; t <= 120; t += 0.05) {
+      const s = kfValue(keyframes.scale!, t);
+      const x = keyframes.x?.length ? kfValue(keyframes.x, t) : 0;
+      const y = keyframes.y?.length ? kfValue(keyframes.y, t) : 0;
+      expect(s).toBeGreaterThanOrEqual(1 - 1e-9);
+      expect(Math.abs(x)).toBeLessThanOrEqual((canvas.width * (s - 1)) / 2 + 1e-6);
+      expect(Math.abs(y)).toBeLessThanOrEqual((canvas.height * (s - 1)) / 2 + 1e-6);
+    }
+  });
+});
+
+describe("following the cursor within a hold", () => {
+  /*
+   * A fixed hold is a tripod; following is an operator keeping the subject in
+   * frame. The deadzone is what keeps it from becoming seasickness — and the
+   * camera moves only the distance BEYOND it, so crossing the boundary by a
+   * pixel moves the frame by a fraction of a pixel instead of snapping it the
+   * whole deadzone's width.
+   */
+  const seg = { start: 1, end: 6, x: 900, y: 500 };
+  const still = (x: number, y: number) =>
+    Array.from({ length: 80 }, (_, i) => ({ t: i * 100, x, y }));
+
+  it("does not move at all while the pointer stays inside the deadzone", () => {
+    // Drifting 60px, well within a 200px deadzone.
+    const samples = Array.from({ length: 80 }, (_, i) => ({ t: i * 100, x: 900 + (i % 3) * 30, y: 500 }));
+    expect(followPath(samples, seg, 200, 0.45, 0.6)).toEqual([]);
+  });
+
+  it("follows once the pointer genuinely travels", () => {
+    const samples = Array.from({ length: 80 }, (_, i) => ({ t: i * 100, x: 900 + i * 12, y: 500 }));
+    const path = followPath(samples, seg, 200, 0.45, 0.6);
+    expect(path.length).toBeGreaterThan(0);
+    // It moves toward the pointer, and monotonically in the direction it went.
+    for (let i = 1; i < path.length; i++) expect(path[i]!.x).toBeGreaterThanOrEqual(path[i - 1]!.x);
+  });
+
+  /*
+   * Lagging is the point. A camera that arrives exactly where the pointer is,
+   * every time it is asked, is a camera glued to the cursor — which is the
+   * jitter this is supposed to avoid.
+   */
+  it("lags the pointer rather than snapping onto it", () => {
+    const samples = still(1700, 500); // a long way from the anchor at once
+    const path = followPath(samples, seg, 200, 0.45, 0.6);
+    expect(path.length).toBeGreaterThan(0);
+    expect(path[0]!.x).toBeGreaterThan(900); // moved...
+    expect(path[0]!.x).toBeLessThan(1700); // ...but nowhere near all the way
+  });
+
+  // The boundary must be soft: just past the deadzone should barely move.
+  it("eases out of the deadzone instead of jumping at it", () => {
+    const just = followPath(still(900 + 210, 500), seg, 200, 0.45, 0.6);
+    const far = followPath(still(900 + 900, 500), seg, 200, 0.45, 0.6);
+    const firstStep = (p: typeof just) => (p.length ? p[0]!.x - 900 : 0);
+    expect(firstStep(just)).toBeLessThan(10);
+    expect(firstStep(far)).toBeGreaterThan(100);
+  });
+
+  it("keeps every point strictly inside the hold", () => {
+    const samples = Array.from({ length: 80 }, (_, i) => ({ t: i * 100, x: 900 + i * 12, y: 500 }));
+    for (const p of followPath(samples, seg, 200, 0.45, 0.6)) {
+      expect(p.t).toBeGreaterThan(seg.start);
+      expect(p.t).toBeLessThan(seg.end);
+    }
+  });
+
+  it("can be turned off", () => {
+    const samples = Array.from({ length: 80 }, (_, i) => ({ t: i * 100, x: 900 + i * 12, y: 500 }));
+    const segs = findFocusSegments({ samples, video: { width: 1920, height: 1080 } }, 8, {
+      ...SMART_FOCUS_DEFAULTS,
+      follow: false,
+    });
+    for (const s of segs) expect(s.follow).toBeUndefined();
+  });
+
+  /*
+   * Following must not be able to uncover the canvas. Every drifted position
+   * goes through the same clamp as the anchor, at the segment's own scale, so a
+   * pointer that runs to a corner mid-hold drags the frame only as far as the
+   * zoom can cover.
+   */
+  it("never uncovers the canvas while drifting", () => {
+    const canvas = { width: 1920, height: 1080 };
+    // Click near the middle, then walk the pointer hard into a corner.
+    const samples: CursorSample[] = [{ t: 500, x: 960, y: 540, down: 1 }, { t: 620, x: 960, y: 540 }];
+    for (let i = 1; i <= 60; i++) samples.push({ t: 620 + i * 100, x: Math.max(20, 960 - i * 30), y: Math.max(20, 540 - i * 18) });
+    const { keyframes } = smartFocus({ samples, video: canvas }, 10, canvas, SMART_FOCUS_DEFAULTS);
+    for (let t = 0; t <= 10; t += 0.02) {
       const s = kfValue(keyframes.scale!, t);
       const x = keyframes.x?.length ? kfValue(keyframes.x, t) : 0;
       const y = keyframes.y?.length ? kfValue(keyframes.y, t) : 0;

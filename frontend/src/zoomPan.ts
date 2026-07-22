@@ -137,6 +137,11 @@ export interface ZoomHold {
   y: number;
   ramp: number;
   ease: string;
+  /**
+   * Positions to drift through during the hold, so the frame can follow the
+   * pointer instead of locking to one spot. Already clamped by the caller.
+   */
+  path?: { t: number; x: number; y: number }[];
 }
 
 export const holdFromStop = (stop: ZoomStop, canvas: Size): ZoomHold => ({
@@ -245,8 +250,16 @@ export function zoomKeyframes(holds: ZoomHold[], duration: number): Record<strin
     // reads as a flinch, and both endpoints are clamped at the same scale, so
     // interpolating between them can never expose background either — provided
     // the interpolation stays BETWEEN them, which is why this ease is safe.
-    at(h.start, h.scale, h.x, h.y, "linear");
-    at(h.end, h.scale, h.x, h.y, out(h));
+    // A hold either sits still or drifts along its path. The drift is eased,
+    // never sprung: every point is clamped to what the scale can cover, and
+    // overshooting a clamped point is what shows background.
+    const path = (h.path ?? []).filter((p) => p.t > h.start && p.t < h.end);
+    at(h.start, h.scale, h.x, h.y, path.length ? "easeInOut" : "linear");
+    for (const p of path) at(p.t, h.scale, p.x, p.y, "easeInOut");
+    // The hold ends wherever the drift left it; going back to the anchor would
+    // undo the following in one snap right before pulling out.
+    const last = path[path.length - 1];
+    at(h.end, h.scale, last?.x ?? h.x, last?.y ?? h.y, out(h));
   });
 
   const last = sorted[sorted.length - 1];

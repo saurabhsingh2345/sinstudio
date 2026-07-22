@@ -48,6 +48,19 @@ export interface SmartFocusOptions {
    */
   revisitStep: number;
   revisitMax: number;
+  /**
+   * Drift the held zoom along with the pointer, instead of locking it to a spot.
+   *
+   * A fixed hold is a tripod; this is an operator keeping the subject in frame.
+   * The deadzone is what stops it becoming seasickness: nothing moves at all
+   * until the pointer has genuinely travelled, and then the camera follows only
+   * part of the way, so ordinary small movements inside the zoom are ignored
+   * entirely.
+   */
+  follow: boolean;
+  followDeadzone: number; // px at a 1920-wide reference, scaled like the radii
+  followDamping: number; // 0..1 — how much of the excess to actually travel
+  followInterval: number; // seconds between reconsiderations
   ease: string;
 }
 
@@ -75,6 +88,18 @@ export const SMART_FOCUS_DEFAULTS: SmartFocusOptions = {
   // was returned to a dozen times from filling the frame with four pixels.
   revisitStep: 0.18,
   revisitMax: 1.95,
+  follow: true,
+  // Roughly a ninth of the frame: a deliberate move across a panel crosses it,
+  // reading a line of text or nudging a slider does not.
+  followDeadzone: 200,
+  // Under half of the excess, so the camera lags the pointer and settles behind
+  // it rather than chasing it exactly — chasing exactly is what reads as jitter.
+  followDamping: 0.45,
+  // A hold is often only a little longer than minHold, and at 0.6 that is a
+  // single reconsideration in the whole shot — following that coarse cannot
+  // track anything. 0.35 gives a couple of chances in a short hold and several
+  // in a long one, while still being far too slow to chase jitter.
+  followInterval: 0.35,
   // Spring on the way in. A smoothstep arrival reads as a machine moving a
   // camera; a small overshoot and settle reads as someone pushing in on the
   // thing they wanted you to look at. zoomKeyframes applies this ONLY to the
@@ -92,6 +117,8 @@ export interface FocusSegment {
   visits?: number;
   /** Zoom for this segment. Absent means the flat default. */
   zoom?: number;
+  /** Positions to drift through during the hold, in video px. */
+  follow?: { t: number; x: number; y: number }[];
 }
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
@@ -245,6 +272,11 @@ export function findFocusSegments(
     return {
       ...seg,
       visits,
+      // Scaled to the recording for the same reason the radii are: a deadzone
+      // in fixed pixels is a different gesture on every capture resolution.
+      follow: opts.follow
+        ? followPath(track.samples, seg, opts.followDeadzone * k, opts.followDamping, opts.followInterval)
+        : undefined,
       // First visit is the baseline; each return past it pushes further, to a
       // ceiling that keeps some context in frame.
       //
@@ -292,6 +324,14 @@ export function focusKeyframes(
       y: centerOffset(seg.y * sy, canvas.height, scale),
       ramp: opts.ramp,
       ease: opts.ease,
+      // Every followed position goes through the same clamp as the anchor, at
+      // THIS segment's scale — so drifting can no more uncover the canvas than
+      // the fixed hold could.
+      path: seg.follow?.map((f) => ({
+        t: f.t,
+        x: centerOffset(f.x * sx, canvas.width, scale),
+        y: centerOffset(f.y * sy, canvas.height, scale),
+      })),
     };
   });
 
@@ -307,4 +347,69 @@ export function smartFocus(
 ): { keyframes: Record<string, Keyframe[]>; segments: FocusSegment[] } {
   const segments = findFocusSegments(track, duration, opts);
   return { keyframes: focusKeyframes(segments, duration, track.video, canvas, opts), segments };
+}
+
+/** Pointer position at time `t` (seconds), interpolated between samples. */
+export function pointerAt(samples: CursorSample[], t: number): { x: number; y: number } | null {
+  if (!samples.length) return null;
+  const ms = t * 1000;
+  if (ms <= samples[0]!.t) return { x: samples[0]!.x, y: samples[0]!.y };
+  const last = samples[samples.length - 1]!;
+  if (ms >= last.t) return { x: last.x, y: last.y };
+  // The sampler emits sparsely while the pointer rests, so neighbouring samples
+  // can be far apart in time; interpolating rather than snapping to the nearest
+  // keeps the drift smooth across those gaps.
+  let lo = 0;
+  let hi = samples.length - 1;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (samples[mid]!.t <= ms) lo = mid;
+    else hi = mid;
+  }
+  const a = samples[lo]!;
+  const b = samples[hi]!;
+  const span = b.t - a.t;
+  const u = span > 0 ? (ms - a.t) / span : 0;
+  return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u };
+}
+
+/**
+ * Where the camera should sit through a hold, if it is to follow the pointer.
+ *
+ * Returns points in video px, or an empty list when the pointer never leaves
+ * the deadzone — which is the common case and deliberately costs nothing.
+ *
+ * The camera moves only the distance BEYOND the deadzone, not the whole
+ * distance to the pointer. That is what makes the deadzone a soft boundary
+ * rather than a trigger: crossing it by a pixel moves the camera by a fraction
+ * of a pixel, instead of snapping it the entire deadzone's width the instant
+ * the threshold is passed.
+ */
+export function followPath(
+  samples: CursorSample[],
+  seg: { start: number; end: number; x: number; y: number },
+  deadzone: number,
+  damping: number,
+  interval: number
+): { t: number; x: number; y: number }[] {
+  const out: { t: number; x: number; y: number }[] = [];
+  if (!(interval > 0) || !(deadzone >= 0)) return out;
+
+  let cx = seg.x;
+  let cy = seg.y;
+  // Start and end are excluded: the hold already keys its own endpoints, and a
+  // point on top of either would collapse into it and lose the other.
+  for (let t = seg.start + interval; t < seg.end - interval / 2; t += interval) {
+    const p = pointerAt(samples, t);
+    if (!p) continue;
+    const dx = p.x - cx;
+    const dy = p.y - cy;
+    const d = Math.hypot(dx, dy);
+    if (d <= deadzone) continue;
+    const travel = ((d - deadzone) * damping) / d;
+    cx += dx * travel;
+    cy += dy * travel;
+    out.push({ t: +t.toFixed(3), x: Math.round(cx), y: Math.round(cy) });
+  }
+  return out;
 }
