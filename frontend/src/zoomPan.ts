@@ -31,7 +31,9 @@ export interface Size {
 /** Beyond this a screen recording is showing individual pixels, not detail. */
 export const MAX_ZOOM = 8;
 
-export const DEFAULT_RAMP = 0.7;
+// Matches SMART_FOCUS_DEFAULTS.ramp, so a hand-placed zoom moves like a found
+// one — they share the emitter and should share the feel.
+export const DEFAULT_RAMP = 0.5;
 // Spring by default, matching SmartFocus — a hand-placed zoom and a found one
 // should feel identical, which is the whole reason they share this emitter.
 export const DEFAULT_EASE = "springOut";

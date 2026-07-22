@@ -42,8 +42,15 @@ export interface SmartFocusOptions {
 
 export const SMART_FOCUS_DEFAULTS: SmartFocusOptions = {
   zoom: 1.6,
-  ramp: 0.7,
-  minHold: 1.2,
+  // A zoom cycle costs ramp + hold + ramp, so these two set how many moves fit
+  // in a clip at all. At 0.7/1.2 the floor was 2.6s, which meant a four-second
+  // demo could hold exactly one zoom no matter how many times it was clicked —
+  // the camera ignoring most of what happened. At 0.5/1.0 the floor is 2.0s and
+  // a short recording gets the moves it earned. Faster also simply reads
+  // better: with the spring arrival, 0.7s is a camera being carried and 0.5s is
+  // a camera being aimed.
+  ramp: 0.5,
+  minHold: 1.0,
   useClicks: true,
   useDwell: true,
   dwellTime: 1.0,

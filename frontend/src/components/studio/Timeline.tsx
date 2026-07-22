@@ -41,6 +41,7 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { assetLabel } from "../../types";
 import { useStudio } from "../../state";
 import { ANNO_KINDS } from "../../annotation";
 import {
@@ -1005,7 +1006,7 @@ function ClipBar({
   const inMulti = useStudio((s) => s.selClips.length > 1 && s.selClips.some((c) => c.clipId === clip.id));
   const selected = ("clipId" in selection && selection.clipId === clip.id) || inMulti;
 
-  const label = isTitle ? clip.title!.text || "Title" : isAnno ? clip.annotation!.kind : asset?.name || "Clip";
+  const label = isTitle ? clip.title!.text || "Title" : isAnno ? clip.annotation!.kind : asset ? assetLabel(asset) : "Clip";
   const isAudioLane = track.kind === "audio";
   const showWave = !!asset && !isStill && (isAudioLane || asset.hasAudio !== false);
 

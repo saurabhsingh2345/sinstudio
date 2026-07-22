@@ -390,6 +390,31 @@ export interface RenderEntry {
 // changes when the file is rewritten in place — e.g. a re-rendered asset's
 // createdAt) to cache-bust: re-render overwrites the SAME path, so without a
 // changing query the browser keeps serving the stale cached video/thumbnail.
+/*
+A human name for an asset, for the timeline and the media list.
+
+The stored name is built by the generic ingest path as source + stamp +
+filename, and Studio's own recorder supplies a filename that already carries
+the kind and a timestamp — so a screen capture arrives called
+"recording-screen-20260722-045414-screen-20260722-102409.mp4", with the kind and
+the date each written twice. Stretched across a clip bar that is most of what
+the timeline shows.
+
+The ingest naming is left alone: it is the contract every other product uploads
+through, and it is the disambiguation that stops two files colliding on disk.
+What was wrong was showing it. `source` already records what a recording is, and
+is what the media panel's badge reads, so the label comes from there.
+*/
+export function assetLabel(a: Pick<Asset, "name" | "source">): string {
+  const kind = /^recording-(screen|camera|mic)$/.exec(a.source ?? "")?.[1];
+  if (kind) {
+    return { screen: "Screen recording", camera: "Camera", mic: "Microphone" }[kind]!;
+  }
+  // Anything else keeps its filename, minus the extension — a generated or
+  // imported asset's name is chosen and worth showing.
+  return (a.name ?? "").replace(/\.[a-z0-9]{2,5}$/i, "") || "Clip";
+}
+
 export const mediaUrl = (rel?: string, v?: string | number) =>
   rel ? `/media/${rel}${v != null && v !== "" ? `?v=${encodeURIComponent(String(v))}` : ""}` : "";
 export const newId = (p: string) =>

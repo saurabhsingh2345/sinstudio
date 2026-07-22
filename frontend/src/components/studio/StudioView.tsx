@@ -96,9 +96,10 @@ import type {
   Track,
 } from "../../types";
 import { SAMPLES } from "../../generatorSamples";
-import { anchorFrac, clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
+import { assetLabel, anchorFrac, clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { MOTION_PRESETS } from "../../motionPresets";
 import { SMART_FOCUS_DEFAULTS, smartFocus, type SmartFocusOptions } from "../../smartFocus";
+import { autoFrame } from "../../autoFrame";
 import {
   isRecordingSupported,
   listInputs,
@@ -882,7 +883,7 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
           addSyncedClips(placed);
           toast.success(`${placed.length} recorded track${placed.length > 1 ? "s" : ""} → timeline`);
           // The camera work happens here, not in a panel the user has to find.
-          await autoFocusRecording(placed);
+          await autoFrameRecordings(placed);
         }
       } catch (e) {
         toast.error(String((e as Error)?.message || e));
@@ -957,33 +958,24 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
   };
 
   /*
-   * Zoom a fresh recording automatically.
+   * Frame a fresh recording the moment it lands.
    *
-   * This is the difference between a screen recorder and a video editor that
-   * can zoom. The analysis was always there and always correct — it just sat
-   * behind a collapsed panel six scrolls down the inspector, so a recording
-   * landed flat and looked like the pointer had never been tracked at all.
-   *
-   * It writes ordinary keyframes through the normal mutation path, so it is one
-   * undo away, every diamond stays draggable, and the Auto Zoom panel still
-   * retunes or clears it. An automatic edit that could not be undone would be
-   * worse than no automatic edit.
+   * The decision itself lives in autoFrame.ts so it can be tested without a
+   * real screen share; this is only the wiring. It writes through the normal
+   * mutation path, so the whole pass is one undo away, every diamond stays
+   * draggable, and the Auto Zoom panel still retunes or clears it.
    */
-  const autoFocusRecording = useCallback(
+  const autoFrameRecordings = useCallback(
     async (placed: { assetId: string; lane: "video" | "overlay" | "audio"; startedAt: number }[]) => {
-      const st = useStudio.getState();
-      const doc = st.doc;
+      const doc = useStudio.getState().doc;
       const canvas = doc?.canvas;
       if (!doc || !canvas) return;
 
       for (const item of placed) {
         const asset = doc.assets.find((a) => a.id === item.assetId);
-        // Only a screen recording that actually carries a pointer track. On
-        // anything else there is nothing to be attentive to.
         if (!asset?.hasCursor) continue;
 
-        // addSyncedClips has just created this; find it by asset, which is
-        // unique within one ingest.
+        // addSyncedClips has just created this; the asset is unique to one ingest.
         let found: { trackId: string; clip: Clip } | null = null;
         for (const t of doc.tracks) {
           const c = t.clips?.find((c) => c.assetId === item.assetId);
@@ -996,35 +988,23 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
 
         try {
           const { track } = await api.cursorTrack(doc.id, item.assetId);
-          if (!track) continue;
-          const { keyframes, segments } = smartFocus(
+          const framed = autoFrame(
+            asset,
+            found.clip,
             track as never,
             clipPlayDur(found.clip),
-            { width: canvas.width, height: canvas.height },
-            SMART_FOCUS_DEFAULTS
+            { width: canvas.width, height: canvas.height }
           );
-          // One update, so the whole automatic pass is a single undo rather than
-          // an unpredictable number of them.
-          useStudio.getState().updateClip(found.trackId, found.clip.id, {
-            ...(segments.length
-              ? { keyframes: { ...(found.clip.keyframes ?? {}), ...keyframes } }
-              : {}),
-            // Cursor emphasis for the same reason as the zooms: the data is
-            // there, and a recording that ignores it is not what was recorded.
-            cursor: {
-              highlight: {},
-              clicks: {},
-              ...(asset.cursorHidden ? { pointer: { smoothing: 0.5 } } : {}),
-            },
-          });
-          if (segments.length) {
+          if (!framed) continue;
+          useStudio.getState().updateClip(found.trackId, found.clip.id, framed.patch);
+          if (framed.zooms) {
             toast.success(
-              `${segments.length} zoom${segments.length > 1 ? "s" : ""} added from your clicks — tune in Auto Zoom`
+              `${framed.zooms} zoom${framed.zooms > 1 ? "s" : ""} from your clicks — tune in Auto Zoom`
             );
           }
         } catch {
-          // Auto-framing is a convenience on top of a recording that already
-          // landed safely. It must never be the reason an ingest reports failure.
+          // Framing is a convenience on top of a recording that already landed
+          // safely. It must never be why an ingest reports failure.
         }
       }
     },
@@ -1411,7 +1391,7 @@ function MediaCard({ asset, onAdd, onRemove }: { asset: Asset; onAdd: () => void
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <div className="truncate text-[13px] font-medium">{asset.name}</div>
+          <div className="truncate text-[13px] font-medium">{assetLabel(asset)}</div>
           <span className="rounded bg-panel-3 px-1 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground">
             {asset.source}
           </span>
@@ -1424,7 +1404,7 @@ function MediaCard({ asset, onAdd, onRemove }: { asset: Asset; onAdd: () => void
       <button
         onClick={(e) => {
           e.stopPropagation();
-          if (confirm(`Remove "${asset.name}" and any clips using it?`)) onRemove();
+          if (confirm(`Remove "${assetLabel(asset)}" and any clips using it?`)) onRemove();
         }}
         title="Remove asset (and its clips)"
         className="absolute right-1.5 top-1.5 hidden h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-panel-3 hover:text-foreground group-hover:flex"
