@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { kfValue } from "./components/studio/preview-engine";
+import type { Keyframe } from "./types";
 import {
   DEFAULT_EASE,
   MAX_ZOOM,
@@ -14,7 +16,6 @@ import {
   type Rect,
   type ZoomStop,
 } from "./zoomPan";
-import { kfValue } from "./components/studio/preview-engine";
 
 const canvas = { width: 1920, height: 1080 };
 
@@ -287,5 +288,93 @@ describe("upsertStop", () => {
   it("leaves stops that merely touch", () => {
     const out = upsertStop([stop({ start: 0, end: 2 }), stop({ start: 4, end: 6 })], stop({ start: 2, end: 4 }));
     expect(out.map((s) => s.start)).toEqual([0, 2, 4]);
+  });
+});
+
+describe("spring easing safety", () => {
+  const canvas = { width: 1920, height: 1080 };
+  // Sample far more densely than the ramps, since an overshoot is a brief
+  // excursion in the middle of a segment — checking only at the keyframes is
+  // exactly how this bug would survive a test suite.
+  const sampleAll = (kf: Record<string, Keyframe[]>, duration: number) => {
+    const out: { t: number; s: number; x: number; y: number }[] = [];
+    for (let t = 0; t <= duration; t += 0.01) {
+      out.push({
+        t,
+        s: kfValue(kf.scale!, t),
+        x: kf.x?.length ? kfValue(kf.x, t) : 0,
+        y: kf.y?.length ? kfValue(kf.y, t) : 0,
+      });
+    }
+    return out;
+  };
+
+  const holds = (ease: string) => [
+    { start: 2, end: 4, scale: 1.6, x: 380, y: -200, ramp: 0.7, ease },
+    // Close behind the first, so this pair pans rather than pulling out.
+    { start: 5, end: 6.5, scale: 1.6, x: -420, y: 180, ramp: 0.7, ease },
+    // Far enough away to force a full pull-out and push-in.
+    { start: 11, end: 13, scale: 2.2, x: 500, y: 260, ramp: 0.7, ease },
+  ];
+
+  /*
+   * THE regression this guards.
+   *
+   * A spring overshoots its destination, and every segment except the push-in
+   * ends on a hard limit: scale returns to exactly 1, and a pan's endpoints are
+   * clamped to exactly what that scale can cover. Overshooting either shows the
+   * background behind the clip for a few frames — a flash of backdrop mid-zoom,
+   * which is far more noticeable than the easing that caused it.
+   */
+  it("never lets scale dip below full frame", () => {
+    const kf = zoomKeyframes(holds("springOut"), 16);
+    for (const p of sampleAll(kf, 16)) {
+      expect(p.s).toBeGreaterThanOrEqual(1 - 1e-9);
+    }
+  });
+
+  it("never pans further than the current scale can cover", () => {
+    const kf = zoomKeyframes(holds("springOut"), 16);
+    for (const p of sampleAll(kf, 16)) {
+      // At scale s the clip overhangs by size*(s-1)/2 per side; beyond that its
+      // own edge comes inside the canvas.
+      const boundX = (canvas.width * (p.s - 1)) / 2;
+      const boundY = (canvas.height * (p.s - 1)) / 2;
+      expect(Math.abs(p.x)).toBeLessThanOrEqual(boundX + 1e-6);
+      expect(Math.abs(p.y)).toBeLessThanOrEqual(boundY + 1e-6);
+    }
+  });
+
+  it("holds for every overshooting curve, not just the spring", () => {
+    for (const ease of ["springOut", "easeOutBack", "easeOutElastic"]) {
+      const kf = zoomKeyframes(holds(ease), 16);
+      for (const p of sampleAll(kf, 16)) {
+        expect(p.s).toBeGreaterThanOrEqual(1 - 1e-9);
+        expect(Math.abs(p.x)).toBeLessThanOrEqual((canvas.width * (p.s - 1)) / 2 + 1e-6);
+      }
+    }
+  });
+
+  // The point of all this: the spring must actually survive where it is wanted.
+  // A "fix" that stripped overshoot everywhere would pass the tests above and
+  // deliver none of the feel.
+  it("still overshoots on the way in", () => {
+    const kf = zoomKeyframes([{ start: 3, end: 5, scale: 1.6, x: 0, y: 0, ramp: 0.7, ease: "springOut" }], 8);
+    const peak = Math.max(...sampleAll(kf, 8).map((p) => p.s));
+    expect(peak).toBeGreaterThan(1.6);
+  });
+
+  it("does not overshoot on the way out", () => {
+    const kf = zoomKeyframes([{ start: 3, end: 5, scale: 1.6, x: 0, y: 0, ramp: 0.7, ease: "springOut" }], 8);
+    // After the hold ends, scale only descends toward 1 and never past it.
+    const tail = sampleAll(kf, 8).filter((p) => p.t > 5);
+    expect(Math.min(...tail.map((p) => p.s))).toBeGreaterThanOrEqual(1 - 1e-9);
+  });
+
+  it("keeps a non-overshooting choice exactly as it was", () => {
+    const kf = zoomKeyframes(holds("easeInOut"), 16);
+    for (const arr of [kf.scale!, kf.x!, kf.y!]) {
+      for (const k of arr) expect(["easeInOut", "linear"]).toContain(k.ease);
+    }
   });
 });

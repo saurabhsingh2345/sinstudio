@@ -952,8 +952,19 @@ func easeProgress(ease, p string) string {
 		return fmt.Sprintf("(1+2.70158*pow((%s)-1,3)+1.70158*pow((%s)-1,2))", p, p)
 	case "easeOutElastic": // decaying oscillation (c4 = 2π/3)
 		return fmt.Sprintf("(pow(2,-10*(%s))*sin(((%s)*10-0.75)*2.0943951)+1)", p, p)
-	case "springOut": // soft single-overshoot settle; pinned to 0 at p=0
-		return fmt.Sprintf("if(lte(%s,0),0,(1+pow(2,-9*(%s))*sin(((%s)*8-0.75)*1.8479957)*0.9))", p, p, p)
+	case "springOut":
+		// Soft single-overshoot settle, pinned at BOTH ends.
+		//
+		// The p=1 pin is not cosmetic. The decaying sine has not quite returned
+		// to zero by p=1, so unpinned this lands on 1.0013 — the export finishes
+		// 0.13% past every keyed value while the preview, which pins, finishes
+		// exactly on it. Invisible on one zoom and still wrong: this is the
+		// default curve for every auto-zoom, and the two halves are supposed to
+		// agree to the number. easeValue() and ease() in TypeScript pin both
+		// ends; this is the third implementation and must match them.
+		return fmt.Sprintf(
+			"if(lte(%s,0),0,if(gte(%s,1),1,(1+pow(2,-9*(%s))*sin(((%s)*8-0.75)*1.8479957)*0.9)))",
+			p, p, p, p)
 	default: // linear
 		return "(" + p + ")"
 	}

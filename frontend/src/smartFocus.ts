@@ -47,7 +47,12 @@ export const SMART_FOCUS_DEFAULTS: SmartFocusOptions = {
   dwellRadius: 60,
   clusterGap: 2.5,
   clusterRadius: 320,
-  ease: "easeInOut",
+  // Spring on the way in. A smoothstep arrival reads as a machine moving a
+  // camera; a small overshoot and settle reads as someone pushing in on the
+  // thing they wanted you to look at. zoomKeyframes applies this ONLY to the
+  // push-in — see the overshoot note there, because easing past a hard limit on
+  // the way back out would show the background behind the clip.
+  ease: "springOut",
 };
 
 export interface FocusSegment {

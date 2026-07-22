@@ -1,4 +1,5 @@
 import { kfValue } from "./components/studio/preview-engine";
+import { safeEase } from "./ease";
 import type { Keyframe } from "./types";
 
 // Zoom-n-pan: the manual half of what SmartFocus does automatically.
@@ -31,7 +32,9 @@ export interface Size {
 export const MAX_ZOOM = 8;
 
 export const DEFAULT_RAMP = 0.7;
-export const DEFAULT_EASE = "easeInOut";
+// Spring by default, matching SmartFocus — a hand-placed zoom and a found one
+// should feel identical, which is the whole reason they share this emitter.
+export const DEFAULT_EASE = "springOut";
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -177,30 +180,47 @@ export function zoomKeyframes(holds: ZoomHold[], duration: number): Record<strin
 
   const sorted = [...holds].sort((a, b) => a.start - b.start);
 
+  /*
+   * Overshoot belongs on the push-in and NOWHERE else.
+   *
+   * Arriving at a subject with a little lean past it and a settle is what makes
+   * an auto-zoom feel authored rather than mechanical. Every other segment ends
+   * on a hard limit, and going past a hard limit shows background:
+   *
+   *   - pulling out ends at scale 1. Overshooting means scale < 1, so the clip
+   *     is smaller than the canvas and the backdrop shows around it.
+   *   - a pan's endpoints are clamped to exactly what the current scale can
+   *     cover (centerOffset), so anything beyond them runs off the footage.
+   *
+   * Hence safeEase on the way out and across, and h.ease only on the way in.
+   */
+  const out = (h: ZoomHold) => safeEase(h.ease);
+
   // Start wide, so the first zoom has something to move from.
-  at(0, 1, 0, 0, sorted[0].ease);
+  at(0, 1, 0, 0, out(sorted[0]));
 
   sorted.forEach((h, i) => {
     const prev = sorted[i - 1];
 
     if (!prev) {
       const inStart = Math.max(0, h.start - h.ramp);
-      if (inStart > 0) at(inStart, 1, 0, 0, h.ease);
+      if (inStart > 0) at(inStart, 1, 0, 0, h.ease); // push in
     } else if (h.start - prev.end >= prev.ramp + h.ramp) {
       // Room to breathe: pull back to full frame between the two.
-      at(prev.end + prev.ramp, 1, 0, 0, h.ease);
-      at(Math.max(prev.end + prev.ramp, h.start - h.ramp), 1, 0, 0, h.ease);
+      at(prev.end + prev.ramp, 1, 0, 0, out(h));
+      at(Math.max(prev.end + prev.ramp, h.start - h.ramp), 1, 0, 0, h.ease); // push in
     }
     // Otherwise stay zoomed and let x/y carry the move — a pan straight from
     // one target to the next. Pulling out and back in over a gap this short
     // reads as a flinch, and both endpoints are clamped at the same scale, so
-    // interpolating between them can never expose background either.
+    // interpolating between them can never expose background either — provided
+    // the interpolation stays BETWEEN them, which is why this ease is safe.
     at(h.start, h.scale, h.x, h.y, "linear");
-    at(h.end, h.scale, h.x, h.y, h.ease);
+    at(h.end, h.scale, h.x, h.y, out(h));
   });
 
   const last = sorted[sorted.length - 1];
-  at(Math.min(duration, last.end + last.ramp), 1, 0, 0, last.ease);
+  at(Math.min(duration, last.end + last.ramp), 1, 0, 0, out(last));
   if (scale[scale.length - 1].t < duration) at(duration, 1, 0, 0, "linear");
 
   return { scale, x: xs, y: ys };
