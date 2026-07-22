@@ -78,6 +78,7 @@ import { DeviceSection } from "./DeviceSection";
 import { BackdropSection } from "./BackdropSection";
 import { SilenceSection } from "./SilenceSection";
 import { BubbleSection } from "./BubbleSection";
+import { IdleSection } from "./IdleSection";
 import { DeviceLayer } from "./DeviceLayer";
 import { deviceLayout } from "../../device";
 import { backdropCSS, backdropLayout } from "../../backdrop";
@@ -3801,6 +3802,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
       {asset && asset.kind !== "audio" && <RedactSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <ChromaSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "image" && <SilenceSection trackId={trackId} clip={clip} asset={asset} />}
+      {asset && asset.hasCursor && <IdleSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <BackdropSection trackId={trackId} clip={clip} />}
       {asset && asset.kind === "video" && <BubbleSection trackId={trackId} clip={clip} />}
       {asset && asset.kind !== "audio" && <DeviceSection trackId={trackId} clip={clip} />}

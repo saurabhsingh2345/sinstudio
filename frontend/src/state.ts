@@ -7,6 +7,7 @@ import { newAnnotation } from "./annotation";
 import { buildMotionPreset, type MotionPreset } from "./motionPresets";
 import { clearPeaks } from "./peaks";
 import { cutClipSilences, planSilenceCuts, type SilenceSpan } from "./silence";
+import { applySpeedup, planSpeedup, type IdleSpan } from "./idle";
 import { clearCursorTracks } from "./cursorTracks";
 
 interface StudioState {
@@ -60,6 +61,8 @@ interface StudioState {
   rippleDelete: () => void;
   /** Replace a clip with its non-silent segments and pull everything after it left. */
   removeSilences: (trackId: string, clipId: string, silences: SilenceSpan[]) => number;
+  /** Split a clip around its idle stretches and play those at `factor` speed. */
+  speedUpIdle: (trackId: string, clipId: string, idles: IdleSpan[], factor: number) => number;
   copySelected: () => void;
   paste: () => void;
   nudgePlayhead: (delta: number) => void;
@@ -612,6 +615,32 @@ export const useStudio = create<StudioState>((set, get) => ({
       }
     });
     return plan.removed;
+  },
+
+  // The timelapse pass — same shape as removeSilences: one mutate, one undo,
+  // segments back to back, downstream clips pulled left by the time saved.
+  speedUpIdle: (trackId, clipId, idles, factor) => {
+    const { doc } = get();
+    if (!doc) return 0;
+    const track = doc.tracks.find((t) => t.id === trackId);
+    const clip = track?.clips?.find((c) => c.id === clipId);
+    if (!track || !clip) return 0;
+    const plan = planSpeedup(clip, idles, factor);
+    if (!plan) return 0;
+    const clipEnd = clip.start + clipPlayDur(clip);
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      const c = t?.clips?.find((c) => c.id === clipId);
+      if (!t || !t.clips || !c) return;
+      const segments = applySpeedup(c, plan, factor, () => newId("clip_"));
+      const idx = t.clips.findIndex((x) => x.id === clipId);
+      t.clips.splice(idx, 1, ...segments);
+      for (const other of t.clips) {
+        if (segments.includes(other)) continue;
+        if (other.start >= clipEnd - 1e-6) other.start = +(other.start - plan.saved).toFixed(4);
+      }
+    });
+    return plan.saved;
   },
 
   copySelected: () => {
