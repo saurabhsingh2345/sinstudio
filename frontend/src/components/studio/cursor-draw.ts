@@ -1,6 +1,7 @@
 import type { CursorSample, CursorSidecar } from "../../cursor";
 import type { Clip } from "../../types";
 import { contentBox } from "../../zoomPan";
+import { backdropLayout } from "../../backdrop";
 
 // Cursor effects, drawn live on the preview canvas.
 //
@@ -174,13 +175,26 @@ export function drawCursorFX(
   let fy0 = 0;
   let cfw = 1;
   let cfh = 1;
-  const canA = stageW / stageH;
-  if (Math.abs(vw / vh - canA) / canA > 0.005) {
-    const cb = contentBox({ width: vw, height: vh }, { width: stageW, height: stageH });
-    fx0 = cb.x0 / stageW;
-    fy0 = cb.y0 / stageH;
-    cfw = (cb.x1 - cb.x0) / stageW;
-    cfh = (cb.y1 - cb.y0) / stageH;
+  if (clip.backdrop && !clip.device) {
+    // A backdrop pulls the picture into its card; the layout is computed at
+    // CANVAS resolution (recovered via canvasScale) so its even-pixel rounding
+    // matches the exporter's exactly. Mirrors cursorfx.go's contentFracFor.
+    const W = stageW / Math.max(1e-6, canvasScale);
+    const H = stageH / Math.max(1e-6, canvasScale);
+    const g = backdropLayout(clip.backdrop, vw, vh, Math.round(W), Math.round(H));
+    fx0 = g.x / W;
+    fy0 = g.y / H;
+    cfw = g.w / W;
+    cfh = g.h / H;
+  } else {
+    const canA = stageW / stageH;
+    if (Math.abs(vw / vh - canA) / canA > 0.005) {
+      const cb = contentBox({ width: vw, height: vh }, { width: stageW, height: stageH });
+      fx0 = cb.x0 / stageW;
+      fy0 = cb.y0 / stageH;
+      cfw = (cb.x1 - cb.x0) / stageW;
+      cfh = (cb.y1 - cb.y0) / stageH;
+    }
   }
   // Pointer position on the stage, via the clip's box.
   const px = box.left + (fx0 + (at.x / vw) * cfw) * box.vw;

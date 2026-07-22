@@ -106,6 +106,13 @@ type Clip struct {
 	Chroma *ChromaKey `json:"chroma,omitempty"`
 	// Device wraps this clip's picture in a drawn phone/laptop/browser frame.
 	Device *DeviceFrame `json:"device,omitempty"`
+	// Backdrop puts a styled scene behind this clip's picture: a gradient
+	// wallpaper, the picture inset with rounded corners and a soft shadow —
+	// what makes a raw screen recording read as something produced. Composited
+	// at canvas size BEFORE the clip's transform, like Device, so the scene and
+	// the picture zoom as one object. With Device set too, only the wallpaper
+	// applies (the device supplies its own body and shadow story).
+	Backdrop *Backdrop `json:"backdrop,omitempty"`
 	// Cursor emphasises the pointer during a screen recording. It only does
 	// anything when the clip's asset has a recorded pointer track beside it
 	// (a .cursor.json sidecar); on any other clip it is inert.
@@ -231,6 +238,24 @@ type DeviceFrame struct {
 
 	// Color is the body colour as a hex triple; empty is a near-black.
 	Color string `json:"color,omitempty"`
+}
+
+// Backdrop is the styled scene behind a clip's picture (see Clip.Backdrop).
+// Zero values mean the defaults, so an empty struct is already a usable scene.
+type Backdrop struct {
+	// Color1/Color2 are the wallpaper: a vertical gradient from Color1 (top)
+	// to Color2 (bottom). Empty Color2 = flat Color1; both empty = dark slate.
+	Color1 string `json:"color1,omitempty"`
+	Color2 string `json:"color2,omitempty"`
+	// Inset is the fraction of the canvas the picture pulls in from each edge
+	// (0 = default 0.06; capped at 0.35 — beyond that it's a thumbnail).
+	Inset float64 `json:"inset,omitempty"`
+	// Radius is the picture's corner radius in px at a 1080-high reference,
+	// like the rest of the schema's px sizes. 0 = default 14.
+	Radius float64 `json:"radius,omitempty"`
+	// Shadow is the drop-shadow strength, 0..1. 0 = default 0.55; set a
+	// negative value to mean "really none".
+	Shadow float64 `json:"shadow,omitempty"`
 }
 
 // ChromaKey removes a background colour so the clip below shows through — the

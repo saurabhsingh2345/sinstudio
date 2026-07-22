@@ -66,6 +66,8 @@ type visual struct {
 	chroma *schema.ChromaKey
 	// Drawn phone/laptop/browser frame this clip's picture sits inside.
 	device *schema.DeviceFrame
+	// Styled scene behind the picture (wallpaper, inset, rounded corners).
+	backdrop *schema.Backdrop
 }
 
 // audio is a resolved audio contribution.
@@ -378,7 +380,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		 * rounding error would soften every frame for nothing.
 		 */
 		prefit := ""
-		if v.device == nil && v.srcW > 0 && v.srcH > 0 {
+		if v.device == nil && v.backdrop == nil && v.srcW > 0 && v.srcH > 0 {
 			srcA := float64(v.srcW) / float64(v.srcH)
 			canA := float64(w) / float64(h)
 			if math.Abs(srcA-canA)/canA > 0.005 {
@@ -416,6 +418,29 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			devIdx = inputIdx + 1
 			extraInputs = 1
 		}
+		// A backdrop adds its wallpaper (and, without a device, the card's
+		// corner mask) as further inputs, numbered after the device's.
+		bgIdx, maskIdx := -1, -1
+		var bdGeom backdropGeom
+		if v.backdrop != nil {
+			bdGeom = backdropLayout(v.backdrop, v.srcW, v.srcH, w, h)
+			wallPNG := filepath.Join(srtDir, fmt.Sprintf("backdrop-%d.png", i))
+			if err := renderBackdropPNG(v.backdrop, bdGeom, w, h, v.device == nil, wallPNG); err != nil {
+				return nil, err
+			}
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", wallPNG)
+			bgIdx = inputIdx + 1 + extraInputs
+			extraInputs++
+			if v.device == nil {
+				maskPNG := filepath.Join(srtDir, fmt.Sprintf("backdrop-mask-%d.png", i))
+				if err := renderBackdropMaskPNG(bdGeom, maskPNG); err != nil {
+					return nil, err
+				}
+				args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", maskPNG)
+				maskIdx = bgIdx + 1
+				extraInputs++
+			}
+		}
 		// Key first, on the source's own pixels. After a scale, the subject's
 		// edges are already blended with the screen and no threshold can tell a
 		// real edge from a green-tinted one — see chroma.go.
@@ -424,7 +449,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		// overlay a patch, a device insets the picture and lays a frame over it),
 		// so the source segment is cut short and handed to them. With neither, the
 		// chain stays exactly as linear as it was.
-		if redacting || v.device != nil {
+		if redacting || v.device != nil || v.backdrop != nil {
 			src := fmt.Sprintf("[rs%d]", i)
 			fmt.Fprintf(&fc, "%s;", src)
 			last := src
@@ -435,6 +460,15 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			}
 			if v.device != nil {
 				last = writeDeviceFrame(&fc, last, i, devIdx, devGeom, w, h)
+			}
+			// The backdrop goes on last: it wants the finished picture — device
+			// frame and all — sitting on its wallpaper.
+			if v.backdrop != nil {
+				if v.device != nil {
+					last = writeBackdropUnder(&fc, last, i, bgIdx)
+				} else {
+					last = writeBackdrop(&fc, last, i, bgIdx, maskIdx, bdGeom)
+				}
 			}
 			fmt.Fprintf(&fc, "%s%s%s,format=rgba", last, prefit, scaleSeg)
 		} else {
@@ -802,7 +836,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		cx: cx, cy: cy, ax: ax, ay: ay,
 		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
 		hold: hold, cursorFX: c.Cursor, cursorPath: p, redactions: validRedactions(c.Redactions),
-		chroma: c.Chroma, device: c.Device,
+		chroma: c.Chroma, device: c.Device, backdrop: c.Backdrop,
 	})
 	if !muted && !isBG && !c.Mute {
 		vol := c.Volume

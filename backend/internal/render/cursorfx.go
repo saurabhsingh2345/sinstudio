@@ -329,7 +329,7 @@ func buildCursorFX(
 				if canvasW > 0 {
 					z = cw / float64(canvasW)
 				}
-				bx, by, bw, bh := contentFrac(track.Video.Width, track.Video.Height, canvasW, canvasH)
+				bx, by, bw, bh := contentFracFor(v, track.Video.Width, track.Video.Height, canvasW, canvasH)
 				px := left + (bx+float64(cx)/math.Max(1, float64(track.Video.Width))*bw)*cw
 				py := top + (by+float64(cy)/math.Max(1, float64(track.Video.Height))*bh)*ch
 				ringSize := int(float64(size) * z)
@@ -417,6 +417,21 @@ func contentFrac(vw, vh, w, h int) (x0, y0, fw, fh float64) {
 	return
 }
 
+// contentFracFor is contentFrac, aware that a backdrop pulls the picture in
+// from the edges — the pointer track's coordinates are in the recording's
+// pixels, and with a backdrop those pixels occupy the card, not the box.
+// (Under a device frame the picture moves too, but cursor effects there were
+// already unmapped before backdrops existed; the device screen inset is a
+// separate, pre-existing gap.)
+func contentFracFor(v *visual, vw, vh, w, h int) (x0, y0, fw, fh float64) {
+	if v.backdrop != nil && v.device == nil && w > 0 && h > 0 {
+		g := backdropLayout(v.backdrop, vw, vh, w, h)
+		return float64(g.x) / float64(w), float64(g.y) / float64(h),
+			float64(g.w) / float64(w), float64(g.h) / float64(h)
+	}
+	return contentFrac(vw, vh, w, h)
+}
+
 // cursorCommands emits one sendcmd entry per sample, positioning a named
 // overlay so its hotspot (offX/offY from its top-left, at unit scale) sits on
 // the pointer.
@@ -434,7 +449,7 @@ func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dur f
 	out := make([]string, 0, len(track.Samples))
 	var lastX, lastY, lastW int
 	var have bool
-	bx, by, bw, bh := contentFrac(track.Video.Width, track.Video.Height, w, h)
+	bx, by, bw, bh := contentFracFor(v, track.Video.Width, track.Video.Height, w, h)
 	for _, s := range track.Samples {
 		ts := float64(s.T) / 1000
 		if ts < 0 || ts > dur {

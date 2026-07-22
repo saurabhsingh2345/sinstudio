@@ -118,6 +118,17 @@ export interface DeviceFrame {
   color?: string; // body colour; empty = a near-black
 }
 
+// Backdrop: the styled scene behind a clip's picture. Mirrors schema.Backdrop —
+// zero/absent values mean the defaults in backdrop.ts, so an empty object is
+// already a usable scene.
+export interface Backdrop {
+  color1?: string; // wallpaper gradient top (empty = dark slate)
+  color2?: string; // gradient bottom (empty = flat color1)
+  inset?: number; // fraction pulled in from each edge (0 = default 0.06, max 0.35)
+  radius?: number; // corner radius px at 1080-high reference (0 = default 14)
+  shadow?: number; // 0..1 strength (0 = default 0.55)
+}
+
 // ChromaKey: a background colour removed so the clip below shows through.
 // Mirrors backend/internal/schema ChromaKey — keep the two in step.
 export interface ChromaKey {
@@ -187,6 +198,7 @@ export interface Clip {
   effects?: Effects;
   eq?: AudioEQ; // 3-band audio equalizer
   denoise?: number; // 0..1 broadband noise-removal strength (0/absent = off; export-side afftdn)
+  backdrop?: Backdrop; // styled scene behind the picture (wallpaper, inset, rounded corners, shadow)
   lut?: string; // .cube color LUT filename (in the project's luts dir)
   mute?: boolean; // silence this clip's own audio (used after detaching audio)
   hold?: number; // seconds of frozen last frame appended after the source plays out

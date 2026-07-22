@@ -75,8 +75,10 @@ import { RedactSection } from "./RedactSection";
 import { ChromaSection } from "./ChromaSection";
 import { ChromaVideo } from "./ChromaVideo";
 import { DeviceSection } from "./DeviceSection";
+import { BackdropSection } from "./BackdropSection";
 import { DeviceLayer } from "./DeviceLayer";
 import { deviceLayout } from "../../device";
+import { backdropCSS, backdropLayout } from "../../backdrop";
 
 import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
@@ -2308,6 +2310,66 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                     style={{ position: "absolute", ...style }}
                   />
                 );
+              if (clip.backdrop && !clip.device) {
+                /*
+                 * The scene: wallpaper across the whole clip box, the picture
+                 * inset into the card the SAME layout the exporter composites
+                 * into (backdropLayout, golden-tested in both languages), with
+                 * the corner radius and shadow scaled from canvas px to stage
+                 * px so they match the export at any preview size.
+                 */
+                const g = backdropLayout(clip.backdrop, asset.width || W, asset.height || H, W, H);
+                const pct = (v: number, of: number) => `${(v / of) * 100}%`;
+                const k = box.vw / W;
+                const shadow = clip.backdrop.shadow || 0.55;
+                return (
+                  <div
+                    key={clip.id}
+                    style={{
+                      position: "absolute",
+                      left: box.left,
+                      top: box.top,
+                      width: box.vw,
+                      height: box.vh,
+                      opacity: box.opacity,
+                      transform: rot ? `rotate(${rot}deg)` : undefined,
+                      background: backdropCSS(clip.backdrop),
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: pct(g.x, W),
+                        top: pct(g.y, H),
+                        width: pct(g.w, W),
+                        height: pct(g.h, H),
+                        borderRadius: g.radius * k,
+                        overflow: "hidden",
+                        // Black behind the picture: what the export pads a
+                        // mismatched source with inside the card.
+                        background: "#000",
+                        boxShadow: `0 ${H * 0.012 * k}px ${H * 0.03 * k}px rgba(0,0,0,${(0.42 * shadow).toFixed(3)})`,
+                      }}
+                    >
+                      {asset.kind === "image" ? (
+                        <img
+                          src={mediaUrl(asset.path, asset.createdAt)}
+                          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                        />
+                      ) : (
+                        <video
+                          ref={(el) => (videoRefs.current[clip.id] = el)}
+                          src={mediaUrl(asset.path, asset.createdAt)}
+                          poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
+                          muted={muted}
+                          playsInline
+                          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                );
+              }
               if (clip.device) {
                 // The picture goes in the screen opening and the frame goes over
                 // it, both positioned from the SAME layout the exporter pads
@@ -2325,6 +2387,8 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                       height: box.vh,
                       opacity: box.opacity,
                       transform: rot ? `rotate(${rot}deg)` : undefined,
+                      // A backdrop under a device supplies the wallpaper only.
+                      background: clip.backdrop ? backdropCSS(clip.backdrop) : undefined,
                     }}
                   >
                     <div
@@ -3681,6 +3745,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
       {asset && asset.kind !== "audio" && <ZoomPanSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <RedactSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <ChromaSection trackId={trackId} clip={clip} asset={asset} />}
+      {asset && asset.kind !== "audio" && <BackdropSection trackId={trackId} clip={clip} />}
       {asset && asset.kind !== "audio" && <DeviceSection trackId={trackId} clip={clip} />}
       {asset?.hasCursor && <SmartFocusSection trackId={trackId} clip={clip} assetId={asset.id} />}
       {asset?.hasCursor && (
