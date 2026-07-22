@@ -69,6 +69,10 @@ type Clip struct {
 	Effects   *Effects              `json:"effects,omitempty"`
 	// EQ is an optional 3-band equalizer on this clip's audio.
 	EQ *AudioEQ `json:"eq,omitempty"`
+	// Denoise removes broadband background noise (fans, hiss, room tone) from
+	// this clip's audio. 0 = off; 0..1 sets how hard the reduction works.
+	// Compiled to ffmpeg afftdn with a tracked noise floor.
+	Denoise float64 `json:"denoise,omitempty"`
 	// LUT names a .cube color lookup table (in the project's luts dir) applied to
 	// this clip's video. Empty = none.
 	LUT string `json:"lut,omitempty"`

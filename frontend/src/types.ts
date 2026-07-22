@@ -186,6 +186,7 @@ export interface Clip {
   cursor?: CursorFX; // pointer emphasis, only for clips with a recorded pointer track
   effects?: Effects;
   eq?: AudioEQ; // 3-band audio equalizer
+  denoise?: number; // 0..1 broadband noise-removal strength (0/absent = off; export-side afftdn)
   lut?: string; // .cube color LUT filename (in the project's luts dir)
   mute?: boolean; // silence this clip's own audio (used after detaching audio)
   hold?: number; // seconds of frozen last frame appended after the source plays out

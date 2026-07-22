@@ -4478,6 +4478,19 @@ function AdvancedFold({ projectId, trackId, clip }: { projectId: string; trackId
             <SliderRow label="High" value={eq.high ?? 0} min={-12} max={12} step={0.5} onChange={(v) => updateEQ(trackId, clip.id, "high", v)} fmt={(v) => `${v}dB`} />
           </div>
           <div>
+            <div className="label-caps mb-1.5">Noise removal</div>
+            <SliderRow
+              label="Strength"
+              value={Math.round((clip.denoise ?? 0) * 100)}
+              min={0}
+              max={100}
+              step={5}
+              onChange={(v) => updateClip(trackId, clip.id, { denoise: v > 0 ? v / 100 : undefined })}
+              fmt={(v) => (v > 0 ? `${v}%` : "off")}
+            />
+            <div className="mt-1 text-[10px] text-muted-foreground">Removes steady background noise (fans, hiss). Applies on export.</div>
+          </div>
+          <div>
             <div className="label-caps mb-1.5 flex items-center gap-1.5"><Palette className="h-3 w-3" /> Color LUT</div>
             <div className="flex items-center gap-1.5">
               <select

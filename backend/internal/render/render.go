@@ -78,6 +78,7 @@ type audio struct {
 	fadeIn, fadeOut float64
 	duck            bool // true = a music/bed track that ducks under voice
 	eq              *schema.AudioEQ
+	denoise         float64 // 0 = off; 0..1 noise-reduction strength
 }
 
 // Plan is the compiled ffmpeg command plus side artifacts (srt path).
@@ -202,7 +203,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				audios = append(audios, audio{
 					path: p, in: c.In, out: c.Out, start: c.Start, volume: vol,
 					speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut, duck: t.Duck,
-					eq: c.EQ,
+					eq: c.EQ, denoise: c.Denoise,
 				})
 			}
 		case schema.TrackCaption:
@@ -603,6 +604,9 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			for _, t := range atempoChain(a.speed) {
 				fmt.Fprintf(&fc, ",atempo=%.4f", t)
 			}
+			// Denoise before volume/EQ: the reduction should judge the source's
+			// own noise floor, not one already moved by gain or shelving.
+			fc.WriteString(denoiseFilter(a.denoise))
 			fmt.Fprintf(&fc, ",volume=%.3f", a.volume)
 			fc.WriteString(eqFilters(a.eq))
 			if a.fadeIn > 0 {
@@ -808,6 +812,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		*audios = append(*audios, audio{
 			path: p, in: c.In, out: c.Out, start: c.Start, volume: vol,
 			speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut, duck: duck,
+			eq: c.EQ, denoise: c.Denoise,
 		})
 	}
 }
@@ -923,6 +928,34 @@ func escapeFilterPath(p string) string {
 // eqFilters emits the ffmpeg audio-EQ chain (bass/equalizer/treble) for a clip's
 // 3-band EQ (empty when nil or flat). Leading comma so it appends to the clip's
 // audio filter string. Gains are clamped to ±24 dB for safety.
+// denoiseFilter compiles a clip's Denoise strength to afftdn (empty when off).
+//
+// afftdn over the alternatives on purpose: arnndn needs a model file shipped
+// beside the binary, and anlmdn is tuned for impulsive clicks rather than the
+// broadband fan/hiss/room-tone a screen recording's microphone actually picks
+// up.
+//
+// Strength drives BOTH knobs. nr alone does nearly nothing (measured: 0.06dB
+// on white noise at nr=27), because reduction only applies to what sits under
+// the noise-floor estimate — so the floor has to rise with the strength. And
+// the obvious fix, tn=1 auto-tracking, measurably DEFEATS the filter on steady
+// noise (the tracker decides an unchanging hiss is signal); a fixed floor is
+// what actually works, which is why there is no tracking here. Do not
+// "improve" this back; the end-to-end test measures the reduction in dB.
+//
+// Maps 0..1 → nr 3..27dB, floor -45..-22dB. Both tops are deliberately shy of
+// the filter's limits: past ~30dB of reduction speech gets the underwater
+// artefact, and a floor above -20 starts eating quiet speech tails.
+func denoiseFilter(strength float64) string {
+	if strength <= 0 {
+		return ""
+	}
+	if strength > 1 {
+		strength = 1
+	}
+	return fmt.Sprintf(",afftdn=nr=%.1f:nf=%.1f", 3+strength*24, -45+strength*23)
+}
+
 func eqFilters(eq *schema.AudioEQ) string {
 	if eq == nil {
 		return ""
