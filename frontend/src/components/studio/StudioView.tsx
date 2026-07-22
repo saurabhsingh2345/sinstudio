@@ -102,6 +102,11 @@ import { SMART_FOCUS_DEFAULTS, smartFocus, type SmartFocusOptions } from "../../
 import { autoFrame } from "../../autoFrame";
 import { canvasForSource } from "../../canvasFit";
 import {
+  isFloatingControlsSupported,
+  openFloatingControls,
+  type FloatingControls,
+} from "../../recorderWindow";
+import {
   isRecordingSupported,
   listInputs,
   startRecording,
@@ -807,6 +812,11 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
   // recording would unwind the framing session underneath the recorder.
   const framingRef = useRef<MediaStream | null>(null);
   const trackingRef = useRef(false);
+  // The floating controls live in another window and outlive any one render, so
+  // they act through refs rather than closing over state that will be stale by
+  // the time someone presses Stop.
+  const floatingRef = useRef<FloatingControls | null>(null);
+  const handleRef = useRef<RecordingHandle | null>(null);
 
   useEffect(() => {
     void listInputs().then(({ mics }) => setMics(mics));
@@ -822,7 +832,11 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
   // it stays honest if the tab is backgrounded and timers are throttled.
   useEffect(() => {
     if (!handle || paused) return;
-    const t = setInterval(() => setElapsed((Date.now() - handle.startedAt) / 1000), 200);
+    const t = setInterval(() => {
+      const secs = (Date.now() - handle.startedAt) / 1000;
+      setElapsed(secs);
+      floatingRef.current?.setElapsed(secs);
+    }, 200);
     return () => clearInterval(t);
   }, [handle, paused]);
 
@@ -838,6 +852,9 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
   const finish = useCallback(
     async (h: RecordingHandle) => {
       setSaving(true);
+      floatingRef.current?.close();
+      floatingRef.current = null;
+      handleRef.current = null;
       try {
         const tracks = await h.stop();
         // Always collect what the helper has, even if we end up not attaching
@@ -1047,6 +1064,31 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
   );
 
   const start = async () => {
+    // FIRST, and before anything is awaited: requestWindow needs transient user
+    // activation, and the screen-share picker takes longer than that lasts. A
+    // window requested after the share is granted is simply refused.
+    const floating = await openFloatingControls({
+      onPause: () => {
+        const h = handleRef.current;
+        if (!h) return;
+        h.pause();
+        setPaused(true);
+        floatingRef.current?.setPaused(true);
+      },
+      onResume: () => {
+        const h = handleRef.current;
+        if (!h) return;
+        h.resume();
+        setPaused(false);
+        floatingRef.current?.setPaused(false);
+      },
+      onStop: () => {
+        const h = handleRef.current;
+        if (h) void finish(h);
+      },
+    });
+    floatingRef.current = floating;
+
     try {
       // Framing already started tracking and acquired the share; a plain start
       // does both here.
@@ -1074,6 +1116,7 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
       setTracking(false);
       trackingRef.current = false;
       h.cursorTracking = t;
+      handleRef.current = h;
       setElapsed(0);
       setHandle(h);
       // The browser's own "Stop sharing" bar ends the stream without going
@@ -1086,6 +1129,9 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
       // Cancelling the picker is a normal thing to do, not an error worth shouting about.
       if (/permission|denied|abort/i.test(msg)) toast.info("Recording cancelled.");
       else toast.error(msg);
+      // No take: the controls have nothing to control.
+      floatingRef.current?.close();
+      floatingRef.current = null;
     }
   };
 
@@ -1126,6 +1172,7 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
               onClick={() => {
                 paused ? handle.resume() : handle.pause();
                 setPaused(!paused);
+                floatingRef.current?.setPaused(!paused);
               }}
             >
               {paused ? "Resume" : "Pause"}
@@ -1255,6 +1302,13 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
           <div className="text-[10px] leading-relaxed text-muted-foreground">
             Each source becomes its own clip, aligned to the moment they started — so
             narration and screen stay in sync but can be edited apart.
+            {isFloatingControlsSupported() && (
+              <>
+                {" "}
+                Controls float above your other windows while you record, so you can stop without
+                coming back here.
+              </>
+            )}
           </div>
         </>
       )}
