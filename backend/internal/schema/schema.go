@@ -481,7 +481,25 @@ type EditDoc struct {
 	Tracks  []Track  `json:"tracks"`
 	Assets  []Asset  `json:"assets"`
 	Markers []Marker `json:"markers,omitempty"`
-	Updated string   `json:"updated,omitempty"`
+	// Watermark overlays a brand mark on every frame of every export.
+	Watermark *Watermark `json:"watermark,omitempty"`
+	Updated   string     `json:"updated,omitempty"`
+}
+
+// Watermark is a project-wide corner logo. Project-wide on purpose: a brand
+// mark is a property of the video, not of any one clip, and per-clip marks
+// would flicker at every cut.
+type Watermark struct {
+	// AssetID names an image asset in this project's library.
+	AssetID string `json:"assetId"`
+	// Corner is tl|tr|bl|br (default br).
+	Corner string `json:"corner,omitempty"`
+	// Size is the mark's width as a fraction of canvas width (0 = default 0.12).
+	Size float64 `json:"size,omitempty"`
+	// Opacity 0..1 (0 = default 0.6).
+	Opacity float64 `json:"opacity,omitempty"`
+	// Margin from the edges as a fraction of the canvas' short side (0 = 0.03).
+	Margin float64 `json:"margin,omitempty"`
 }
 
 // Marker is a timeline annotation (editor aid; not composited into the export).

@@ -118,6 +118,16 @@ export interface DeviceFrame {
   color?: string; // body colour; empty = a near-black
 }
 
+// Watermark: a project-wide corner logo, on every frame of every export.
+// Mirrors schema.Watermark.
+export interface Watermark {
+  assetId: string; // an image asset in this project's library
+  corner?: "tl" | "tr" | "bl" | "br"; // default br
+  size?: number; // fraction of canvas width (0 = default 0.12)
+  opacity?: number; // 0..1 (0 = default 0.6)
+  margin?: number; // fraction of the short side (0 = default 0.03)
+}
+
 // Bubble: the webcam-bubble treatment. Mirrors schema.Bubble — zero/absent
 // values mean the defaults in bubble.ts.
 export interface Bubble {
@@ -324,6 +334,7 @@ export interface EditDoc {
   tracks: Track[];
   assets: Asset[];
   markers?: Marker[];
+  watermark?: Watermark; // project-wide corner logo on every export
   updated?: string;
 }
 

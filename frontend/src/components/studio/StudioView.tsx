@@ -83,6 +83,7 @@ import { DeviceLayer } from "./DeviceLayer";
 import { deviceLayout } from "../../device";
 import { backdropCSS, backdropLayout } from "../../backdrop";
 import { bubbleLayout } from "../../bubble";
+import { watermarkLayout, watermarkOpacity } from "../../watermark";
 
 import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
@@ -100,6 +101,7 @@ import type {
   PluginState,
   PreviewSpec,
   Track,
+  Watermark,
 } from "../../types";
 import { SAMPLES } from "../../generatorSamples";
 import { assetLabel, anchorFrac, clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
@@ -2512,6 +2514,30 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
 
             <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 h-full w-full" />
 
+            {doc.watermark &&
+              (() => {
+                // Over everything, exactly where the exporter overlays it —
+                // same layout function, canvas px scaled to stage px.
+                const wa = doc.assets.find((a) => a.id === doc.watermark!.assetId);
+                if (!wa) return null;
+                const g = watermarkLayout(doc.watermark, wa.width, wa.height, W, H);
+                const k = stage.w / W;
+                return (
+                  <img
+                    src={mediaUrl(wa.path, wa.createdAt)}
+                    alt=""
+                    className="pointer-events-none absolute"
+                    style={{
+                      left: g.x * k,
+                      top: g.y * k,
+                      width: g.w * k,
+                      height: g.h * k,
+                      opacity: watermarkOpacity(doc.watermark),
+                    }}
+                  />
+                );
+              })()}
+
             {audios.map(({ clip }) => {
               const asset = doc.assets.find((a) => a.id === clip.assetId);
               if (!asset) return null;
@@ -4539,6 +4565,12 @@ function ProjectInspector({ doc }: { doc: EditDoc }) {
   const setBackground = useStudio((s) => s.setBackground);
   const mutate = useStudio((s) => s.mutate);
   const bg = doc.tracks.find((t) => t.kind === "background")?.backgroundColor || "#0c0d10";
+  const wm = doc.watermark;
+  const logos = doc.assets.filter((a) => a.kind === "image");
+  const patchWM = (p: Partial<Watermark>) =>
+    mutate((d) => {
+      if (d.watermark) Object.assign(d.watermark, p);
+    });
   return (
     <Section label="Project">
       <Field label="Aspect"><span className="text-[12px] text-muted-foreground tabular">{aspectOf(doc.canvas)}</span></Field>
@@ -4553,6 +4585,60 @@ function ProjectInspector({ doc }: { doc: EditDoc }) {
           </SelectContent>
         </Select>
       </Field>
+      <Field label="Logo">
+        <select
+          value={wm?.assetId || ""}
+          onChange={(e) =>
+            mutate((d) => {
+              d.watermark = e.target.value ? { ...(d.watermark ?? {}), assetId: e.target.value } : undefined;
+            })
+          }
+          className="h-7 flex-1 rounded border hairline bg-panel px-1 text-[11px] outline-none"
+        >
+          <option value="">No watermark</option>
+          {logos.map((a) => (
+            <option key={a.id} value={a.id}>{a.name}</option>
+          ))}
+        </select>
+      </Field>
+      {wm && (
+        <>
+          <Field label="Corner">
+            <div className="flex gap-1">
+              {(["tl", "tr", "bl", "br"] as const).map((c) => (
+                <button
+                  key={c}
+                  onClick={() => patchWM({ corner: c })}
+                  className={`rounded px-1.5 py-0.5 text-[10px] uppercase ${(wm.corner ?? "br") === c ? "bg-brand/90 text-white" : "bg-panel-3 text-muted-foreground hover:text-foreground"}`}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          </Field>
+          <SliderRow
+            label="Size"
+            value={Math.round((wm.size || 0.12) * 100)}
+            min={4}
+            max={40}
+            step={1}
+            onChange={(v) => patchWM({ size: v / 100 })}
+            fmt={(v) => `${v}%`}
+          />
+          <SliderRow
+            label="Opacity"
+            value={Math.round((wm.opacity || 0.6) * 100)}
+            min={10}
+            max={100}
+            step={5}
+            onChange={(v) => patchWM({ opacity: v / 100 })}
+            fmt={(v) => `${v}%`}
+          />
+        </>
+      )}
+      {!logos.length && !wm && (
+        <p className="px-1 text-[10px] text-muted-foreground">Import a PNG logo to the library to add a watermark.</p>
+      )}
     </Section>
   );
 }

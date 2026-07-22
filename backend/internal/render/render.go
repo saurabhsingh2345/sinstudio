@@ -726,11 +726,26 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	// An audio-only project (music over a bare background) still builds a
 	// filtergraph, so the background must be routed through a passthrough too —
 	// otherwise the bare "[0:v]" input pad gets mapped as a filter label.
-	hasVideoGraph := len(visuals) > 0 || strings.Contains(fc.String(), "[c") || rangeActive || presetActive || gif || haveAudio
+	hasVideoGraph := len(visuals) > 0 || strings.Contains(fc.String(), "[c") || rangeActive || presetActive || gif || haveAudio || doc.Watermark != nil
 	if vlab == "[0:v]" && hasVideoGraph {
 		// route the bare bg through a passthrough so we can attach finalize filters
 		fmt.Fprintf(&fc, "[0:v]null[vpass];")
 		vlab = "[vpass]"
+	}
+
+	// The brand mark, over EVERYTHING already composited — clips, captions,
+	// cursor effects — and before the range trim, so a partial export carries
+	// it too. Frame grabs included: a watermark you can't preview isn't one.
+	if wm := doc.Watermark; wm != nil {
+		if p, ok := resolve(wm.AssetID); ok {
+			g := watermarkLayout(wm, srcDims[wm.AssetID][0], srcDims[wm.AssetID][1], w, h)
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", dur), "-i", p)
+			fmt.Fprintf(&fc, "[%d:v]scale=%d:%d:flags=bicubic,format=rgba,colorchannelmixer=aa=%.3f[wmk];",
+				inputIdx, g.w, g.h, watermarkOpacity(wm))
+			fmt.Fprintf(&fc, "%s[wmk]overlay=%d:%d:format=auto[vwm];", vlab, g.x, g.y)
+			vlab = "[vwm]"
+			inputIdx++
+		}
 	}
 
 	if rangeActive {
