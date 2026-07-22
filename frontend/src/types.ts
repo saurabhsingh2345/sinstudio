@@ -109,6 +109,15 @@ export interface Redaction {
   amount?: number; // 0..1 strength (0 = unset)
 }
 
+// DeviceFrame: a drawn phone/laptop/browser the clip's picture sits inside.
+// Mirrors backend/internal/schema DeviceFrame — keep the two in step.
+export type DeviceKind = "browser" | "phone" | "tablet" | "laptop";
+
+export interface DeviceFrame {
+  kind: DeviceKind;
+  color?: string; // body colour; empty = a near-black
+}
+
 // ChromaKey: a background colour removed so the clip below shows through.
 // Mirrors backend/internal/schema ChromaKey — keep the two in step.
 export interface ChromaKey {
@@ -186,6 +195,7 @@ export interface Clip {
   annotation?: Annotation; // when set, this is a callout clip (no asset)
   redactions?: Redaction[]; // blurred/pixelated regions of this clip's picture
   chroma?: ChromaKey; // when set, this colour is keyed out of the clip
+  device?: DeviceFrame; // when set, the picture sits inside a drawn device
 }
 
 export interface ExportOptions {

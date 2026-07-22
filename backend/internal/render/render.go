@@ -63,6 +63,8 @@ type visual struct {
 	redactions []schema.Redaction
 	// Background colour keyed out of this clip, before any scaling.
 	chroma *schema.ChromaKey
+	// Drawn phone/laptop/browser frame this clip's picture sits inside.
+	device *schema.DeviceFrame
 }
 
 // audio is a resolved audio contribution.
@@ -366,19 +368,40 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB",
 				inputIdx, v.in, v.out, sp, v.start)
 		}
+		// The device frame is a second input for this visual. Appended directly
+		// after the source so its index follows, and counted in extraInputs so
+		// the running index stays in step with `args` once this clip is done.
+		devIdx, extraInputs := -1, 0
+		var devGeom deviceGeom
+		if v.device != nil {
+			png := filepath.Join(srtDir, fmt.Sprintf("device-%d.png", i))
+			if err := renderDevicePNG(v.device, w, h, png); err != nil {
+				return nil, err
+			}
+			devGeom = deviceLayout(v.device.Kind, w, h)
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", png)
+			devIdx = inputIdx + 1
+			extraInputs = 1
+		}
 		// Key first, on the source's own pixels. After a scale, the subject's
 		// edges are already blended with the screen and no threshold can tell a
 		// real edge from a green-tinted one — see chroma.go.
 		fc.WriteString(chromaFilters(v.chroma))
-		if redacting {
-			// Applied here — on the clip's own pixels, at its own resolution, before
-			// any scaling — so a blurred region stays on the content it hides when
-			// the clip is zoomed or panned.
+		// Redactions and device frames both branch the chain (redactions split and
+		// overlay a patch, a device insets the picture and lays a frame over it),
+		// so the source segment is cut short and handed to them. With neither, the
+		// chain stays exactly as linear as it was.
+		if redacting || v.device != nil {
 			src := fmt.Sprintf("[rs%d]", i)
 			fmt.Fprintf(&fc, "%s;", src)
 			last := src
+			// Redactions first: they are fractions of the clip's own picture, and
+			// that is still what this is until the device insets it.
 			for k, r := range v.redactions {
 				last = writeRedaction(&fc, last, i, k, r)
+			}
+			if v.device != nil {
+				last = writeDeviceFrame(&fc, last, i, devIdx, devGeom, w, h)
 			}
 			fmt.Fprintf(&fc, "%s%s,format=rgba", last, scaleSeg)
 		} else {
@@ -461,7 +484,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			"%s%soverlay=x=%s:y=%s:enable='between(t,%.3f,%.3f)':eof_action=pass:format=auto%s;",
 			base, lbl, xPos, yPos, v.start, v.end, out)
 		base = out
-		inputIdx++
+		inputIdx += 1 + extraInputs
 
 		// Cursor emphasis sits directly on top of the clip it belongs to, so a
 		// later clip covering this one also covers its highlight.
@@ -743,7 +766,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		cx: cx, cy: cy, ax: ax, ay: ay,
 		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
 		hold: hold, cursorFX: c.Cursor, cursorPath: p, redactions: validRedactions(c.Redactions),
-		chroma: c.Chroma,
+		chroma: c.Chroma, device: c.Device,
 	})
 	if !muted && !isBG && !c.Mute {
 		vol := c.Volume

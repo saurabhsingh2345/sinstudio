@@ -74,6 +74,9 @@ import { RedactionLayer } from "./RedactionLayer";
 import { RedactSection } from "./RedactSection";
 import { ChromaSection } from "./ChromaSection";
 import { ChromaVideo } from "./ChromaVideo";
+import { DeviceSection } from "./DeviceSection";
+import { DeviceLayer } from "./DeviceLayer";
+import { deviceLayout } from "../../device";
 
 import { useArcTheme } from "../arc/theme";
 import { useStudio, projectDuration } from "../../state";
@@ -2117,6 +2120,57 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                     style={{ position: "absolute", ...style }}
                   />
                 );
+              if (clip.device) {
+                // The picture goes in the screen opening and the frame goes over
+                // it, both positioned from the SAME layout the exporter pads
+                // against — so what is framed here is what is framed there.
+                const scr = deviceLayout(clip.device.kind, W, H);
+                const pct = (v: number, of: number) => `${(v / of) * 100}%`;
+                return (
+                  <div
+                    key={clip.id}
+                    style={{
+                      position: "absolute",
+                      left: box.left,
+                      top: box.top,
+                      width: box.vw,
+                      height: box.vh,
+                      opacity: box.opacity,
+                      transform: rot ? `rotate(${rot}deg)` : undefined,
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: pct(scr.x, W),
+                        top: pct(scr.y, H),
+                        width: pct(scr.w, W),
+                        height: pct(scr.h, H),
+                        overflow: "hidden",
+                        // Black behind the picture, because that is what the
+                        // export pads the screen with when shapes differ.
+                        background: "#000",
+                      }}
+                    >
+                      {asset.kind === "image" ? (
+                        <img
+                          src={mediaUrl(asset.path, asset.createdAt)}
+                          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                        />
+                      ) : (
+                        <video
+                          ref={(el) => (videoRefs.current[clip.id] = el)}
+                          src={mediaUrl(asset.path, asset.createdAt)}
+                          muted={muted}
+                          playsInline
+                          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                        />
+                      )}
+                    </div>
+                    <DeviceLayer device={clip.device} canvasW={W} canvasH={H} />
+                  </div>
+                );
+              }
               const redactions = clip.redactions ?? [];
               if (!redactions.length) return media;
               // A sibling rather than a wrapper: the media element keeps its ref
@@ -3438,6 +3492,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
       {asset && asset.kind !== "audio" && <ZoomPanSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <RedactSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <ChromaSection trackId={trackId} clip={clip} asset={asset} />}
+      {asset && asset.kind !== "audio" && <DeviceSection trackId={trackId} clip={clip} />}
       {asset?.hasCursor && <SmartFocusSection trackId={trackId} clip={clip} assetId={asset.id} />}
       {asset?.hasCursor && (
         <CursorFXSection trackId={trackId} clip={clip} ownsCursor={!!asset.cursorHidden} />

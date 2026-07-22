@@ -100,6 +100,8 @@ type Clip struct {
 	// Chroma removes a background colour from this clip, so whatever sits below
 	// it on the timeline shows through. Applied before any scaling.
 	Chroma *ChromaKey `json:"chroma,omitempty"`
+	// Device wraps this clip's picture in a drawn phone/laptop/browser frame.
+	Device *DeviceFrame `json:"device,omitempty"`
 	// Cursor emphasises the pointer during a screen recording. It only does
 	// anything when the clip's asset has a recorded pointer track beside it
 	// (a .cursor.json sidecar); on any other clip it is inert.
@@ -206,6 +208,25 @@ type Redaction struct {
 
 	// Amount is 0..1 strength (0 = unset → a sensible default).
 	Amount float64 `json:"amount,omitempty"`
+}
+
+// Device frame kinds.
+const (
+	DeviceBrowser = "browser"
+	DevicePhone   = "phone"
+	DeviceTablet  = "tablet"
+	DeviceLaptop  = "laptop"
+)
+
+// DeviceFrame puts a clip's picture inside a drawn device — a phone, a laptop,
+// a browser window. The frame is composited at canvas size BEFORE the clip's
+// own transform, so the device and the picture inside it move, scale and
+// keyframe as one object rather than sliding apart.
+type DeviceFrame struct {
+	Kind string `json:"kind"` // browser|phone|tablet|laptop
+
+	// Color is the body colour as a hex triple; empty is a near-black.
+	Color string `json:"color,omitempty"`
 }
 
 // ChromaKey removes a background colour so the clip below shows through — the
