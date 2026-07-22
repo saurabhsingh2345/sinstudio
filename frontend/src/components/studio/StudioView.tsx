@@ -881,6 +881,8 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
         if (placed.length) {
           addSyncedClips(placed);
           toast.success(`${placed.length} recorded track${placed.length > 1 ? "s" : ""} → timeline`);
+          // The camera work happens here, not in a panel the user has to find.
+          await autoFocusRecording(placed);
         }
       } catch (e) {
         toast.error(String((e as Error)?.message || e));
@@ -953,6 +955,81 @@ function RecordPanel({ projectId, onClose }: { projectId: string; onClose: () =>
     setTracking(false);
     trackingRef.current = false;
   };
+
+  /*
+   * Zoom a fresh recording automatically.
+   *
+   * This is the difference between a screen recorder and a video editor that
+   * can zoom. The analysis was always there and always correct — it just sat
+   * behind a collapsed panel six scrolls down the inspector, so a recording
+   * landed flat and looked like the pointer had never been tracked at all.
+   *
+   * It writes ordinary keyframes through the normal mutation path, so it is one
+   * undo away, every diamond stays draggable, and the Auto Zoom panel still
+   * retunes or clears it. An automatic edit that could not be undone would be
+   * worse than no automatic edit.
+   */
+  const autoFocusRecording = useCallback(
+    async (placed: { assetId: string; lane: "video" | "overlay" | "audio"; startedAt: number }[]) => {
+      const st = useStudio.getState();
+      const doc = st.doc;
+      const canvas = doc?.canvas;
+      if (!doc || !canvas) return;
+
+      for (const item of placed) {
+        const asset = doc.assets.find((a) => a.id === item.assetId);
+        // Only a screen recording that actually carries a pointer track. On
+        // anything else there is nothing to be attentive to.
+        if (!asset?.hasCursor) continue;
+
+        // addSyncedClips has just created this; find it by asset, which is
+        // unique within one ingest.
+        let found: { trackId: string; clip: Clip } | null = null;
+        for (const t of doc.tracks) {
+          const c = t.clips?.find((c) => c.assetId === item.assetId);
+          if (c) {
+            found = { trackId: t.id, clip: c };
+            break;
+          }
+        }
+        if (!found) continue;
+
+        try {
+          const { track } = await api.cursorTrack(doc.id, item.assetId);
+          if (!track) continue;
+          const { keyframes, segments } = smartFocus(
+            track as never,
+            clipPlayDur(found.clip),
+            { width: canvas.width, height: canvas.height },
+            SMART_FOCUS_DEFAULTS
+          );
+          // One update, so the whole automatic pass is a single undo rather than
+          // an unpredictable number of them.
+          useStudio.getState().updateClip(found.trackId, found.clip.id, {
+            ...(segments.length
+              ? { keyframes: { ...(found.clip.keyframes ?? {}), ...keyframes } }
+              : {}),
+            // Cursor emphasis for the same reason as the zooms: the data is
+            // there, and a recording that ignores it is not what was recorded.
+            cursor: {
+              highlight: {},
+              clicks: {},
+              ...(asset.cursorHidden ? { pointer: { smoothing: 0.5 } } : {}),
+            },
+          });
+          if (segments.length) {
+            toast.success(
+              `${segments.length} zoom${segments.length > 1 ? "s" : ""} added from your clicks — tune in Auto Zoom`
+            );
+          }
+        } catch {
+          // Auto-framing is a convenience on top of a recording that already
+          // landed safely. It must never be the reason an ingest reports failure.
+        }
+      }
+    },
+    []
+  );
 
   const start = async () => {
     try {
@@ -2115,6 +2192,11 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                     key={clip.id}
                     ref={(el) => (videoRefs.current[clip.id] = el)}
                     src={mediaUrl(asset.path, asset.createdAt)}
+                    // The thumbnail stands in until the first frame decodes.
+                    // Without it a freshly-opened project is a black rectangle
+                    // for as long as the media takes to load, which reads as a
+                    // broken recording rather than as one still arriving.
+                    poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
                     muted={muted}
                     playsInline
                     style={{ position: "absolute", ...style }}
@@ -2161,6 +2243,7 @@ function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect:
                         <video
                           ref={(el) => (videoRefs.current[clip.id] = el)}
                           src={mediaUrl(asset.path, asset.createdAt)}
+                          poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
                           muted={muted}
                           playsInline
                           style={{ width: "100%", height: "100%", objectFit: "contain" }}

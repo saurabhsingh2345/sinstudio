@@ -30,8 +30,11 @@ export interface SmartFocusOptions {
   /** A pointer parked somewhere is usually pointing at something. */
   useDwell: boolean;
   dwellTime: number; // seconds stationary to count as dwell
-  dwellRadius: number; // px (video space) the pointer may wander and still dwell
-  /** Events closer than this in time and space are one focus, not several. */
+  /** How far the pointer may wander and still count as parked, in px at a
+   *  1920-wide reference — scaled to the recording's own width. */
+  dwellRadius: number;
+  /** Events closer than this in time and space are one focus, not several.
+   *  clusterRadius is px at a 1920-wide reference, scaled like dwellRadius. */
   clusterGap: number;
   clusterRadius: number;
   ease: string;
@@ -135,17 +138,40 @@ export function clusterEvents(events: FocusSegment[], gap: number, radius: numbe
  * Build focus segments from a pointer track. Exposed separately from keyframe
  * emission so the UI can say how many zooms it found before committing them.
  */
+/**
+ * The reference width the radius options are quoted against.
+ *
+ * dwellRadius and clusterRadius describe a distance the HAND moved, not a
+ * number of pixels, so they have to be scaled to the recording they are
+ * measured in. Left absolute, the same gesture behaves differently on every
+ * capture: 60px is a comfortable wander on a 1080p share and a twitch on a 4K
+ * one, so a Retina recording would detect far fewer dwells than the identical
+ * session captured at half the resolution — the feature quietly getting worse
+ * on better hardware. This is the same rule the redaction filters follow, where
+ * every dimension is a fraction of the frame rather than a pixel count.
+ */
+export const FOCUS_REFERENCE_WIDTH = 1920;
+
 export function findFocusSegments(
-  track: Pick<CursorSidecar, "samples">,
+  // video is optional: a sidecar predating it, or a hand-built fixture, still
+  // has to produce focus segments rather than a type error.
+  track: Pick<CursorSidecar, "samples"> & Partial<Pick<CursorSidecar, "video">>,
   duration: number,
   opts: SmartFocusOptions
 ): FocusSegment[] {
+  // Fall back to the reference rather than 0 when a sidecar carries no size:
+  // scaling by zero would collapse every radius and find nothing at all.
+  const vw = track.video?.width || FOCUS_REFERENCE_WIDTH;
+  const k = vw / FOCUS_REFERENCE_WIDTH;
+  const dwellRadius = opts.dwellRadius * k;
+  const clusterRadius = opts.clusterRadius * k;
+
   const events: FocusSegment[] = [];
   if (opts.useClicks) events.push(...clickEvents(track.samples));
-  if (opts.useDwell) events.push(...dwellEvents(track.samples, opts.dwellRadius, opts.dwellTime));
+  if (opts.useDwell) events.push(...dwellEvents(track.samples, dwellRadius, opts.dwellTime));
   if (!events.length) return [];
 
-  let segs = clusterEvents(events, opts.clusterGap, opts.clusterRadius);
+  let segs = clusterEvents(events, opts.clusterGap, clusterRadius);
 
   // Give every segment at least the minimum hold, then drop any that the
   // widening pushed into its neighbour — overlapping zooms fight each other.

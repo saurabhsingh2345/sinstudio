@@ -275,3 +275,55 @@ describe("keyframe emission", () => {
     }
   });
 });
+
+describe("focus radii scale with the recording", () => {
+  /*
+   * dwellRadius and clusterRadius describe how far the HAND moved, not a number
+   * of pixels, so they are quoted at a 1920-wide reference and scaled to the
+   * recording they are measured in. Left absolute, the identical session finds
+   * fewer dwells the higher the capture resolution — the feature quietly
+   * getting worse on better hardware.
+   *
+   * The amplitude below is not arbitrary. dwellEvents retries from every
+   * sample, so a run beginning at the MIDDLE of a symmetric wander sees only
+   * half its spread — which means a gentle drift stays inside the radius at
+   * every resolution and a test built on one passes with the bug still in
+   * place. The first version of this test did exactly that. A 90px spread at
+   * the 1920 reference puts the midpoint 45px from the edges (inside the 60px
+   * radius) and its 4K twin 90px away (outside it), so the two resolutions
+   * genuinely disagree unless the radius scales.
+   */
+  const drift = (w: number) => {
+    const k = w / 1920;
+    const samples = [];
+    for (let i = 0; i <= 30; i++) {
+      samples.push({ t: i * 100, x: Math.round((900 + (i % 3) * 45) * k), y: Math.round(500 * k) });
+    }
+    return { samples, video: { width: w, height: Math.round((w * 9) / 16) } };
+  };
+
+  it("finds the same dwell at 1080p, Retina and 4K", () => {
+    const counts = [1920, 2072, 3840].map(
+      (w) => findFocusSegments(drift(w), 5, SMART_FOCUS_DEFAULTS).length
+    );
+    expect(counts[0]).toBeGreaterThan(0);
+    // The gesture is identical in each; so must the answer be.
+    expect(new Set(counts).size).toBe(1);
+  });
+
+  // The failure mode itself: at a fixed pixel radius the 4K capture loses the
+  // dwell that the 1080p one finds.
+  it("a fixed pixel radius loses the dwell at 4K", () => {
+    const r = SMART_FOCUS_DEFAULTS.dwellRadius;
+    expect(dwellEvents(drift(1920).samples, r, SMART_FOCUS_DEFAULTS.dwellTime).length).toBeGreaterThan(0);
+    expect(dwellEvents(drift(3840).samples, r, SMART_FOCUS_DEFAULTS.dwellTime).length).toBe(0);
+    // Scaled to the recording, it is found again.
+    expect(dwellEvents(drift(3840).samples, r * 2, SMART_FOCUS_DEFAULTS.dwellTime).length).toBeGreaterThan(0);
+  });
+
+  it("still works when a sidecar carries no frame size", () => {
+    const { samples } = drift(1920);
+    expect(() => findFocusSegments({ samples }, 5, SMART_FOCUS_DEFAULTS)).not.toThrow();
+    expect(findFocusSegments({ samples }, 5, SMART_FOCUS_DEFAULTS).length).toBeGreaterThan(0);
+  });
+});
