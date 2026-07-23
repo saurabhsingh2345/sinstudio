@@ -232,6 +232,23 @@ describe("drawCursorFX", () => {
     expect(owned.calls.join(" ")).toContain("lineJoin=round"); // the arrow path
   });
 
+  it("shows click ring at clip-local time when trim-in is set", () => {
+    const clip = { ...clipFor({ clicks: {} }), in: 1, out: 4 };
+    const track = trackFor({
+      samples: [
+        { t: 1000, x: 960, y: 540, down: 1 },
+        { t: 1100, x: 960, y: 540 },
+      ],
+    });
+    const atClick = stubCtx();
+    drawCursorFX(atClick.ctx, clip, track, FULL_BOX, 0, 1);
+    expect(atClick.calls.join(" ")).toContain("stroke(");
+
+    const past = stubCtx();
+    drawCursorFX(past.ctx, clip, track, FULL_BOX, 1.05, 1);
+    expect(past.calls.join(" ")).not.toContain("stroke(");
+  });
+
   it("shows a click ring only inside its window", () => {
     const during = stubCtx();
     drawCursorFX(during.ctx, clipFor({ clicks: {} }), trackFor(), FULL_BOX, 1.1, 1);

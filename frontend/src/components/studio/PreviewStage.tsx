@@ -233,7 +233,10 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
       const camera = isCameraClip(clip, asset);
       const videoSize = asset ? { width: asset.width || W, height: asset.height || H } : undefined;
       const box = clipBox(clip, playhead, stage.w, stage.h, W, H, videoSize, camera);
-      drawCursorFX(ctx, clip, track, box, playhead - clip.start, stage.w / W, asset, camera);
+      const localT = playhead - clip.start;
+      const v = videoRefs.current[clip.id];
+      const mediaT = v && v.readyState >= 2 ? v.currentTime : undefined;
+      drawCursorFX(ctx, clip, track, box, localT, stage.w / W, asset, camera, mediaT);
     }
 
     const cue = captionTrack(doc)?.cues?.find((c) => playhead >= c.start && playhead < c.end);

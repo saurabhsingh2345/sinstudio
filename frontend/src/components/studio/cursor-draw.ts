@@ -1,5 +1,6 @@
 import type { CursorSample, CursorSidecar } from "../../cursor";
 import type { Asset, Clip } from "../../types";
+import { clipSourceAt } from "../../types";
 import { coverBox, contentBox } from "../../zoomPan";
 import { backdropLayout } from "../../backdrop";
 
@@ -149,16 +150,22 @@ export function drawCursorFX(
   localT: number,
   canvasScale: number,
   _asset?: Pick<Asset, "hasCursor">,
-  camera = false
+  camera = false,
+  /** When set, use the video element's clock so overlays match what's on screen. */
+  mediaT?: number
 ) {
   const fx = clip.cursor;
   if (!fx || !track.samples.length) return;
+
+  // Click timestamps and cursor samples are in SOURCE seconds (from the first
+  // video frame). localT is clip-local play time — they only match when in=0.
+  const srcT = mediaT ?? clipSourceAt(clip, localT);
 
   const smoothing = fx.pointer?.smoothing ?? 0;
   const useSmooth = fx.pointer && smoothing > 0 && track.hidden && !camera;
   const samples = useSmooth ? smoothSamples(track.samples, smoothing) : track.samples;
 
-  const at = cursorAt(samples, localT);
+  const at = cursorAt(samples, srcT);
   if (!at) return;
 
   const vw = track.video.width || 1;
@@ -256,7 +263,7 @@ export function drawCursorFX(
     const dur = fx.clicks.duration ?? CLICK_DEFAULTS.duration;
     const col = fx.clicks.color ?? CLICK_DEFAULTS.color;
     for (const ct of clickTimes(samples)) {
-      const age = localT - ct;
+      const age = srcT - ct;
       if (age < 0 || age > dur) continue;
       const prog = age / dur;
       const c = cursorAt(samples, ct);
