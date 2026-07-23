@@ -1,6 +1,15 @@
 import type { CursorSample, CursorSidecar } from "./cursor";
 import type { Keyframe } from "./types";
-import { centerOffset, centerOffsetIn, contentBox, zoomKeyframes, type ZoomHold } from "./zoomPan";
+import {
+  centerOffset,
+  centerOffsetIn,
+  clampPanOffset,
+  contentBox,
+  coverBox,
+  videoToCanvas,
+  zoomKeyframes,
+  type ZoomHold,
+} from "./zoomPan";
 
 // centerOffset moved to zoomPan (the manual zoom editor needs the same
 // geometry); re-exported so it still reads as part of this module's vocabulary.
@@ -62,6 +71,8 @@ export interface SmartFocusOptions {
   followDamping: number; // 0..1 — how much of the excess to actually travel
   followInterval: number; // seconds between reconsiderations
   ease: string;
+  /** Use cover-fit viewport math (full frame of pixels, no letterbox bars). */
+  cameraViewport?: boolean;
 }
 
 export const SMART_FOCUS_DEFAULTS: SmartFocusOptions = {
@@ -308,44 +319,38 @@ export function focusKeyframes(
 
   /*
    * The video is FITTED into the canvas, not stretched — a 3:2 capture on a
-   * 16:9 canvas sits centred with bars beside it. Two things follow, both of
-   * which were bugs when this mapped each axis independently:
-   *
-   *   - a cursor position maps through one uniform factor plus the content
-   *     offset, or every focus point on a mismatched recording lands a little
-   *     off, worse toward the edges;
-   *   - the pan clamp has to stop at the CONTENT's edge, not the box's. The
-   *     box bound kept the box on screen while the camera framed the bar —
-   *     zoom toward the side of the page and the frame filled with black.
+   * 16:9 canvas sits centred with bars beside it. Screen recordings use a
+   * cover-fit camera viewport instead (no letterbox bars during zoom).
    */
-  const cb = contentBox(video, canvas);
-  const px = (v: number) => cb.x0 + v * cb.k;
-  const py = (v: number) => cb.y0 + v * cb.k;
+  const cb = opts.cameraViewport ? coverBox(video, canvas) : contentBox(video, canvas);
+  const px = (v: number) => (opts.cameraViewport ? videoToCanvas(v, cb.x0, cb.k) : cb.x0 + v * cb.k);
+  const py = (v: number) => (opts.cameraViewport ? videoToCanvas(v, cb.y0, cb.k) : cb.y0 + v * cb.k);
+  const panX = (ox: number, scale: number) =>
+    opts.cameraViewport
+      ? clampPanOffset(ox, canvas.width, scale, cb.x0, cb.x1)
+      : centerOffsetIn(ox, canvas.width, scale, cb.x0, cb.x1);
+  const panY = (oy: number, scale: number) =>
+    opts.cameraViewport
+      ? clampPanOffset(oy, canvas.height, scale, cb.y0, cb.y1)
+      : centerOffsetIn(oy, canvas.height, scale, cb.y0, cb.y1);
 
   // Each focus point becomes a held zoom; the shared compiler decides when to
   // pull back to full frame and when to pan straight across (see zoomPan.ts).
   const holds: ZoomHold[] = segs.map((seg) => {
-    // A revisited area earns a deeper push (see findFocusSegments). The pan has
-    // to be clamped against THIS segment's scale, not the default — the further
-    // in it goes the further it may travel, and using the wrong one would
-    // either waste the headroom or run past it.
     const scale = seg.zoom && seg.zoom > 0 ? seg.zoom : opts.zoom;
+    const anchor = { x: px(seg.x), y: py(seg.y) };
     return {
       start: seg.start,
       end: seg.end,
       scale,
-      x: centerOffsetIn(px(seg.x), canvas.width, scale, cb.x0, cb.x1),
-      y: centerOffsetIn(py(seg.y), canvas.height, scale, cb.y0, cb.y1),
+      x: panX(anchor.x, scale),
+      y: panY(anchor.y, scale),
       ramp: opts.ramp,
       ease: opts.ease,
-      // Every followed position goes through the same clamp as the anchor, at
-      // THIS segment's scale — so drifting can no more uncover the content than
-      // the fixed hold could.
-      path: seg.follow?.map((f) => ({
-        t: f.t,
-        x: centerOffsetIn(px(f.x), canvas.width, scale, cb.x0, cb.x1),
-        y: centerOffsetIn(py(f.y), canvas.height, scale, cb.y0, cb.y1),
-      })),
+      path: seg.follow?.map((f) => {
+        const p = { x: px(f.x), y: py(f.y) };
+        return { t: f.t, x: panX(p.x, scale), y: panY(p.y, scale) };
+      }),
     };
   });
 

@@ -109,6 +109,54 @@ export function contentBox(
 }
 
 /**
+ * Cover-fit geometry — picture fills the canvas, excess cropped.
+ * Screen recordings use this as the camera viewport.
+ */
+export function coverBox(
+  video: { width: number; height: number },
+  canvas: Size
+): { x0: number; x1: number; y0: number; y1: number; k: number } {
+  if (!(video.width > 0) || !(video.height > 0)) {
+    return { x0: 0, x1: canvas.width, y0: 0, y1: canvas.height, k: 1 };
+  }
+  const k = Math.max(canvas.width / video.width, canvas.height / video.height);
+  const w = video.width * k;
+  const h = video.height * k;
+  const x0 = (canvas.width - w) / 2;
+  const y0 = (canvas.height - h) / 2;
+  return { x0, x1: x0 + w, y0, y1: y0 + h, k };
+}
+
+export const videoToCanvas = (v: number, origin: number, k: number) => origin + v * k;
+
+/** Clamp pan so scaled content always covers the frame. */
+export function clampPanOffset(off: number, size: number, scale: number, c0: number, c1: number): number {
+  if (scale <= 1.001) return off === 0 ? 0 : off;
+  const hi = (size * (scale - 1)) / 2 - scale * c0;
+  const lo = (size * (1 + scale)) / 2 - scale * c1;
+  if (lo > hi) return (lo + hi) / 2;
+  return clamp(off, lo, hi);
+}
+
+export function clipScaleAt(
+  clip: Pick<import("./types").Clip, "start" | "transform" | "keyframes">,
+  t: number
+): number {
+  const localT = t - clip.start;
+  const kf = clip.keyframes?.scale;
+  if (kf?.length) return Math.max(0, kfValue(kf, localT));
+  return clip.transform.scale || 1;
+}
+
+export function isZoomActive(
+  clip: Pick<import("./types").Clip, "start" | "transform" | "keyframes">,
+  t: number,
+  eps = 1.02
+): boolean {
+  return clipScaleAt(clip, t) > eps;
+}
+
+/**
  * Force a rectangle to be something the engine can actually express: the canvas
  * aspect (one `scale` drives both axes, so a differently-shaped rectangle is
  * not representable) and wholly inside the picture.
@@ -237,11 +285,14 @@ export const holdFromStop = (stop: ZoomStop, canvas: Size, video?: Size): ZoomHo
  * common outcome, and it read as the camera being yanked.
  */
 export const MAX_CAM_SPEED = 2.2;
+/** Peak speed for auto camera (smartFocus); gentler than manual zoom. */
+export const AUTO_CAM_SPEED = 1.15;
 export const SPRING_PEAK = 3.0;
 export const PAN_PEAK = 1.9;
 
 /** The most a hold may shorten to buy its neighbouring pan travel time. */
 const HOLD_GIVE = 0.4;
+const AUTO_HOLD_GIVE = 0.55;
 
 /**
  * Compile held zooms into scale/x/y keyframes.
@@ -271,24 +322,32 @@ export function zoomKeyframes(
   const xs: Keyframe[] = [];
   const ys: Keyframe[] = [];
 
-  // Keys must ascend strictly; a later write at the same instant replaces the
-  // earlier one rather than producing a zero-length segment.
-  const at = (t: number, s: number, ox: number, oy: number, ease: string) => {
+  const camSpeed = speedAware ? AUTO_CAM_SPEED : MAX_CAM_SPEED;
+  const holdGive = speedAware ? AUTO_HOLD_GIVE : HOLD_GIVE;
+
+  const pushKf = (arr: Keyframe[], t: number, value: number, ease: string) => {
     const tt = +Math.max(0, Math.min(duration, t)).toFixed(3);
-    const push = (arr: Keyframe[], value: number) => {
-      const prev = arr[arr.length - 1];
-      if (prev && prev.t >= tt) {
-        prev.t = tt;
-        prev.value = value;
-        prev.ease = ease;
-        return;
-      }
-      arr.push({ t: tt, value, ease });
-    };
-    push(scale, +s.toFixed(4));
-    push(xs, Math.round(ox));
-    push(ys, Math.round(oy));
+    const prev = arr[arr.length - 1];
+    if (prev && prev.t >= tt) {
+      prev.t = tt;
+      prev.value = value;
+      prev.ease = ease;
+      return;
+    }
+    arr.push({ t: tt, value, ease });
   };
+  const atScale = (t: number, s: number, ease: string) => pushKf(scale, t, +s.toFixed(4), ease);
+  const atPan = (t: number, ox: number, oy: number, ease: string) => {
+    const prec = speedAware ? 2 : 0;
+    pushKf(xs, t, +ox.toFixed(prec), ease);
+    pushKf(ys, t, +oy.toFixed(prec), ease);
+  };
+  const atAll = (t: number, s: number, ox: number, oy: number, easeScale: string, easePan?: string) => {
+    atScale(t, s, easeScale);
+    atPan(t, ox, oy, easePan ?? (speedAware ? "easeInOut" : easeScale));
+  };
+  /** Legacy single-ease writer for manual zoom path. */
+  const at = (t: number, s: number, ox: number, oy: number, ease: string) => atAll(t, s, ox, oy, ease);
 
   const ordered = [...holds].sort((a, b) => a.start - b.start);
 
@@ -317,7 +376,7 @@ export function zoomKeyframes(
       let ramp = h.ramp;
       if (speedAware) {
         const travel = Math.hypot(h.x, h.y) + 0.35 * canvas!.width * Math.max(0, h.scale - 1);
-        const need = (SPRING_PEAK * travel) / (MAX_CAM_SPEED * canvas!.width);
+        const need = (SPRING_PEAK * travel) / (camSpeed * canvas!.width);
         ramp = Math.min(Math.max(h.ramp, need), 1.8 * h.ramp);
       }
       // On a clip too short for two full ramps, the ramp itself has to give —
@@ -347,11 +406,11 @@ export function zoomKeyframes(
       if (gap >= prev.ramp + h.ramp) continue; // pulls out to full frame instead
       const from = prev.path?.length ? prev.path[prev.path.length - 1] : prev;
       const dist = Math.hypot(h.x - from.x, h.y - from.y);
-      const need = (PAN_PEAK * dist) / (MAX_CAM_SPEED * canvas!.width);
+      const need = (PAN_PEAK * dist) / (camSpeed * canvas!.width);
       const deficit = need - gap;
       if (deficit <= 0) continue;
-      const a = Math.min(deficit / 2, HOLD_GIVE * (prev.end - prev.start));
-      const b = Math.min(deficit - a, HOLD_GIVE * (h.end - h.start));
+      const a = Math.min(deficit / 2, holdGive * (prev.end - prev.start));
+      const b = Math.min(deficit - a, holdGive * (h.end - h.start));
       prev.end -= a;
       h.start += b;
     }
@@ -372,45 +431,53 @@ export function zoomKeyframes(
    * Hence safeEase on the way out and across, and h.ease only on the way in.
    */
   const out = (h: ZoomHold) => safeEase(h.ease);
+  const rampEase = (h: ZoomHold) => safeEase(h.ease);
 
   // Start wide, so the first zoom has something to move from.
-  at(0, 1, 0, 0, out(sorted[0]));
+  atAll(0, 1, 0, 0, out(sorted[0]), out(sorted[0]));
 
   sorted.forEach((h, i) => {
     const prev = sorted[i - 1];
 
     if (!prev) {
       const inStart = Math.max(0, h.start - h.ramp);
-      if (inStart > 0) at(inStart, 1, 0, 0, h.ease); // push in
+      if (inStart > 0) {
+        atScale(inStart, 1, h.ease);
+        atPan(inStart, 0, 0, rampEase(h));
+      }
+      atPan(h.start, h.x, h.y, "linear");
+      atScale(h.start, h.scale, "linear");
     } else if (h.start - prev.end >= prev.ramp + h.ramp) {
-      // Room to breathe: pull back to full frame between the two.
-      at(prev.end + prev.ramp, 1, 0, 0, out(h));
-      at(Math.max(prev.end + prev.ramp, h.start - h.ramp), 1, 0, 0, h.ease); // push in
+      const pullAt = prev.end + prev.ramp;
+      atAll(pullAt, 1, 0, 0, out(h), out(h));
+      const inStart = Math.max(pullAt, h.start - h.ramp);
+      if (inStart > pullAt) {
+        atScale(inStart, 1, h.ease);
+        atPan(inStart, 0, 0, rampEase(h));
+      }
+      atPan(h.start, h.x, h.y, "linear");
+      atScale(h.start, h.scale, "linear");
+    } else if (speedAware) {
+      atPan(h.start, h.x, h.y, "easeInOut");
+      atScale(h.start, h.scale, "linear");
+    } else {
+      atPan(h.start, h.x, h.y, "linear");
+      atScale(h.start, h.scale, "linear");
     }
-    // Otherwise stay zoomed and let x/y carry the move — a pan straight from
-    // one target to the next. Pulling out and back in over a gap this short
-    // reads as a flinch, and both endpoints are clamped at the same scale, so
-    // interpolating between them can never expose background either — provided
-    // the interpolation stays BETWEEN them, which is why this ease is safe.
-    // A hold either sits still or drifts along its path. The drift's points
-    // come from a spring simulation whose SAMPLES already carry the
-    // acceleration — so they are joined linearly. Easing between them would
-    // re-add a stop at every keyframe, which is exactly the stop-go pulse the
-    // spring replaced. They are never sprung either: every point is clamped to
-    // what the scale can cover, and overshooting a clamped point is what shows
-    // background.
+    // Hold drift path — samples are joined linearly; easing between them re-adds jitter.
     const path = (h.path ?? []).filter((p) => p.t > h.start && p.t < h.end);
-    at(h.start, h.scale, h.x, h.y, "linear");
-    for (const p of path) at(p.t, h.scale, p.x, p.y, "linear");
-    // The hold ends wherever the drift left it; going back to the anchor would
-    // undo the following in one snap right before pulling out.
+    for (const p of path) {
+      atPan(p.t, p.x, p.y, "linear");
+      atScale(p.t, h.scale, "linear");
+    }
     const last = path[path.length - 1];
-    at(h.end, h.scale, last?.x ?? h.x, last?.y ?? h.y, out(h));
+    atPan(h.end, last?.x ?? h.x, last?.y ?? h.y, out(h));
+    atScale(h.end, h.scale, out(h));
   });
 
   const last = sorted[sorted.length - 1];
-  at(Math.min(duration, last.end + last.ramp), 1, 0, 0, out(last));
-  if (scale[scale.length - 1].t < duration) at(duration, 1, 0, 0, "linear");
+  atAll(Math.min(duration, last.end + last.ramp), 1, 0, 0, out(last), out(last));
+  if (scale[scale.length - 1].t < duration) atAll(duration, 1, 0, 0, "linear", "linear");
 
   return { scale, x: xs, y: ys };
 }

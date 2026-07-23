@@ -1,6 +1,6 @@
 import type { CursorSample, CursorSidecar } from "../../cursor";
-import type { Clip } from "../../types";
-import { contentBox } from "../../zoomPan";
+import type { Asset, Clip } from "../../types";
+import { coverBox, contentBox } from "../../zoomPan";
 import { backdropLayout } from "../../backdrop";
 
 // Cursor effects, drawn live on the preview canvas.
@@ -147,14 +147,16 @@ export function drawCursorFX(
   track: CursorSidecar,
   box: CursorBox,
   localT: number,
-  canvasScale: number
+  canvasScale: number,
+  _asset?: Pick<Asset, "hasCursor">,
+  camera = false
 ) {
   const fx = clip.cursor;
   if (!fx || !track.samples.length) return;
 
   const smoothing = fx.pointer?.smoothing ?? 0;
-  const samples =
-    fx.pointer && smoothing > 0 && track.hidden ? smoothSamples(track.samples, smoothing) : track.samples;
+  const useSmooth = fx.pointer && smoothing > 0 && track.hidden && !camera;
+  const samples = useSmooth ? smoothSamples(track.samples, smoothing) : track.samples;
 
   const at = cursorAt(samples, localT);
   if (!at) return;
@@ -175,25 +177,31 @@ export function drawCursorFX(
   let fy0 = 0;
   let cfw = 1;
   let cfh = 1;
-  if (clip.backdrop && !clip.device) {
+  const W = stageW / Math.max(1e-6, canvasScale);
+  const H = stageH / Math.max(1e-6, canvasScale);
+  if (camera) {
+    const cb = coverBox({ width: vw, height: vh }, { width: W, height: H });
+    fx0 = cb.x0 / W;
+    fy0 = cb.y0 / H;
+    cfw = (cb.x1 - cb.x0) / W;
+    cfh = (cb.y1 - cb.y0) / H;
+  } else if (clip.backdrop && !clip.device) {
     // A backdrop pulls the picture into its card; the layout is computed at
     // CANVAS resolution (recovered via canvasScale) so its even-pixel rounding
     // matches the exporter's exactly. Mirrors cursorfx.go's contentFracFor.
-    const W = stageW / Math.max(1e-6, canvasScale);
-    const H = stageH / Math.max(1e-6, canvasScale);
     const g = backdropLayout(clip.backdrop, vw, vh, Math.round(W), Math.round(H));
     fx0 = g.x / W;
     fy0 = g.y / H;
     cfw = g.w / W;
     cfh = g.h / H;
   } else {
-    const canA = stageW / stageH;
+    const canA = W / H;
     if (Math.abs(vw / vh - canA) / canA > 0.005) {
-      const cb = contentBox({ width: vw, height: vh }, { width: stageW, height: stageH });
-      fx0 = cb.x0 / stageW;
-      fy0 = cb.y0 / stageH;
-      cfw = (cb.x1 - cb.x0) / stageW;
-      cfh = (cb.y1 - cb.y0) / stageH;
+      const cb = contentBox({ width: vw, height: vh }, { width: W, height: H });
+      fx0 = cb.x0 / W;
+      fy0 = cb.y0 / H;
+      cfw = (cb.x1 - cb.x0) / W;
+      cfh = (cb.y1 - cb.y0) / H;
     }
   }
   // Pointer position on the stage, via the clip's box.

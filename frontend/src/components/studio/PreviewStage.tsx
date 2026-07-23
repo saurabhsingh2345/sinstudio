@@ -30,6 +30,8 @@ import { getCursorTrack, cursorTrackNow } from "../../cursorTracks";
 import { clickTimes, drawCursorFX } from "./cursor-draw";
 import { playClicksBetween } from "../../clickAudio";
 import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel } from "./preview-engine";
+import { isZoomActive } from "../../zoomPan";
+import { isCameraClip } from "../../virtualCamera";
 import type { Selection } from "./selection";
 import { findClip } from "./selection";
 import { captionTrack, clipEnd, fmtTC, type AspectKey } from "./bridge";
@@ -227,8 +229,11 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
       if (!clip.cursor) continue;
       const track = cursorTrackNow(doc.id, clip.assetId);
       if (!track) continue;
-      const box = clipBox(clip, playhead, stage.w, stage.h, W, H);
-      drawCursorFX(ctx, clip, track, box, playhead - clip.start, stage.w / W);
+      const asset = doc.assets.find((a) => a.id === clip.assetId);
+      const camera = isCameraClip(clip, asset);
+      const videoSize = asset ? { width: asset.width || W, height: asset.height || H } : undefined;
+      const box = clipBox(clip, playhead, stage.w, stage.h, W, H, videoSize, camera);
+      drawCursorFX(ctx, clip, track, box, playhead - clip.start, stage.w / W, asset, camera);
     }
 
     const cue = captionTrack(doc)?.cues?.find((c) => playhead >= c.start && playhead < c.end);
@@ -371,7 +376,11 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
             />
             {visuals.map(({ track, clip }) => {
               const asset = doc.assets.find((a) => a.id === clip.assetId);
-              const box = clipBox(clip, playhead, stage.w, stage.h, W, H);
+              const camera = isCameraClip(clip, asset);
+              const videoSize = asset ? { width: asset.width || W, height: asset.height || H } : undefined;
+              const zoomed = isZoomActive(clip, playhead);
+              const box = clipBox(clip, playhead, stage.w, stage.h, W, H, videoSize, camera);
+              const fit = camera ? "cover" : zoomed ? "cover" : "contain";
               if (clip.annotation) {
                 return (
                   <div
@@ -446,7 +455,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
               const muted = !!track.muted || (soloActive && !track.solo) || !!clip.mute;
               const media =
                 asset.kind === "image" ? (
-                  <img key={clip.id} src={mediaUrl(asset.path, asset.createdAt)} style={{ position: "absolute", ...style, objectFit: "contain" }} />
+                  <img key={clip.id} src={mediaUrl(asset.path, asset.createdAt)} style={{ position: "absolute", ...style, objectFit: fit }} />
                 ) : clip.chroma ? (
                   // CSS cannot make a colour transparent, so a keyed clip is
                   // drawn through a shader rather than approximated. The <video>
@@ -471,7 +480,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                     poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
                     muted={muted}
                     playsInline
-                    style={{ position: "absolute", ...style, objectFit: "contain" }}
+                    style={{ position: "absolute", ...style, objectFit: fit }}
                   />
                 );
               if (clip.bubble && !clip.device) {
@@ -522,6 +531,47 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                         playsInline
                         style={{ width: "100%", height: "100%", objectFit: "cover" }}
                       />
+                    </div>
+                  </div>
+                );
+              }
+              if (camera) {
+                const inner =
+                  asset.kind === "image" ? (
+                    <img src={mediaUrl(asset.path, asset.createdAt)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  ) : (
+                    <video
+                      ref={(el) => (videoRefs.current[clip.id] = el)}
+                      src={mediaUrl(asset.path, asset.createdAt)}
+                      poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
+                      muted={muted}
+                      playsInline
+                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                    />
+                  );
+                return (
+                  <div
+                    key={clip.id}
+                    style={{
+                      position: "absolute",
+                      inset: 0,
+                      overflow: "hidden",
+                      opacity: box.opacity,
+                      pointerEvents: "none",
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: box.left,
+                        top: box.top,
+                        width: box.vw,
+                        height: box.vh,
+                        transform: rot ? `rotate(${rot}deg)` : undefined,
+                        filter: cssFilter(clip.effects, stage.h, H),
+                      }}
+                    >
+                      {inner}
                     </div>
                   </div>
                 );

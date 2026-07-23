@@ -1,5 +1,6 @@
 import type { CursorSidecar } from "./cursor";
 import { SMART_FOCUS_DEFAULTS, smartFocus, type SmartFocusOptions } from "./smartFocus";
+import { VIRTUAL_CAMERA_OPTS } from "./virtualCamera";
 import type { Asset, Clip } from "./types";
 
 /*
@@ -36,7 +37,7 @@ export function autoFrame(
   track: Pick<CursorSidecar, "samples" | "video"> | null | undefined,
   duration: number,
   canvas: { width: number; height: number },
-  opts: SmartFocusOptions = SMART_FOCUS_DEFAULTS
+  opts: SmartFocusOptions = { ...SMART_FOCUS_DEFAULTS, ...VIRTUAL_CAMERA_OPTS }
 ): AutoFrame | null {
   // Only a recording that actually carries a pointer track. On anything else
   // there is nothing to be attentive to, and inventing motion for an imported
