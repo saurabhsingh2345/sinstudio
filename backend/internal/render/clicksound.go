@@ -75,11 +75,9 @@ func clickAt(buf []float64, at int, tone clickTone, gain float64, seed uint64) {
 }
 
 // writeClickWAV renders a clip-length mono track containing one transient per
-// press. Times are seconds from the clip's first frame.
-//
-// A right button is pitched down slightly. Real mice differ that way, and it
-// lets a viewer tell a context menu from a selection without being told.
-func writeClickWAV(path string, track *cursor.Track, dur float64, style string, volume float64) (int, error) {
+// press. Times in the sidecar are source seconds; they are placed at clip-local
+// play time so trim-in and speed match the picture.
+func writeClickWAV(path string, track *cursor.Track, dur, in, out, speed float64, style string, volume float64) (int, error) {
 	tone, ok := clickTones[style]
 	if !ok {
 		tone = clickTones["click"]
@@ -87,6 +85,10 @@ func writeClickWAV(path string, track *cursor.Track, dur float64, style string, 
 	gain := volume
 	if gain <= 0 {
 		gain = defClickVolume
+	}
+	sp := speed
+	if sp <= 0 {
+		sp = 1
 	}
 
 	total := int(math.Max(0.05, dur) * clickSampleRate)
@@ -101,7 +103,11 @@ func writeClickWAV(path string, track *cursor.Track, dur float64, style string, 
 		}
 		prev = s.Down
 		ts := float64(s.T) / 1000
-		if ts < 0 || ts > dur {
+		if ts < in || ts > out {
+			continue
+		}
+		local := (ts - in) / sp
+		if local < 0 || local > dur {
 			continue
 		}
 		t := tone
@@ -111,7 +117,7 @@ func writeClickWAV(path string, track *cursor.Track, dur float64, style string, 
 		// Seeded from the sample index so every click is reproducible but they
 		// are not all bit-identical — a row of literally identical transients
 		// reads as a machine gun rather than a hand.
-		clickAt(buf, int(ts*clickSampleRate), t, gain, uint64(i)*2654435761+12345)
+		clickAt(buf, int(local*clickSampleRate), t, gain, uint64(i)*2654435761+12345)
 		count++
 	}
 	if count == 0 {

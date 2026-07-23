@@ -42,7 +42,7 @@ func easeValue(ease string, p float64) float64 {
 		if x >= 1 {
 			return 1
 		}
-		return 1 + math.Pow(2, -9*x)*math.Sin((x*8-0.75)*1.8479957)*0.9
+		return 1 + math.Pow(2, -9*x)*math.Sin((x*8-0.75)*1.8479957)*0.22
 	default:
 		return x
 	}
@@ -99,8 +99,75 @@ func clipBoxAt(v *visual, w, h int, t float64) (left, top, cw, ch float64) {
 	if kf := v.keyframes["y"]; len(kf) > 0 {
 		offY = kfValueAt(kf, local)
 	}
+	if scale > 1.001 && v.srcW > 0 && v.srcH > 0 {
+		if v.cursorFX != nil || clipHasZoomKeyframes(v.keyframes) {
+			offX = clampPanOffset(offX, float64(w), scale, 0, float64(w))
+			offY = clampPanOffset(offY, float64(h), scale, 0, float64(h))
+		} else {
+			x0, y0, x1, y1 := contentBoxGeom(v.srcW, v.srcH, w, h)
+			offX = clampPanOffset(offX, float64(w), scale, x0, x1)
+			offY = clampPanOffset(offY, float64(h), scale, y0, y1)
+		}
+	}
 
 	left = v.ax*(float64(w)-cw) + offX
 	top = v.ay*(float64(h)-ch) + offY
 	return left, top, cw, ch
+}
+
+// contentBoxGeom is the fitted picture rectangle inside a canvas-shaped box.
+func contentBoxGeom(vw, vh, w, h int) (x0, y0, x1, y1 float64) {
+	if vw <= 0 || vh <= 0 {
+		return 0, 0, float64(w), float64(h)
+	}
+	k := math.Min(float64(w)/float64(vw), float64(h)/float64(vh))
+	cw := float64(vw) * k
+	ch := float64(vh) * k
+	x0 = (float64(w) - cw) / 2
+	y0 = (float64(h) - ch) / 2
+	return x0, y0, x0 + cw, y0 + ch
+}
+
+func clampPanOffset(off, size, scale, c0, c1 float64) float64 {
+	if scale <= 1.001 {
+		if off == 0 {
+			return 0
+		}
+		return off
+	}
+	hi := (size*(scale-1))/2 - scale*c0
+	lo := (size*(1+scale))/2 - scale*c1
+	if lo > hi {
+		return (lo + hi) / 2
+	}
+	return clampF(off, lo, hi)
+}
+
+// sourceToTimeline maps a source timestamp (seconds from first frame) to timeline time.
+func sourceToTimeline(v *visual, srcT float64) float64 {
+	sp := v.speed
+	if sp <= 0 {
+		sp = 1
+	}
+	return v.start + (srcT-v.in)/sp
+}
+
+// clipScaleAt returns the scale multiplier at timeline time t.
+func clipScaleAt(v *visual, w, h int, t float64) float64 {
+	local := t - v.start
+	scale := float64(v.sw) / float64(w)
+	if kf := v.keyframes["scale"]; len(kf) > 0 {
+		scale = math.Max(0, kfValueAt(kf, local))
+	}
+	return scale
+}
+
+// clipHasZoomKeyframes is true when the clip ever scales past full frame.
+func clipHasZoomKeyframes(kf map[string][]schema.Keyframe) bool {
+	for _, k := range kf["scale"] {
+		if k.Value > 1.02 {
+			return true
+		}
+	}
+	return false
 }

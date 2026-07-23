@@ -72,6 +72,48 @@ func TestProjectCRUD(t *testing.T) {
 	}
 }
 
+func TestMarkersRoundTrip(t *testing.T) {
+	h := testServer(t, "").Routes()
+
+	w := do(h, "POST", "/api/projects", "", map[string]string{"name": "Markers"})
+	if w.Code != 200 {
+		t.Fatalf("create = %d: %s", w.Code, w.Body.String())
+	}
+	var created map[string]any
+	json.Unmarshal(w.Body.Bytes(), &created)
+	id, _ := created["id"].(string)
+	version, _ := created["version"].(float64)
+	if id == "" {
+		t.Fatal("missing project id")
+	}
+
+	created["markers"] = []map[string]any{
+		{"id": "mk_1", "t": 1.5, "label": "Intro", "color": "#22c55e"},
+		{"id": "mk_2", "t": 5.0, "label": "Chapter", "color": "#3b82f6"},
+	}
+	created["version"] = version
+
+	w = do(h, "PUT", "/api/projects/"+id, "", created)
+	if w.Code != 200 {
+		t.Fatalf("save = %d: %s", w.Code, w.Body.String())
+	}
+
+	w = do(h, "GET", "/api/projects/"+id, "", nil)
+	if w.Code != 200 {
+		t.Fatalf("get = %d", w.Code)
+	}
+	var loaded map[string]any
+	json.Unmarshal(w.Body.Bytes(), &loaded)
+	markers, ok := loaded["markers"].([]any)
+	if !ok || len(markers) != 2 {
+		t.Fatalf("markers round-trip = %+v", loaded["markers"])
+	}
+	m0, _ := markers[0].(map[string]any)
+	if m0["label"] != "Intro" {
+		t.Fatalf("marker label = %v", m0["label"])
+	}
+}
+
 func TestAuthGate(t *testing.T) {
 	h := testServer(t, "s3cret").Routes()
 

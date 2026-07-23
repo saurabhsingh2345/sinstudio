@@ -230,6 +230,8 @@ export interface Clip {
   redactions?: Redaction[]; // blurred/pixelated regions of this clip's picture
   chroma?: ChromaKey; // when set, this colour is keyed out of the clip
   device?: DeviceFrame; // when set, the picture sits inside a drawn device
+  /** Temporal blur on camera moves (scale/x/y keyframes). 0 = off, 0..1 strength. */
+  motionBlur?: number;
 }
 
 export interface ExportOptions {
@@ -263,6 +265,10 @@ export interface CaptionStyle {
   color: string;
   align: string;
   posY: number;
+  /** Semi-transparent box behind caption text. */
+  background?: string;
+  /** Outline/stroke colour for readability on busy footage. */
+  stroke?: string;
 }
 
 export interface CaptionCue {
@@ -280,6 +286,8 @@ export interface Track {
   clips?: Clip[];
   cues?: CaptionCue[];
   backgroundColor?: string;
+  /** Gradient end colour (top → bottom). Empty = solid backgroundColor. */
+  backgroundColor2?: string;
   muted?: boolean;
   hidden?: boolean;
   solo?: boolean;
@@ -473,6 +481,22 @@ export const clipSrcDur = (c: Clip): number => {
   const d = (c.out - c.in) / sp;
   return d > 0 ? d : 0;
 };
+
+/** Source media time (seconds from first frame) at clip-local play time. */
+export const clipSourceAt = (c: Pick<Clip, "in" | "speed">, localT: number): number => {
+  const sp = c.speed && c.speed > 0 ? c.speed : 1;
+  return c.in + localT * sp;
+};
+
+/** Clip-local play time for a source media timestamp. */
+export const clipLocalFromSource = (c: Pick<Clip, "in" | "speed">, srcT: number): number => {
+  const sp = c.speed && c.speed > 0 ? c.speed : 1;
+  return (srcT - c.in) / sp;
+};
+
+/** Timeline time when a source click occurs. */
+export const clickTimelineAt = (c: Pick<Clip, "start" | "in" | "speed">, srcClickT: number): number =>
+  c.start + clipLocalFromSource(c, srcClickT);
 
 // A plugin manifest that failed to load. Loading is non-fatal, so these are
 // reported rather than thrown — a plugin nobody can see is worse than a visible

@@ -40,8 +40,10 @@ studio/
 
 - **Go** 1.26+, **Node** 20+, **FFmpeg + ffprobe** on `PATH` (used for probing, thumbnails, export).
 - **Postgres** — `./dev.sh` starts one via `docker compose up -d postgres` (host port **5544**).
+  Or skip Docker entirely: `./dev-local.sh` uses `STUDIO_DATABASE_URL=local` (projects as
+  `media/projects/*/timeline.json`).
   Projects still living in `media/projects/*/timeline.json` are adopted automatically on first
-  start; the JSON files are left untouched as a backup.
+  Postgres start; the JSON files are left untouched as a backup.
 - The sibling generators live next to `studio/`:
   - `newaniAdv` — works out of the box (`npx tsx`).
   - `hyper/hyperframes` — build its CLI once: `cd ../hyper/hyperframes && bun install && bun run build`.
@@ -57,8 +59,10 @@ studio/
 ## Run
 
 ```bash
-./dev.sh                       # backend :8788 + frontend :5273
+./dev.sh                       # backend :8788 + frontend :5273 (Postgres via Docker)
+./dev-local.sh                 # same, but STUDIO_DATABASE_URL=local — no Docker
 # open http://localhost:5273
+./scripts/e2e-smoke.sh         # API + markers + export smoke (backend must be running)
 ```
 
 Or production-style (Go serves the built UI):

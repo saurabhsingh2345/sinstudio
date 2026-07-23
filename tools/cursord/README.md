@@ -46,6 +46,11 @@ On macOS, **none.** Position comes from `CGEventCreate`, and button state from
 installing an event tap. If you are ever asked to approve something, that is not
 this program.
 
+On **Windows**, no special permissions — `GetCursorPos` and `GetAsyncKeyState`
+read the pointer directly. Build on Windows with `go build` in this directory.
+
+On **Linux**, tracking is not implemented yet (`/health` reports `supported: false`).
+
 ## What it records
 
 Polls at 60 Hz, and keeps a sample when the pointer moved, a button changed, or

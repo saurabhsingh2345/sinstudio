@@ -1,9 +1,21 @@
 import { useState } from "react";
+import { Image } from "lucide-react";
 import { api } from "../api";
 import { awaitJob, useJobs } from "../jobs";
 import { toast } from "../toast";
 import { useStudio, projectDuration } from "../state";
 import type { ExportOptions } from "../types";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { ModalField, ModalProgress, StudioModal } from "./studio/StudioModal";
 
 const PRESETS: { value: ExportOptions["preset"]; label: string }[] = [
   { value: "", label: "Source (timeline size)" },
@@ -18,6 +30,19 @@ const FORMATS: { value: ExportOptions["format"]; label: string }[] = [
   { value: "webm", label: "WebM (VP9)" },
   { value: "gif", label: "Animated GIF" },
   { value: "mov", label: "MOV (ProRes)" },
+];
+
+const SOCIAL_EXPORTS: {
+  id: string;
+  label: string;
+  sub: string;
+  preset: ExportOptions["preset"];
+  format: ExportOptions["format"];
+}[] = [
+  { id: "youtube", label: "YouTube", sub: "16:9 MP4", preset: "", format: "" },
+  { id: "shorts", label: "Shorts", sub: "9:16 MP4", preset: "shorts", format: "" },
+  { id: "linkedin", label: "LinkedIn", sub: "Square MP4", preset: "square", format: "" },
+  { id: "twitter", label: "Twitter GIF", sub: "Square GIF", preset: "square", format: "gif" },
 ];
 
 export function ExportDialog({ projectId, onClose }: { projectId: string; onClose: () => void }) {
@@ -35,7 +60,6 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
   const [framing, setFraming] = useState(false);
   const progress = useJobs((s) => (jobId ? s.jobs[jobId]?.progress ?? 0 : 0));
 
-  // Render the exact export frame at the playhead — ground truth vs. the preview.
   const previewFrame = async () => {
     setFraming(true);
     try {
@@ -48,10 +72,13 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
     }
   };
 
-  const run = async () => {
+  const run = async (overrides?: Partial<ExportOptions>) => {
     setBusy(true);
     try {
-      const opts: ExportOptions = { preset, format, loudnorm };
+      const p = overrides?.preset ?? preset;
+      const f = overrides?.format ?? format;
+      const ln = overrides?.loudnorm ?? loudnorm;
+      const opts: ExportOptions = { preset: p, format: f, loudnorm: ln };
       if (useRange) {
         opts.from = from;
         opts.to = to;
@@ -61,7 +88,15 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
       toast.info("Export started…");
       const data = await awaitJob(id);
       toast.success("Export ready");
-      if (data?.url) window.open(data.url, "_blank");
+      if (data?.url) {
+        const abs = String(data.url).startsWith("http") ? String(data.url) : `${window.location.origin}${data.url}`;
+        try {
+          await navigator.clipboard.writeText(abs);
+          toast.info("Share link copied — paste to share the render");
+        } catch {
+          window.open(data.url, "_blank");
+        }
+      }
       onClose();
     } catch (e) {
       toast.error("Export failed: " + (e as Error).message);
@@ -71,94 +106,119 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
   };
 
   return (
-    <div className="modal-bg" onClick={onClose}>
-      <div className="modal" style={{ width: 440 }} onClick={(e) => e.stopPropagation()}>
-        <h3>Export video</h3>
+    <StudioModal
+      title="Export video"
+      onClose={onClose}
+      width="max-w-lg"
+      footer={
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            {busy ? "Close" : "Cancel"}
+          </Button>
+          <Button onClick={() => void run()} disabled={busy}>
+            {busy ? "Exporting…" : "Export"}
+          </Button>
+        </div>
+      }
+    >
+      <div className="space-y-4">
+        <div>
+          <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Quick export</p>
+          <div className="grid grid-cols-2 gap-2">
+            {SOCIAL_EXPORTS.map((s) => (
+              <button
+                key={s.id}
+                type="button"
+                disabled={busy}
+                onClick={() => void run({ preset: s.preset, format: s.format, loudnorm: true })}
+                className="rounded-lg border hairline bg-panel-2 px-3 py-2 text-left transition-colors hover:border-brand/40 hover:bg-panel-3 disabled:opacity-50"
+              >
+                <span className="block text-[13px] font-medium">{s.label}</span>
+                <span className="block text-[10px] text-muted-foreground">{s.sub}</span>
+              </button>
+            ))}
+          </div>
+        </div>
 
-        <label>Aspect / resolution</label>
-        <select value={preset} onChange={(e) => setPreset(e.target.value as any)}>
-          {PRESETS.map((p) => (
-            <option key={p.value} value={p.value}>
-              {p.label}
-            </option>
-          ))}
-        </select>
+        <ModalField label="Aspect / resolution">
+          <Select
+            value={preset || "_source"}
+            onValueChange={(v) => setPreset(v === "_source" ? "" : (v as ExportOptions["preset"]))}
+          >
+            <SelectTrigger className="h-9 bg-panel-2 text-[13px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PRESETS.map((p) => (
+                <SelectItem key={p.value || "_source"} value={p.value || "_source"}>
+                  {p.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </ModalField>
 
-        <label>Format</label>
-        <select value={format} onChange={(e) => setFormat(e.target.value as any)}>
-          {FORMATS.map((f) => (
-            <option key={f.value} value={f.value}>
-              {f.label}
-            </option>
-          ))}
-        </select>
+        <ModalField label="Format">
+          <Select value={format || "_mp4"} onValueChange={(v) => setFormat(v === "_mp4" ? "" : (v as ExportOptions["format"]))}>
+            <SelectTrigger className="h-9 bg-panel-2 text-[13px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {FORMATS.map((f) => (
+                <SelectItem key={f.value || "_mp4"} value={f.value || "_mp4"}>
+                  {f.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </ModalField>
 
-        <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 12 }}>
-          <input
-            type="checkbox"
-            style={{ width: "auto" }}
-            checked={useRange}
-            onChange={(e) => setUseRange(e.target.checked)}
-          />
-          Export a time range only
-        </label>
+        <div className="space-y-3 rounded-lg bg-panel-2 p-3">
+          <label className="flex cursor-pointer items-center justify-between gap-3">
+            <span className="text-[13px]">Export a time range only</span>
+            <Switch checked={useRange} onCheckedChange={setUseRange} />
+          </label>
+          <label className="flex cursor-pointer items-center justify-between gap-3">
+            <span className="text-[13px]">Normalize loudness (EBU R128, −16 LUFS)</span>
+            <Switch checked={loudnorm} onCheckedChange={setLoudnorm} />
+          </label>
+        </div>
 
-        <label style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 8 }}>
-          <input
-            type="checkbox"
-            style={{ width: "auto" }}
-            checked={loudnorm}
-            onChange={(e) => setLoudnorm(e.target.checked)}
-          />
-          Normalize loudness (EBU R128, −16 LUFS)
-        </label>
         {useRange && (
-          <div className="row">
-            <div>
-              <label>From (s)</label>
-              <input type="number" step={0.1} value={from} onChange={(e) => setFrom(+e.target.value)} />
-            </div>
-            <div>
-              <label>To (s)</label>
-              <input type="number" step={0.1} value={to} onChange={(e) => setTo(+e.target.value)} />
-            </div>
+          <div className="grid grid-cols-2 gap-3">
+            <ModalField label="From (s)">
+              <Input type="number" step={0.1} value={from} onChange={(e) => setFrom(+e.target.value)} className="h-9 bg-panel-2" />
+            </ModalField>
+            <ModalField label="To (s)">
+              <Input type="number" step={0.1} value={to} onChange={(e) => setTo(+e.target.value)} className="h-9 bg-panel-2" />
+            </ModalField>
           </div>
         )}
 
-        <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <button style={{ flex: "0 0 auto" }} disabled={framing} onClick={previewFrame}>
-              {framing ? "Rendering…" : `⧉ Render frame @ ${playhead.toFixed(2)}s`}
-            </button>
-            <span className="small">exact export frame — verify vs. the canvas preview</span>
+        <div className="space-y-3 border-t hairline pt-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-[12px] font-medium">Export fidelity check</p>
+              <p className="text-[10px] text-muted-foreground">
+                Renders the exact export frame at the playhead — compare to the canvas preview above the timeline.
+                LUT grades and motion blur match export; CSS preview is approximate for those.
+              </p>
+            </div>
+            <Button variant="secondary" size="sm" disabled={framing} onClick={previewFrame}>
+              <Image className="mr-1.5 h-3.5 w-3.5" />
+              {framing ? "Rendering…" : `@ ${playhead.toFixed(2)}s`}
+            </Button>
           </div>
           {frameUrl && (
-            <img
-              src={frameUrl}
-              alt="exact export frame"
-              style={{ width: "100%", marginTop: 10, borderRadius: 6, border: "1px solid var(--line)", display: "block" }}
-            />
+            <div className="space-y-1">
+              <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Authoritative export frame</p>
+              <img src={frameUrl} alt="Exact export frame" className="w-full rounded-lg border hairline" />
+            </div>
           )}
         </div>
 
-        {busy && (
-          <div className="job" style={{ marginTop: 12 }}>
-            <div className="small">Exporting… {Math.round(progress * 100)}%</div>
-            <div className="bar">
-              <div style={{ width: `${Math.max(2, progress * 100)}%` }} />
-            </div>
-          </div>
-        )}
-
-        <div className="row" style={{ marginTop: 16, justifyContent: "flex-end" }}>
-          <button style={{ flex: "0 0 auto" }} onClick={onClose} disabled={busy}>
-            {busy ? "Close" : "Cancel"}
-          </button>
-          <button className="primary" style={{ flex: "0 0 auto" }} disabled={busy} onClick={run}>
-            {busy ? "Exporting…" : "Export"}
-          </button>
-        </div>
+        {busy && <ModalProgress label="Exporting…" progress={progress} />}
       </div>
-    </div>
+    </StudioModal>
   );
 }

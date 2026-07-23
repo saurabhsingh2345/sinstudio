@@ -47,7 +47,8 @@ export function formatElapsed(seconds: number): string {
 }
 
 export function isFloatingControlsSupported(): boolean {
-  return typeof documentPictureInPicture?.requestWindow === "function";
+  const pip = (globalThis as { documentPictureInPicture?: DocumentPictureInPicture }).documentPictureInPicture;
+  return typeof pip?.requestWindow === "function";
 }
 
 export interface FloatingControls {

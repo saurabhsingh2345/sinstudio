@@ -6,6 +6,7 @@ import { buildTitleAnim } from "./titleAnim";
 import { newAnnotation } from "./annotation";
 import { buildMotionPreset, type MotionPreset } from "./motionPresets";
 import { clearPeaks } from "./peaks";
+import { rippleCutTrackClips } from "./rippleCut";
 import { cutClipSilences, planSilenceCuts, type SilenceSpan } from "./silence";
 import { applySpeedup, planSpeedup, type IdleSpan } from "./idle";
 import { clearCursorTracks } from "./cursorTracks";
@@ -72,7 +73,7 @@ interface StudioState {
   addCue: () => void;
   removeCue: (id: string) => void;
 
-  setBackground: (color: string) => void;
+  setBackground: (color: string, color2?: string) => void;
 
   detachAudio: (trackId: string, clipId: string) => void;
   attachAudio: (trackId: string, clipId: string) => void;
@@ -100,9 +101,11 @@ interface StudioState {
   addAnnotation: (kind: AnnoKind) => void;
   updateAnnotation: (trackId: string, clipId: string, patch: Partial<Annotation>) => void;
 
-  addMarker: () => void;
+  addMarker: () => string | null;
   removeMarker: (id: string) => void;
   updateMarker: (id: string, patch: { t?: number; label?: string; color?: string }) => void;
+  /** Remove a timeline span and ripple everything after it left. */
+  rippleCutRange: (start: number, end: number) => void;
 
   select: (trackId: string, clipId: string) => void;
   toggleSelect: (trackId: string, clipId: string) => void;
@@ -709,10 +712,16 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (t?.cues) t.cues = t.cues.filter((c) => c.id !== id);
     }),
 
-  setBackground: (color) =>
+  setBackground: (color, color2) =>
     get().mutate((d) => {
       const t = d.tracks.find((t) => t.kind === "background");
-      if (t) t.backgroundColor = color;
+      if (t) {
+        t.backgroundColor = color;
+        if (color2 !== undefined) {
+          if (color2) t.backgroundColor2 = color2;
+          else delete t.backgroundColor2;
+        }
+      }
     }),
 
   // detachAudio splits a video clip's audio into an independent clip on a dedicated
@@ -1013,11 +1022,13 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   addMarker: () => {
     const playhead = get().playhead;
+    const id = newId("mk_");
     get().mutate((d) => {
       const n = (d.markers?.length ?? 0) + 1;
-      (d.markers ||= []).push({ id: newId("mk_"), t: +playhead.toFixed(3), label: `Marker ${n}`, color: "#f4b740" });
+      (d.markers ||= []).push({ id, t: +playhead.toFixed(3), label: `Marker ${n}`, color: "#f4b740" });
       d.markers.sort((a, b) => a.t - b.t);
     });
+    return id;
   },
 
   removeMarker: (id) =>
@@ -1030,6 +1041,32 @@ export const useStudio = create<StudioState>((set, get) => ({
       const m = d.markers?.find((m) => m.id === id);
       if (m) Object.assign(m, patch);
     }),
+
+  rippleCutRange: (start, end) => {
+    if (!(end > start)) return;
+    const len = end - start;
+    get().mutate((d) => {
+      const mkId = () => newId("c_");
+      for (const t of d.tracks) {
+        if (t.clips?.length) t.clips = rippleCutTrackClips(t.clips, start, end, mkId);
+      }
+      const cap = d.tracks.find((t) => t.kind === "caption");
+      if (cap?.cues?.length) {
+        cap.cues = cap.cues
+          .filter((q) => q.end <= start || q.start >= end)
+          .map((q) =>
+            q.start >= end
+              ? { ...q, start: +(q.start - len).toFixed(3), end: +(q.end - len).toFixed(3) }
+              : q
+          );
+      }
+      if (d.markers?.length) {
+        d.markers = d.markers
+          .filter((m) => m.t < start || m.t >= end)
+          .map((m) => (m.t >= end ? { ...m, t: +(m.t - len).toFixed(3) } : m));
+      }
+    });
+  },
 
   select: (trackId, clipId) =>
     set({ selClip: { trackId, clipId }, selClips: [{ trackId, clipId }], selCue: null }),

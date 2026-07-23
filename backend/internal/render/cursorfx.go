@@ -316,11 +316,11 @@ func buildCursorFX(
 				return nil, err
 			}
 			for i, ct := range times {
-				if ct < 0 || ct > dur {
+				if ct < v.in || ct > v.out {
 					continue
 				}
 				cx, cy := track.At(ct)
-				at := start + ct
+				at := sourceToTimeline(v, ct)
 				// A ring lives under half a second, so the clip's zoom at the
 				// moment of the click is a fair constant for its whole life —
 				// no need to command it per frame like the tracking overlays.
@@ -329,7 +329,7 @@ func buildCursorFX(
 				if canvasW > 0 {
 					z = cw / float64(canvasW)
 				}
-				bx, by, bw, bh := contentFracFor(v, track.Video.Width, track.Video.Height, canvasW, canvasH)
+				bx, by, bw, bh := contentFracFor(v, track.Video.Width, track.Video.Height, canvasW, canvasH, at)
 				px := left + (bx+float64(cx)/math.Max(1, float64(track.Video.Width))*bw)*cw
 				py := top + (by+float64(cy)/math.Max(1, float64(track.Video.Height))*bh)*ch
 				ringSize := int(float64(size) * z)
@@ -417,13 +417,30 @@ func contentFrac(vw, vh, w, h int) (x0, y0, fw, fh float64) {
 	return
 }
 
-// contentFracFor is contentFrac, aware that a backdrop pulls the picture in
-// from the edges — the pointer track's coordinates are in the recording's
-// pixels, and with a backdrop those pixels occupy the card, not the box.
-// (Under a device frame the picture moves too, but cursor effects there were
-// already unmapped before backdrops existed; the device screen inset is a
-// separate, pre-existing gap.)
-func contentFracFor(v *visual, vw, vh, w, h int) (x0, y0, fw, fh float64) {
+func coverFrac(vw, vh, w, h int) (x0, y0, fw, fh float64) {
+	x0, y0, fw, fh = 0, 0, 1, 1
+	if vw <= 0 || vh <= 0 || w <= 0 || h <= 0 {
+		return
+	}
+	srcA := float64(vw) / float64(vh)
+	canA := float64(w) / float64(h)
+	if math.Abs(srcA-canA)/canA <= 0.005 {
+		return
+	}
+	k := math.Max(float64(w)/float64(vw), float64(h)/float64(vh))
+	fw = float64(vw) * k / float64(w)
+	fh = float64(vh) * k / float64(h)
+	x0 = (1 - fw) / 2
+	y0 = (1 - fh) / 2
+	return
+}
+
+// contentFracFor maps pointer coordinates into the clip box. Camera clips
+// (screen recordings with cursor FX or zoom) always use cover-fit geometry.
+func contentFracFor(v *visual, vw, vh, w, h int, t float64) (x0, y0, fw, fh float64) {
+	if v.cursorFX != nil || clipScaleAt(v, w, h, t) > 1.02 {
+		return coverFrac(vw, vh, w, h)
+	}
 	if v.backdrop != nil && v.device == nil && w > 0 && h > 0 {
 		g := backdropLayout(v.backdrop, vw, vh, w, h)
 		return float64(g.x) / float64(w), float64(g.y) / float64(h),
@@ -449,13 +466,14 @@ func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dur f
 	out := make([]string, 0, len(track.Samples))
 	var lastX, lastY, lastW int
 	var have bool
-	bx, by, bw, bh := contentFracFor(v, track.Video.Width, track.Video.Height, w, h)
 	for _, s := range track.Samples {
 		ts := float64(s.T) / 1000
-		if ts < 0 || ts > dur {
+		if ts < v.in || ts > v.out {
 			continue
 		}
-		left, top, cw, ch := clipBoxAt(v, w, h, v.start+ts)
+		at := sourceToTimeline(v, ts)
+		left, top, cw, ch := clipBoxAt(v, w, h, at)
+		bx, by, bw, bh := contentFracFor(v, track.Video.Width, track.Video.Height, w, h, at)
 		fx := 0.0
 		fy := 0.0
 		if track.Video.Width > 0 {
@@ -488,7 +506,7 @@ func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dur f
 			continue
 		}
 		out = append(out, fmt.Sprintf("%.3f overlay@%s x %d, overlay@%s y %d%s;",
-			v.start+ts, sendcmdEscape(name), x, sendcmdEscape(name), y, cmds))
+			at, sendcmdEscape(name), x, sendcmdEscape(name), y, cmds))
 		lastX, lastY, have = x, y, true
 	}
 	return out

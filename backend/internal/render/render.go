@@ -60,6 +60,7 @@ type visual struct {
 	cursorFX          *schema.CursorFX
 	cursorPath        string      // media path, for finding the .cursor.json sidecar
 	cursor            *cursorPlan // compiled emphasis overlays, nil if none
+	motionBlur        float64     // 0..1 temporal blur on camera keyframe moves
 	// Regions blurred/pixelated in the clip's own picture, before any transform.
 	redactions []schema.Redaction
 	// Background colour keyed out of this clip, before any scaling.
@@ -125,7 +126,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	var visuals []visual
 	var audios []audio
 	var cues []schema.CaptionCue
-	bgColor := "#000000"
+	bgColor, bgColor2 := "#000000", ""
 
 	order := map[string]int{schema.TrackBackground: 0, schema.TrackVideo: 1, schema.TrackOverlay: 2}
 	tracks := append([]schema.Track(nil), doc.Tracks...)
@@ -162,6 +163,9 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		case schema.TrackBackground:
 			if t.BackgroundColor != "" {
 				bgColor = t.BackgroundColor
+			}
+			if t.BackgroundColor2 != "" {
+				bgColor2 = t.BackgroundColor2
 			}
 			for _, c := range t.Clips {
 				if c.Disabled {
@@ -287,9 +291,13 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 
 	args := []string{"-y", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "0.2"}
 
-	// Input 0: background color canvas.
-	args = append(args, "-f", "lavfi", "-i",
-		fmt.Sprintf("color=c=%s:s=%dx%d:r=%d:d=%.3f", ffColor(bgColor), w, h, fps, dur))
+	// Input 0: background canvas — solid or vertical gradient.
+	bgInput := fmt.Sprintf("color=c=%s:s=%dx%d:r=%d:d=%.3f", ffColor(bgColor), w, h, fps, dur)
+	if bgColor2 != "" {
+		bgInput = fmt.Sprintf("gradients=s=%dx%d:c0=%s:c1=%s:d=%.3f:r=%d",
+			w, h, ffColor(bgColor), ffColor(bgColor2), dur, fps)
+	}
+	args = append(args, "-f", "lavfi", "-i", bgInput)
 
 	var fc strings.Builder
 	base := "[0:v]"
@@ -316,7 +324,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		// hundreds, and the filtergraph should not grow with them.
 		if snd := v.cursorFX.Sound; snd != nil && opts.FrameAt <= 0 {
 			wav := filepath.Join(srtDir, fmt.Sprintf("cur-%d-clicks.wav", i))
-			n, err := writeClickWAV(wav, track, v.end-v.start, snd.Style, snd.Volume)
+			n, err := writeClickWAV(wav, track, v.end-v.start, v.in, v.out, v.speed, snd.Style, snd.Volume)
 			if err != nil {
 				return nil, err
 			}
@@ -382,13 +390,24 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		 * rounding error would soften every frame for nothing.
 		 */
 		prefit := ""
-		if v.device == nil && v.backdrop == nil && v.bubble == nil && v.srcW > 0 && v.srcH > 0 {
-			srcA := float64(v.srcW) / float64(v.srcH)
-			canA := float64(w) / float64(h)
-			if math.Abs(srcA-canA)/canA > 0.005 {
-				prefit = fmt.Sprintf(
-					"scale=%d:%d:force_original_aspect_ratio=decrease:flags=bicubic,format=rgba,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black@0,",
-					w, h, w, h)
+		zoomClip := clipHasZoomKeyframes(v.keyframes)
+		cameraClip := v.cursorFX != nil || zoomClip
+		if v.device == nil && v.bubble == nil && v.srcW > 0 && v.srcH > 0 {
+			usePrefit := v.backdrop == nil || cameraClip
+			if usePrefit {
+				srcA := float64(v.srcW) / float64(v.srcH)
+				canA := float64(w) / float64(h)
+				if math.Abs(srcA-canA)/canA > 0.005 {
+					if cameraClip {
+						prefit = fmt.Sprintf(
+							"scale=%d:%d:force_original_aspect_ratio=increase:flags=bicubic,crop=%d:%d,format=rgba,",
+							w, h, w, h)
+					} else {
+						prefit = fmt.Sprintf(
+							"scale=%d:%d:force_original_aspect_ratio=decrease:flags=bicubic,format=rgba,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black@0,",
+							w, h, w, h)
+					}
+				}
 			}
 		}
 		// Redactions branch the chain (split → crop → resample → overlay), so the
@@ -447,10 +466,12 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			extraInputs++
 		}
 		// A backdrop adds its wallpaper (and, without a device, the card's
-		// corner mask) as further inputs, numbered after the device's.
+		// corner mask) as further inputs — skipped when zoom keyframes are
+		// present, because scaling the card composite exposes the wallpaper.
 		bgIdx, maskIdx := -1, -1
 		var bdGeom backdropGeom
-		if v.backdrop != nil {
+		useBackdropCard := v.backdrop != nil && !cameraClip
+		if useBackdropCard {
 			bdGeom = backdropLayout(v.backdrop, v.srcW, v.srcH, w, h)
 			wallPNG := filepath.Join(srtDir, fmt.Sprintf("backdrop-%d.png", i))
 			if err := renderBackdropPNG(v.backdrop, bdGeom, w, h, v.device == nil, wallPNG); err != nil {
@@ -477,7 +498,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		// overlay a patch, a device insets the picture and lays a frame over it),
 		// so the source segment is cut short and handed to them. With neither, the
 		// chain stays exactly as linear as it was.
-		if redacting || v.device != nil || v.backdrop != nil || bubble != nil {
+		if redacting || v.device != nil || useBackdropCard || bubble != nil {
 			src := fmt.Sprintf("[rs%d]", i)
 			fmt.Fprintf(&fc, "%s;", src)
 			last := src
@@ -494,7 +515,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			}
 			// The backdrop goes on last: it wants the finished picture — device
 			// frame and all — sitting on its wallpaper.
-			if v.backdrop != nil {
+			if useBackdropCard {
 				if v.device != nil {
 					last = writeBackdropUnder(&fc, last, i, bgIdx)
 				} else {
@@ -548,6 +569,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		if tr.alphaOut > 0 {
 			fmt.Fprintf(&fc, ",fade=t=out:st=%.3f:d=%.3f:alpha=1", math.Max(v.start, v.end-tr.alphaOut), tr.alphaOut)
 		}
+		fc.WriteString(motionBlurFilter(v.motionBlur, v.keyframes))
 		fmt.Fprintf(&fc, "%s;", lbl)
 		out := fmt.Sprintf("[b%d]", i)
 		// Position — motion keyframes win per axis, else a slide expression, else
@@ -881,7 +903,8 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
 		cx: cx, cy: cy, ax: ax, ay: ay,
 		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
-		hold: hold, cursorFX: c.Cursor, cursorPath: p, redactions: validRedactions(c.Redactions),
+		hold: hold, cursorFX: c.Cursor, cursorPath: p, motionBlur: c.MotionBlur,
+		redactions: validRedactions(c.Redactions),
 		chroma: c.Chroma, device: c.Device, backdrop: c.Backdrop, bubble: c.Bubble,
 	})
 	if !muted && !isBG && !c.Mute {
@@ -1108,7 +1131,7 @@ func easeProgress(ease, p string) string {
 		// agree to the number. easeValue() and ease() in TypeScript pin both
 		// ends; this is the third implementation and must match them.
 		return fmt.Sprintf(
-			"if(lte(%s,0),0,if(gte(%s,1),1,(1+pow(2,-9*(%s))*sin(((%s)*8-0.75)*1.8479957)*0.9)))",
+			"if(lte(%s,0),0,if(gte(%s,1),1,(1+pow(2,-9*(%s))*sin(((%s)*8-0.75)*1.8479957)*0.22)))",
 			p, p, p, p)
 	default: // linear
 		return "(" + p + ")"

@@ -122,6 +122,9 @@ type Clip struct {
 	// anything when the clip's asset has a recorded pointer track beside it
 	// (a .cursor.json sidecar); on any other clip it is inert.
 	Cursor *CursorFX `json:"cursor,omitempty"`
+	// MotionBlur adds temporal smoothing on camera moves (scale/x/y keyframes).
+	// 0 = off; 0..1 controls strength (compiled to ffmpeg tmix).
+	MotionBlur float64 `json:"motionBlur,omitempty"`
 }
 
 // CursorFX turns on pointer emphasis for a screen recording. Each effect is a
@@ -433,7 +436,8 @@ type Track struct {
 	Name            string       `json:"name,omitempty"`
 	Clips           []Clip       `json:"clips,omitempty"`
 	Cues            []CaptionCue `json:"cues,omitempty"`
-	BackgroundColor string       `json:"backgroundColor,omitempty"`
+	BackgroundColor  string       `json:"backgroundColor,omitempty"`
+	BackgroundColor2 string       `json:"backgroundColor2,omitempty"` // top→bottom gradient end; empty = solid
 	Muted           bool         `json:"muted,omitempty"`
 	Hidden          bool         `json:"hidden,omitempty"`
 	Solo            bool         `json:"solo,omitempty"`

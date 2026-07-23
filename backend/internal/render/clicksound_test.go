@@ -62,10 +62,10 @@ func TestClickSoundIsDeterministic(t *testing.T) {
 	b := filepath.Join(dir, "b.wav")
 	tr := clickTrack(0.5, 1.5, 2.5)
 
-	if _, err := writeClickWAV(a, tr, 4, "click", 0.5); err != nil {
+	if _, err := writeClickWAV(a, tr, 4, 0, 4, 1, "click", 0.5); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := writeClickWAV(b, tr, 4, "click", 0.5); err != nil {
+	if _, err := writeClickWAV(b, tr, 4, 0, 4, 1, "click", 0.5); err != nil {
 		t.Fatal(err)
 	}
 	ab, _ := os.ReadFile(a)
@@ -80,7 +80,7 @@ func TestClickSoundIsDeterministic(t *testing.T) {
 func TestClicksLandOnThePresses(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "c.wav")
-	n, err := writeClickWAV(p, clickTrack(0.5, 1.5, 2.5), 4, "click", 0.8)
+	n, err := writeClickWAV(p, clickTrack(0.5, 1.5, 2.5), 4, 0, 4, 1, "click", 0.8)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func TestHeldButtonIsOneClick(t *testing.T) {
 		tr.Samples = append(tr.Samples, cursor.Sample{T: int64(i * 16), X: 5, Y: 5, Down: cursor.ButtonLeft})
 	}
 	p := filepath.Join(t.TempDir(), "held.wav")
-	n, err := writeClickWAV(p, &tr, 3, "click", 0.5)
+	n, err := writeClickWAV(p, &tr, 3, 0, 3, 1, "click", 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestNoClicksWritesNothing(t *testing.T) {
 	var tr cursor.Track
 	tr.Samples = []cursor.Sample{{T: 0, X: 1, Y: 1}, {T: 500, X: 2, Y: 2}}
 	p := filepath.Join(t.TempDir(), "none.wav")
-	n, err := writeClickWAV(p, &tr, 3, "click", 0.5)
+	n, err := writeClickWAV(p, &tr, 3, 0, 3, 1, "click", 0.5)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,12 +142,41 @@ func TestNoClicksWritesNothing(t *testing.T) {
 	}
 }
 
+func TestClicksRespectTrimIn(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "trim.wav")
+	// Source click at 1.5s with 1s trim-in → clip-local 0.5s.
+	n, err := writeClickWAV(p, clickTrack(1.5), 3, 1, 4, 1, "click", 0.8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("wrote %d clicks, want 1", n)
+	}
+	peaks := samplePeaks(t, p)
+	loud := func(sec float64) bool {
+		b := int(sec * 100)
+		for i := b - 1; i <= b+1 && i < len(peaks); i++ {
+			if i >= 0 && peaks[i] > 0.1 {
+				return true
+			}
+		}
+		return false
+	}
+	if !loud(0.5) {
+		t.Error("click at source 1.5s with in=1 should land at clip-local 0.5s")
+	}
+	if loud(1.5) {
+		t.Error("click should not land at source time in clip-local buffer")
+	}
+}
+
 func TestClickStylesDifferAndFallBack(t *testing.T) {
 	dir := t.TempDir()
 	seen := map[string][]byte{}
 	for _, style := range []string{"click", "tick", "soft", "nonsense"} {
 		p := filepath.Join(dir, style+".wav")
-		if _, err := writeClickWAV(p, clickTrack(0.5), 2, style, 0.6); err != nil {
+		if _, err := writeClickWAV(p, clickTrack(0.5), 2, 0, 2, 1, style, 0.6); err != nil {
 			t.Fatal(err)
 		}
 		b, _ := os.ReadFile(p)

@@ -310,10 +310,24 @@ export function Timeline({
                 <div
                   key={m.id}
                   title={m.label || "marker"}
-                  className="absolute top-0 bottom-0 z-10 w-px"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSelect({ kind: "marker", markerId: m.id });
+                    setPlayhead(m.t);
+                  }}
+                  className={cn(
+                    "absolute top-0 bottom-0 z-10 w-px cursor-pointer",
+                    selection.kind === "marker" && selection.markerId === m.id && "z-20 ring-1 ring-brand"
+                  )}
                   style={{ left: m.t * px, background: m.color || "#f4b740" }}
                 >
-                  <span className="absolute -top-0 left-0 h-2 w-2 -translate-x-1/2 rotate-45" style={{ background: m.color || "#f4b740" }} />
+                  <span
+                    className={cn(
+                      "absolute -top-0 left-0 h-2 w-2 -translate-x-1/2 rotate-45",
+                      selection.kind === "marker" && selection.markerId === m.id && "ring-2 ring-brand"
+                    )}
+                    style={{ background: m.color || "#f4b740" }}
+                  />
                 </div>
               ))}
             </div>

@@ -36,6 +36,12 @@ export const SILENCE_DEFAULTS: SilenceOptions = {
   pad: 0.12,
 };
 
+export const SILENCE_PRESETS: Record<"gentle" | "normal" | "aggressive", SilenceOptions> = {
+  gentle: { threshold: 0.03, minSilence: 0.8, pad: 0.16 },
+  normal: SILENCE_DEFAULTS,
+  aggressive: { threshold: 0.06, minSilence: 0.35, pad: 0.08 },
+};
+
 /** A quiet stretch, in SOURCE seconds (asset time, like clip.in/out). */
 export interface SilenceSpan {
   start: number;

@@ -11,6 +11,7 @@ export type Selection =
   | { kind: "overlay"; trackId: string; clipId: string }
   | { kind: "soundtrack"; trackId: string }
   | { kind: "cue"; cueId: string }
+  | { kind: "marker"; markerId: string }
   | { kind: "none" };
 
 // findClip reaches into the live doc for a clip by track + id.
