@@ -37,7 +37,8 @@ export function autoFrame(
   track: Pick<CursorSidecar, "samples" | "video"> | null | undefined,
   duration: number,
   canvas: { width: number; height: number },
-  opts: SmartFocusOptions = { ...SMART_FOCUS_DEFAULTS, ...VIRTUAL_CAMERA_OPTS }
+  opts: SmartFocusOptions = { ...SMART_FOCUS_DEFAULTS, ...VIRTUAL_CAMERA_OPTS },
+  showClicks = true
 ): AutoFrame | null {
   // Only a recording that actually carries a pointer track. On anything else
   // there is nothing to be attentive to, and inventing motion for an imported
@@ -50,22 +51,11 @@ export function autoFrame(
   const patch: Clip = {} as Clip;
   const out: Partial<Clip> = patch;
 
-  // Cursor emphasis regardless of whether any zoom was found: the pointer data
-  // is there, and a recording that ignores it is not the one that was made. A
-  // short clip with no clear focus still wants its clicks visible.
-  out.cursor = {
-    // Click rings only. The highlight — a 96px amber disc under the pointer —
-    // is deliberately NOT on by default: it glows over the content on every
-    // frame whether anything is happening or not, and on a screen recording
-    // that reads as a smudge following the cursor rather than as emphasis.
-    // A ring fires on a press and is gone, which is the moment worth marking.
-    // It stays one toggle away in Cursor Effects for anyone who wants it.
-    clicks: {},
-    // Studio only draws its own pointer when the real one was verifiably kept
-    // out of the capture — drawing a second cursor over a burned-in one is
-    // worse than drawing none.
-    ...(asset.cursorHidden ? { pointer: { smoothing: 0.5 } } : {}),
-  };
+  // Cursor emphasis when zoom was found or clicks are wanted.
+  const cursor: NonNullable<Clip["cursor"]> = {};
+  if (showClicks) cursor.clicks = {};
+  if (asset.cursorHidden) cursor.pointer = { smoothing: 0.5 };
+  if (cursor.clicks || cursor.pointer) out.cursor = cursor;
 
   if (segments.length) {
     // Merge rather than replace, so anything already keyed on this clip — an

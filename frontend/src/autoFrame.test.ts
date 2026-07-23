@@ -111,4 +111,9 @@ describe("autoFrame", () => {
     const r = autoFrame(screen, {}, clickTrack(), 12, canvas, noClicks);
     expect(r!.zooms).toBe(0);
   });
+
+  it("omits click rings when showClicks is false", () => {
+    const r = autoFrame(screen, {}, clickTrack(), 12, canvas, undefined, false);
+    expect(r!.patch.cursor?.clicks).toBeUndefined();
+  });
 });

@@ -77,6 +77,7 @@ export function RecordPanel({
   const [saving, setSaving] = useState(false);
   const [cursord, setCursord] = useState<CursorHealth | null>(null);
   const [trackCursor, setTrackCursor] = useState(true);
+  const [showClicks, setShowClicks] = useState(true);
   const [ownCursor, setOwnCursor] = useState(true);
   const screenRef = useRef<HTMLVideoElement>(null);
   const cameraRef = useRef<HTMLVideoElement>(null);
@@ -362,7 +363,9 @@ export function RecordPanel({
             (() => {
               const c = useStudio.getState().doc?.canvas ?? canvas;
               return { width: c.width, height: c.height };
-            })()
+            })(),
+            undefined,
+            showClicks
           );
           if (!framed) continue;
           useStudio.getState().updateClip(found.trackId, found.clip.id, framed.patch);
@@ -379,7 +382,7 @@ export function RecordPanel({
       }
       onZoom?.(zoomTotal);
     },
-    []
+    [showClicks]
   );
 
   const runCountdown = (): Promise<void> =>
@@ -638,6 +641,21 @@ export function RecordPanel({
                 Cursor effects need the local <code className="font-mono">cursord</code> helper.
                 Run it from <code className="font-mono">tools/cursord</code> and reopen this panel.
               </div>
+            )}
+            {cursord?.supported && (
+              <ToggleRow
+                label="Click rings"
+                hint={
+                  !trackCursor || !opts.screen
+                    ? "Needs cursor tracking."
+                    : !cursord.clicks
+                      ? "Click detection isn't available on this platform."
+                      : "White expanding rings on each mouse press in the preview and export."
+                }
+                checked={showClicks && trackCursor && opts.screen}
+                disabled={!trackCursor || !opts.screen || !cursord.clicks}
+                onChange={setShowClicks}
+              />
             )}
           </div>
           {opts.mic && mics.length > 1 && (
