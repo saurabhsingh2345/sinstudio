@@ -1,5 +1,6 @@
 import type {
   AppStatus,
+  Asset,
   EditDoc,
   ExportOptions,
   GeneratorStatus,
@@ -90,6 +91,31 @@ export const api = {
       j<{ asset: any; version: number }>(r)
     );
   },
+  // ingestRecording uploads a browser capture. `streamed` tells the server the
+  // container was written by a MediaRecorder and needs its header repaired —
+  // without that the clip has no duration and the preview can't scrub it.
+  ingestRecording: (
+    projId: string,
+    blob: Blob,
+    filename: string,
+    source: string,
+    cursor?: unknown
+  ) => {
+    const fd = new FormData();
+    fd.append("file", blob, filename);
+    fd.append("source", source);
+    fd.append("streamed", "1");
+    // Cursor samples ride along with the upload so the sidecar is written beside
+    // the media in one step — a second request could fail and leave a recording
+    // whose data exists nowhere.
+    if (cursor) fd.append("cursor", JSON.stringify(cursor));
+    return fetch(`/api/ingest?projectId=${encodeURIComponent(projId)}`, {
+      method: "POST",
+      body: fd,
+    }).then((r) =>
+      j<{ asset?: Asset; importError?: string; remuxError?: string; cursorError?: string }>(r)
+    );
+  },
   generate: (projId: string, generatorId: string, input: string, params: Record<string, string>) =>
     fetch(`/api/projects/${projId}/generate`, {
       method: "POST",
@@ -103,6 +129,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ assetId, input, params }),
     }).then((r) => j<{ jobId: string }>(r)),
+  // The pointer track recorded beside a screen capture, for deriving auto-zoom.
+  cursorTrack: (projId: string, assetId: string) =>
+    fetch(`/api/projects/${projId}/cursor?asset=${encodeURIComponent(assetId)}`).then((r) =>
+      j<{ track: { video: { width: number; height: number }; samples: unknown[] } | null }>(r)
+    ),
   waveform: (projId: string, assetId: string) =>
     fetch(`/api/projects/${projId}/waveform?asset=${assetId}`).then((r) => j<{ peaks: number[] }>(r)),
   transcribe: (projId: string, assetId: string) =>

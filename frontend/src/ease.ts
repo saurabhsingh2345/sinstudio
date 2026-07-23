@@ -24,6 +24,33 @@ export const EASE_LABEL: Record<string, string> = {
   springOut: "Spring",
 };
 
+/*
+Curves that travel PAST their destination before settling.
+
+Worth naming as a set, because overshoot is not a free stylistic choice for
+every property. On a zoom it is the whole point on the way in — the camera
+arrives, leans a little further, settles — and it is a bug on the way out: a
+scale easing back to 1 that overshoots goes BELOW 1, which makes the clip
+smaller than the canvas and shows the background behind it for a few frames.
+The same applies to a pan, whose endpoints are clamped exactly to the edge of
+what the current scale can cover, so anything past them exposes background too.
+
+See safeEase().
+*/
+export const OVERSHOOTING: ReadonlySet<string> = new Set(["easeOutBack", "easeOutElastic", "springOut"]);
+
+/**
+ * The nearest non-overshooting curve to `name`.
+ *
+ * Used for any segment whose destination is a hard limit — full frame, or a pan
+ * clamped to the edge of its own coverage. Keeping the *family* (rather than
+ * dropping to linear) means a spring-eased zoom still eases back out smoothly
+ * instead of stopping dead.
+ */
+export function safeEase(name: string | undefined): string {
+  return name && OVERSHOOTING.has(name) ? "easeInOut" : name || "linear";
+}
+
 const clamp01 = (t: number) => Math.max(0, Math.min(1, t));
 
 // ease maps normalized progress t∈[0,1] through the named curve. Shapes mirror

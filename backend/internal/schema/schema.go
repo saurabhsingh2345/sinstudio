@@ -20,6 +20,30 @@ type Transform struct {
 	Scale    float64 `json:"scale"`
 	Opacity  float64 `json:"opacity"`
 	Rotation float64 `json:"rotation,omitempty"` // clockwise degrees about the clip's center
+	// AnchorX/AnchorY move the point that scaling holds fixed — the zoom origin —
+	// away from the clip's center. Normalized and *relative to center*, so ±0.5 is
+	// an edge and 0 is the center. Center-relative (rather than a 0..1 fraction) so
+	// the zero value is the historical behavior and documents predating anchors
+	// keep zooming from the middle. Rotation always pivots about the center.
+	AnchorX float64 `json:"anchorX,omitempty"`
+	AnchorY float64 `json:"anchorY,omitempty"`
+}
+
+// AnchorFrac returns the scale origin as a 0..1 fraction of the clip's box
+// (0.5 = center), clamped. Both engines size a scaled clip so this point stays
+// put: left = AnchorFracX * (canvasW - clipW).
+func (t Transform) AnchorFrac() (float64, float64) {
+	clamp := func(v float64) float64 {
+		v += 0.5
+		if v < 0 {
+			return 0
+		}
+		if v > 1 {
+			return 1
+		}
+		return v
+	}
+	return clamp(t.AnchorX), clamp(t.AnchorY)
 }
 
 // Clip is a placed reference to an asset on a track.
@@ -38,12 +62,17 @@ type Clip struct {
 	TransitionOut *Transition `json:"transitionOut,omitempty"`
 	// Keyframes animate a property over the clip's life. Keyed by property name:
 	// "x"/"y" (position offset in canvas px), "scale" (multiplier, 1 = canvas-fit),
-	// "opacity" (0..1). Points are clip-local seconds (from Start) so they survive
-	// moving/splitting the clip.
+	// "opacity" (0..1), "rotation" (clockwise degrees). Points are clip-local
+	// seconds (from Start) so they survive moving/splitting the clip. A keyed
+	// property overrides the matching static Transform field for the clip's life.
 	Keyframes map[string][]Keyframe `json:"keyframes,omitempty"`
 	Effects   *Effects              `json:"effects,omitempty"`
 	// EQ is an optional 3-band equalizer on this clip's audio.
 	EQ *AudioEQ `json:"eq,omitempty"`
+	// Denoise removes broadband background noise (fans, hiss, room tone) from
+	// this clip's audio. 0 = off; 0..1 sets how hard the reduction works.
+	// Compiled to ffmpeg afftdn with a tracked noise floor.
+	Denoise float64 `json:"denoise,omitempty"`
 	// LUT names a .cube color lookup table (in the project's luts dir) applied to
 	// this clip's video. Empty = none.
 	LUT string `json:"lut,omitempty"`
@@ -65,6 +94,94 @@ type Clip struct {
 	// PNG and composited like any visual, so transforms/transitions/keyframes/
 	// effects/fades all apply. Duration comes from In/Out like any clip.
 	Title *Title `json:"title,omitempty"`
+	// Annotation makes this a callout clip (no asset) — the arrows, boxes and
+	// step numbers a tutorial points with. Like Title it renders to a
+	// full-canvas PNG, so transforms/keyframes/transitions/effects all apply.
+	Annotation *Annotation `json:"annotation,omitempty"`
+	// Redactions blur or pixelate regions of this clip's picture. Applied to the
+	// clip's own pixels before any transform, so they travel with the content.
+	Redactions []Redaction `json:"redactions,omitempty"`
+	// Chroma removes a background colour from this clip, so whatever sits below
+	// it on the timeline shows through. Applied before any scaling.
+	Chroma *ChromaKey `json:"chroma,omitempty"`
+	// Device wraps this clip's picture in a drawn phone/laptop/browser frame.
+	Device *DeviceFrame `json:"device,omitempty"`
+	// Backdrop puts a styled scene behind this clip's picture: a gradient
+	// wallpaper, the picture inset with rounded corners and a soft shadow —
+	// what makes a raw screen recording read as something produced. Composited
+	// at canvas size BEFORE the clip's transform, like Device, so the scene and
+	// the picture zoom as one object. With Device set too, only the wallpaper
+	// applies (the device supplies its own body and shadow story).
+	Backdrop *Backdrop `json:"backdrop,omitempty"`
+	// Bubble masks this clip into a webcam bubble — centre-cropped square,
+	// circular (or rounded) mask, border ring, soft shadow. Composited at
+	// canvas size before the transform, so the clip's ordinary x/y/scale (and
+	// keyframes) place the bubble. Ignored when Device is set.
+	Bubble *Bubble `json:"bubble,omitempty"`
+	// Cursor emphasises the pointer during a screen recording. It only does
+	// anything when the clip's asset has a recorded pointer track beside it
+	// (a .cursor.json sidecar); on any other clip it is inert.
+	Cursor *CursorFX `json:"cursor,omitempty"`
+	// MotionBlur adds temporal smoothing on camera moves (scale/x/y keyframes).
+	// 0 = off; 0..1 controls strength (compiled to ffmpeg tmix).
+	MotionBlur float64 `json:"motionBlur,omitempty"`
+}
+
+// CursorFX turns on pointer emphasis for a screen recording. Each effect is a
+// pointer so "off" and "on with defaults" stay distinguishable in the document.
+type CursorFX struct {
+	Highlight *CursorHighlight `json:"highlight,omitempty"`
+	Clicks    *CursorClicks    `json:"clicks,omitempty"`
+	Spotlight *CursorSpotlight `json:"spotlight,omitempty"`
+	// Sound plays a synthesised click at each press. Independent of Clicks so a
+	// recording can have the sound without the rings, or the other way round.
+	Sound *CursorClickSound `json:"sound,omitempty"`
+	// Pointer draws Studio's own cursor. It only applies to a recording whose
+	// track says the real cursor was kept out of the capture — drawing a second
+	// cursor over a burned-in one is worse than drawing none.
+	Pointer *CursorPointer `json:"pointer,omitempty"`
+}
+
+// CursorPointer is the cursor Studio draws itself, which is what makes size,
+// styling and smoothing possible at all.
+type CursorPointer struct {
+	Size    int     `json:"size,omitempty"`    // height in canvas px (0 → 44)
+	Opacity float64 `json:"opacity,omitempty"` // 0..1 (0 → 1)
+	Style   string  `json:"style,omitempty"`   // arrow | dot | ring (empty → arrow)
+	Color   string  `json:"color,omitempty"`   // fill hex (empty → white)
+	// Smoothing irons the jitter out of hand movement, 0..1. Clicks stay
+	// anchored to where they actually landed: a smoothed path that drifts off
+	// the button being clicked is worse than a slightly shaky one.
+	Smoothing float64 `json:"smoothing,omitempty"`
+}
+
+// CursorClickSound adds an audible click at each press, mixed as one generated
+// track rather than one input per click.
+type CursorClickSound struct {
+	Volume float64 `json:"volume,omitempty"` // 0..1 (0 → 0.35)
+	Style  string  `json:"style,omitempty"`  // click | tick | soft (empty → click)
+}
+
+// CursorHighlight draws a soft disc under the pointer so it stays findable on a
+// busy screen.
+type CursorHighlight struct {
+	Size    int     `json:"size,omitempty"`    // diameter in canvas px (0 → 96)
+	Color   string  `json:"color,omitempty"`   // hex (empty → amber)
+	Opacity float64 `json:"opacity,omitempty"` // 0..1 (0 → 0.35)
+}
+
+// CursorClicks draws a ring that expands and fades at each press, giving the
+// viewer the feedback the recording itself can't show.
+type CursorClicks struct {
+	Size     int     `json:"size,omitempty"`     // final diameter in canvas px (0 → 140)
+	Color    string  `json:"color,omitempty"`    // hex (empty → white)
+	Duration float64 `json:"duration,omitempty"` // seconds per ring (0 → 0.45)
+}
+
+// CursorSpotlight dims everything except a radius around the pointer.
+type CursorSpotlight struct {
+	Radius int     `json:"radius,omitempty"` // clear radius in canvas px (0 → 220)
+	Dim    float64 `json:"dim,omitempty"`    // 0..1 darkness outside it (0 → 0.55)
 }
 
 // Title is a text overlay clip.
@@ -84,6 +201,150 @@ type Title struct {
 	// Unlike Anim, this can't be expressed as transform keyframes on a single
 	// still, so the renderer composites a sequence of prefix PNGs (see addTitleClip).
 	Reveal string `json:"reveal,omitempty"`
+}
+
+// Redaction kinds.
+const (
+	RedactBlur     = "blur"
+	RedactPixelate = "pixelate"
+)
+
+// Redaction hides part of a clip's own picture — a password, a customer name, a
+// licence key that must not ship. Unlike an Annotation it is not drawn on top of
+// the frame: it resamples the frame's own pixels, so there is nothing to peel
+// off the finished video.
+type Redaction struct {
+	Kind string `json:"kind"` // blur|pixelate
+
+	// Fractions of THE CLIP'S OWN FRAME (0..1), not of the canvas. That is what
+	// makes a redaction stick to the thing it hides: the region is applied before
+	// the clip is scaled or panned, so a zoom carries the blur along with the
+	// content instead of sliding it off.
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	W float64 `json:"w"`
+	H float64 `json:"h"`
+
+	// Amount is 0..1 strength (0 = unset → a sensible default).
+	Amount float64 `json:"amount,omitempty"`
+}
+
+// Device frame kinds.
+const (
+	DeviceBrowser = "browser"
+	DevicePhone   = "phone"
+	DeviceTablet  = "tablet"
+	DeviceLaptop  = "laptop"
+)
+
+// DeviceFrame puts a clip's picture inside a drawn device — a phone, a laptop,
+// a browser window. The frame is composited at canvas size BEFORE the clip's
+// own transform, so the device and the picture inside it move, scale and
+// keyframe as one object rather than sliding apart.
+type DeviceFrame struct {
+	Kind string `json:"kind"` // browser|phone|tablet|laptop
+
+	// Color is the body colour as a hex triple; empty is a near-black.
+	Color string `json:"color,omitempty"`
+}
+
+// Bubble is the webcam-bubble treatment (see Clip.Bubble). Zero values mean
+// the defaults, so an empty struct is already a usable bubble.
+type Bubble struct {
+	// Shape is "circle" (default) or "rounded" (a squircle-ish card).
+	Shape string `json:"shape,omitempty"`
+	// Size is the bubble's diameter as a fraction of the canvas HEIGHT
+	// (0 = default 0.28; capped to 0.9).
+	Size float64 `json:"size,omitempty"`
+	// Border is the ring width in px at a 1080-high reference (0 = default 6;
+	// negative = none). BorderColor empty = white.
+	Border      float64 `json:"border,omitempty"`
+	BorderColor string  `json:"borderColor,omitempty"`
+	// Shadow is the drop-shadow strength 0..1 (0 = default 0.5).
+	Shadow float64 `json:"shadow,omitempty"`
+}
+
+// Backdrop is the styled scene behind a clip's picture (see Clip.Backdrop).
+// Zero values mean the defaults, so an empty struct is already a usable scene.
+type Backdrop struct {
+	// Color1/Color2 are the wallpaper: a vertical gradient from Color1 (top)
+	// to Color2 (bottom). Empty Color2 = flat Color1; both empty = dark slate.
+	Color1 string `json:"color1,omitempty"`
+	Color2 string `json:"color2,omitempty"`
+	// Inset is the fraction of the canvas the picture pulls in from each edge
+	// (0 = default 0.06; capped at 0.35 — beyond that it's a thumbnail).
+	Inset float64 `json:"inset,omitempty"`
+	// Radius is the picture's corner radius in px at a 1080-high reference,
+	// like the rest of the schema's px sizes. 0 = default 14.
+	Radius float64 `json:"radius,omitempty"`
+	// Shadow is the drop-shadow strength, 0..1. 0 = default 0.55; set a
+	// negative value to mean "really none".
+	Shadow float64 `json:"shadow,omitempty"`
+}
+
+// ChromaKey removes a background colour so the clip below shows through — the
+// green screen behind a talking head. Applied to the clip's own pixels before
+// any scaling, because keying interpolated pixels cannot separate a real edge
+// from a blended one.
+type ChromaKey struct {
+	// Color is the screen's colour as a hex triple. Empty means the standard
+	// chroma green, which is what a bought screen actually is.
+	Color string `json:"color,omitempty"`
+
+	// Similarity is how far from Color still counts as background, 0..1.
+	// Too low leaves a fringe; too high starts eating the subject.
+	Similarity float64 `json:"similarity,omitempty"`
+
+	// Blend softens the edge between kept and keyed, 0..1. A hard cut looks
+	// cut out; a little blend is what makes the composite believable.
+	Blend float64 `json:"blend,omitempty"`
+
+	// Spill neutralises the screen's light bouncing onto the subject, 0..1.
+	// Independent of the key: a well-keyed shot can still have green ears.
+	Spill float64 `json:"spill,omitempty"`
+}
+
+// Annotation kinds. Anything not recognised draws nothing rather than
+// guessing — a callout in the wrong shape is worse than a missing one.
+const (
+	AnnoArrow     = "arrow"
+	AnnoBox       = "box"
+	AnnoEllipse   = "ellipse"
+	AnnoHighlight = "highlight"
+	AnnoNumber    = "number"
+	AnnoText      = "text"
+	AnnoKeys      = "keys"
+)
+
+// Annotation is a shape drawn over the video — the callouts a tutorial points
+// with. It is deliberately one struct with a Kind rather than a union: every
+// shape is a stroke, a fill and (sometimes) a label over the same box, and the
+// editor is far simpler when switching kind keeps the geometry you placed.
+type Annotation struct {
+	Kind string `json:"kind"` // arrow|box|ellipse|highlight|number|text
+
+	// Geometry in canvas fractions (0..1), NOT pixels, so a callout keeps its
+	// place when the project is exported at another size. For an arrow (X,Y) is
+	// the tail and (X2,Y2) the point; for every other kind they are the top-left
+	// and size of the bounding box.
+	X  float64 `json:"x"`
+	Y  float64 `json:"y"`
+	W  float64 `json:"w,omitempty"`
+	H  float64 `json:"h,omitempty"`
+	X2 float64 `json:"x2,omitempty"`
+	Y2 float64 `json:"y2,omitempty"`
+
+	Color     string  `json:"color,omitempty"`     // stroke/shape colour (default amber)
+	Fill      string  `json:"fill,omitempty"`      // interior; "" = hollow
+	Thickness float64 `json:"thickness,omitempty"` // px at a 1080-tall reference
+	Opacity   float64 `json:"opacity,omitempty"`   // 0..1 (0 = unset → 1)
+	Radius    float64 `json:"radius,omitempty"`    // corner rounding, px at 1080 reference
+
+	// Text labels the shape: the digits for a "number" badge, the message for a
+	// "text" callout, an optional caption on any other kind.
+	Text      string `json:"text,omitempty"`
+	TextSize  int    `json:"textSize,omitempty"`  // px at a 1080-tall reference
+	TextColor string `json:"textColor,omitempty"` // default white
 }
 
 // Effects are per-clip color/blur adjustments (compiled to ffmpeg eq/hue/gblur).
@@ -175,7 +436,8 @@ type Track struct {
 	Name            string       `json:"name,omitempty"`
 	Clips           []Clip       `json:"clips,omitempty"`
 	Cues            []CaptionCue `json:"cues,omitempty"`
-	BackgroundColor string       `json:"backgroundColor,omitempty"`
+	BackgroundColor  string       `json:"backgroundColor,omitempty"`
+	BackgroundColor2 string       `json:"backgroundColor2,omitempty"` // top→bottom gradient end; empty = solid
 	Muted           bool         `json:"muted,omitempty"`
 	Hidden          bool         `json:"hidden,omitempty"`
 	Solo            bool         `json:"solo,omitempty"`
@@ -204,6 +466,14 @@ type Asset struct {
 	// imported assets. Source doubles as the generator id for generated assets.
 	GenInput  string            `json:"genInput,omitempty"`
 	GenParams map[string]string `json:"genParams,omitempty"`
+	// HasCursor marks a screen recording that arrived with a pointer track
+	// beside it. The editor keys the cursor-effects panel off this: offering the
+	// controls on a clip that can never show them is worse than not offering them.
+	HasCursor bool `json:"hasCursor,omitempty"`
+	// CursorHidden means the OS cursor was kept out of the capture, so Studio
+	// owns drawing it. Only then can the cursor be resized, restyled or
+	// smoothed — otherwise it is part of the pixels.
+	CursorHidden bool `json:"cursorHidden,omitempty"`
 }
 
 // EditDoc is the whole persisted project state.
@@ -215,7 +485,25 @@ type EditDoc struct {
 	Tracks  []Track  `json:"tracks"`
 	Assets  []Asset  `json:"assets"`
 	Markers []Marker `json:"markers,omitempty"`
-	Updated string   `json:"updated,omitempty"`
+	// Watermark overlays a brand mark on every frame of every export.
+	Watermark *Watermark `json:"watermark,omitempty"`
+	Updated   string     `json:"updated,omitempty"`
+}
+
+// Watermark is a project-wide corner logo. Project-wide on purpose: a brand
+// mark is a property of the video, not of any one clip, and per-clip marks
+// would flicker at every cut.
+type Watermark struct {
+	// AssetID names an image asset in this project's library.
+	AssetID string `json:"assetId"`
+	// Corner is tl|tr|bl|br (default br).
+	Corner string `json:"corner,omitempty"`
+	// Size is the mark's width as a fraction of canvas width (0 = default 0.12).
+	Size float64 `json:"size,omitempty"`
+	// Opacity 0..1 (0 = default 0.6).
+	Opacity float64 `json:"opacity,omitempty"`
+	// Margin from the edges as a fraction of the canvas' short side (0 = 0.03).
+	Margin float64 `json:"margin,omitempty"`
 }
 
 // Marker is a timeline annotation (editor aid; not composited into the export).

@@ -23,3 +23,6 @@ go.work.sum
 studio-frontend/
 # stray root lockfile
 /package-lock.json
+
+# Built helper binary — tools/cursord is source; build it locally.
+/tools/cursord/cursord

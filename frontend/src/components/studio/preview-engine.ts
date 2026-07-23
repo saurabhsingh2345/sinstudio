@@ -1,9 +1,10 @@
 // preview-engine — pure compositing math shared by the studio preview. Extracted
 // from the original Preview.tsx so the new PreviewStage renders frames that match
 // the exported render. Keep in sync with backend/internal/render.
-import { clipPlayDur, type Clip, type Track } from "../../types";
+import { anchorFrac, clipPlayDur, type Clip, type Track } from "../../types";
 import { ease } from "../../ease";
 import { peaksNow } from "../../peaks";
+import { clampPanOffset, contentBox } from "../../zoomPan";
 
 export const DEF_TRANS = 0.5; // matches render's defTransDur
 
@@ -28,9 +29,19 @@ export function kfValue(keys: { t: number; value: number; ease?: string }[], loc
   return last.value;
 }
 
-// clipBox computes a clip's on-stage rectangle + opacity at time t, folding in
-// keyframes and transitions so the preview matches the exported render.
-export function clipBox(clip: Clip, t: number, stageW: number, stageH: number, W: number, H: number) {
+// clipBox computes a clip's on-stage rectangle, rotation and opacity at time t,
+// folding in keyframes and transitions so the preview matches the exported
+// render.
+export function clipBox(
+  clip: Clip,
+  t: number,
+  stageW: number,
+  stageH: number,
+  W: number,
+  H: number,
+  video?: { width: number; height: number },
+  camera = false
+) {
   const dur = clipPlayDur(clip);
   const start = clip.start;
   const end = start + dur;
@@ -41,10 +52,23 @@ export function clipBox(clip: Clip, t: number, stageW: number, stageH: number, W
   const vw = stageW * scaleMul;
   const vh = stageH * scaleMul;
 
-  const offX = kf.x?.length ? kfValue(kf.x, localT) : clip.transform.x;
-  const offY = kf.y?.length ? kfValue(kf.y, localT) : clip.transform.y;
-  let left = (stageW - vw) / 2 + (offX / W) * stageW;
-  let top = (stageH - vh) / 2 + (offY / H) * stageH;
+  // The anchor is the point scaling holds fixed: the box sits at a*(stage-box),
+  // which is the familiar (stage-box)/2 when the anchor is centered.
+  const [ax, ay] = anchorFrac(clip.transform);
+  let offX = kf.x?.length ? kfValue(kf.x, localT) : clip.transform.x;
+  let offY = kf.y?.length ? kfValue(kf.y, localT) : clip.transform.y;
+  if (scaleMul > 1.001 && video && video.width > 0 && video.height > 0) {
+    if (camera) {
+      offX = clampPanOffset(offX, W, scaleMul, 0, W);
+      offY = clampPanOffset(offY, H, scaleMul, 0, H);
+    } else {
+      const cb = contentBox(video, { width: W, height: H });
+      offX = clampPanOffset(offX, W, scaleMul, cb.x0, cb.x1);
+      offY = clampPanOffset(offY, H, scaleMul, cb.y0, cb.y1);
+    }
+  }
+  let left = ax * (stageW - vw) + (offX / W) * stageW;
+  let top = ay * (stageH - vh) + (offY / H) * stageH;
 
   const slide = (tr: { type: string; duration: number } | undefined, entering: boolean) => {
     if (!tr) return;
@@ -77,7 +101,9 @@ export function clipBox(clip: Clip, t: number, stageW: number, stageH: number, W
   if (alphaIn > 0 && t < start + alphaIn) opacity *= clamp01((t - start) / alphaIn);
   if (alphaOut > 0 && t > end - alphaOut) opacity *= clamp01((end - t) / alphaOut);
 
-  return { left, top, vw, vh, opacity };
+  const rotation = kf.rotation?.length ? kfValue(kf.rotation, localT) : clip.transform.rotation || 0;
+
+  return { left, top, vw, vh, opacity, rotation };
 }
 
 // cssFilter approximates a clip's effects as a CSS filter string for the preview

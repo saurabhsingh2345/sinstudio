@@ -38,11 +38,14 @@ type LoadError struct {
 // PluginDir returns the directory being scanned ("" when none is configured).
 func (r *Registry) PluginDir() string { return r.pluginDir }
 
-// Errors returns the load failures from the most recent scan.
+// Errors returns the load failures from the most recent scan. Always non-nil
+// so it serializes as a JSON array — the frontend doesn't null-check it.
 func (r *Registry) Errors() []LoadError {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return append([]LoadError(nil), r.errs...)
+	out := make([]LoadError, len(r.errs))
+	copy(out, r.errs)
+	return out
 }
 
 // SetPluginDir points the registry at a plugin directory and scans it.

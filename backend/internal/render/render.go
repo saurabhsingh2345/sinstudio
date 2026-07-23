@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 
+	"studio/internal/cursor"
 	"studio/internal/jobs"
 	"studio/internal/schema"
 )
@@ -43,17 +44,33 @@ type visual struct {
 	start, end        float64
 	x, y              int
 	sw, sh            int
+	srcW, srcH        int // the source file's own pixels; 0 when unknown
 	opacity           float64
 	speed             float64
 	fadeIn, fadeOut   float64
 	transIn, transOut *schema.Transition
-	cx, cy            int                          // centered base position (no offset) for keyframes
+	cx, cy            int                          // anchored base position (no offset) for keyframes
+	ax, ay            float64                      // scale origin as a 0..1 fraction of the box (0.5 = center)
 	rot               float64                      // clockwise rotation in degrees about center (0 = none)
 	keyframes         map[string][]schema.Keyframe // property -> control points (clip-local t)
 	effects           *schema.Effects
 	lut               string  // absolute path to a .cube LUT, or "" for none
 	still             bool    // input is a looped still image (title), not a trimmed video
 	hold              float64 // seconds of frozen last frame appended after the source span
+	cursorFX          *schema.CursorFX
+	cursorPath        string      // media path, for finding the .cursor.json sidecar
+	cursor            *cursorPlan // compiled emphasis overlays, nil if none
+	motionBlur        float64     // 0..1 temporal blur on camera keyframe moves
+	// Regions blurred/pixelated in the clip's own picture, before any transform.
+	redactions []schema.Redaction
+	// Background colour keyed out of this clip, before any scaling.
+	chroma *schema.ChromaKey
+	// Drawn phone/laptop/browser frame this clip's picture sits inside.
+	device *schema.DeviceFrame
+	// Styled scene behind the picture (wallpaper, inset, rounded corners).
+	backdrop *schema.Backdrop
+	// Webcam-bubble mask (circle/rounded, ring, shadow).
+	bubble *schema.Bubble
 }
 
 // audio is a resolved audio contribution.
@@ -66,6 +83,7 @@ type audio struct {
 	fadeIn, fadeOut float64
 	duck            bool // true = a music/bed track that ducks under voice
 	eq              *schema.AudioEQ
+	denoise         float64 // 0 = off; 0..1 noise-reduction strength
 }
 
 // Plan is the compiled ffmpeg command plus side artifacts (srt path).
@@ -108,7 +126,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	var visuals []visual
 	var audios []audio
 	var cues []schema.CaptionCue
-	bgColor := "#000000"
+	bgColor, bgColor2 := "#000000", ""
 
 	order := map[string]int{schema.TrackBackground: 0, schema.TrackVideo: 1, schema.TrackOverlay: 2}
 	tracks := append([]schema.Track(nil), doc.Tracks...)
@@ -126,6 +144,15 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		}
 	}
 	titleIdx := 0
+	// Separate counters: the PNGs are named positionally, so titles and
+	// annotations must not share a numbering or they overwrite each other.
+	annoIdx := 0
+
+	// Source dimensions, for fitting a clip whose shape isn't the canvas's.
+	srcDims := map[string][2]int{}
+	for _, a := range doc.Assets {
+		srcDims[a.ID] = [2]int{a.Width, a.Height}
+	}
 
 	for _, t := range tracks {
 		suppressed := soloActive && !t.Solo && t.Kind != schema.TrackBackground
@@ -137,11 +164,14 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			if t.BackgroundColor != "" {
 				bgColor = t.BackgroundColor
 			}
+			if t.BackgroundColor2 != "" {
+				bgColor2 = t.BackgroundColor2
+			}
 			for _, c := range t.Clips {
 				if c.Disabled {
 					continue
 				}
-				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir)
+				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID])
 			}
 		case schema.TrackVideo, schema.TrackOverlay:
 			for _, c := range t.Clips {
@@ -154,7 +184,13 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 					}
 					continue
 				}
-				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck, opts.LUTDir)
+				if c.Annotation != nil {
+					if err := addAnnotationClip(&visuals, c, w, h, srtDir, annoIdx); err == nil {
+						annoIdx++
+					}
+					continue
+				}
+				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID])
 			}
 		case schema.TrackAudio:
 			if t.Muted {
@@ -175,7 +211,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				audios = append(audios, audio{
 					path: p, in: c.In, out: c.Out, start: c.Start, volume: vol,
 					speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut, duck: t.Duck,
-					eq: c.EQ,
+					eq: c.EQ, denoise: c.Denoise,
 				})
 			}
 		case schema.TrackCaption:
@@ -255,13 +291,72 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 
 	args := []string{"-y", "-loglevel", "error", "-progress", "pipe:1", "-stats_period", "0.2"}
 
-	// Input 0: background color canvas.
-	args = append(args, "-f", "lavfi", "-i",
-		fmt.Sprintf("color=c=%s:s=%dx%d:r=%d:d=%.3f", ffColor(bgColor), w, h, fps, dur))
+	// Input 0: background canvas — solid or vertical gradient.
+	bgInput := fmt.Sprintf("color=c=%s:s=%dx%d:r=%d:d=%.3f", ffColor(bgColor), w, h, fps, dur)
+	if bgColor2 != "" {
+		bgInput = fmt.Sprintf("gradients=s=%dx%d:c0=%s:c1=%s:d=%.3f:r=%d",
+			w, h, ffColor(bgColor), ffColor(bgColor2), dur, fps)
+	}
+	args = append(args, "-f", "lavfi", "-i", bgInput)
 
 	var fc strings.Builder
 	base := "[0:v]"
 	inputIdx := 1
+
+	// Cursor emphasis is compiled up front, because sendcmd has to sit on the
+	// chain BEFORE the overlays it drives — a command that arrives after the
+	// frame has already been composited is a frame too late. One script serves
+	// the whole graph; entries address filters by instance name.
+	var cursorCmds []string
+	for i := range visuals {
+		v := &visuals[i]
+		if v.cursorFX == nil || v.cursorPath == "" {
+			continue
+		}
+		track, err := cursor.Read(v.cursorPath)
+		if err != nil || track == nil {
+			// A clip asking for cursor effects without a pointer track just
+			// renders without them; a malformed sidecar must not fail the export.
+			continue
+		}
+		// Click sounds are one generated track per clip with every press already
+		// placed in it, rather than one input per click — a normal tutorial has
+		// hundreds, and the filtergraph should not grow with them.
+		if snd := v.cursorFX.Sound; snd != nil && opts.FrameAt <= 0 {
+			wav := filepath.Join(srtDir, fmt.Sprintf("cur-%d-clicks.wav", i))
+			n, err := writeClickWAV(wav, track, v.end-v.start, v.in, v.out, v.speed, snd.Style, snd.Volume)
+			if err != nil {
+				return nil, err
+			}
+			if n > 0 {
+				audios = append(audios, audio{
+					path: wav, in: 0, out: v.end - v.start, start: v.start, volume: 1,
+				})
+			}
+		}
+
+		plan, err := buildCursorFX(v.cursorFX, track, srtDir, i, v, w, h)
+		if err != nil {
+			return nil, err
+		}
+		if plan == nil {
+			continue
+		}
+		v.cursor = plan
+		cursorCmds = append(cursorCmds, plan.cmds...)
+	}
+	if len(cursorCmds) > 0 {
+		// sendcmd requires its entries in ascending time order.
+		sort.SliceStable(cursorCmds, func(a, b int) bool {
+			return cmdTime(cursorCmds[a]) < cmdTime(cursorCmds[b])
+		})
+		cmdPath := filepath.Join(srtDir, "cursor.cmd")
+		if err := os.WriteFile(cmdPath, []byte(strings.Join(cursorCmds, "\n")+"\n"), 0o644); err != nil {
+			return nil, err
+		}
+		fmt.Fprintf(&fc, "[0:v]sendcmd=f=%s[cmd];", escapeFilterPath(cmdPath))
+		base = "[cmd]"
+	}
 
 	// Visual clips: trim, speed, position, opacity, fades/transitions, then overlay.
 	for i, v := range visuals {
@@ -279,27 +374,178 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			se := kfScaleExpr(v.start, v.keyframes["scale"])
 			scaleSeg = fmt.Sprintf("scale=w='max(2,%d*%s)':h='max(2,%d*%s)':eval=frame:flags=bicubic", w, se, h, se)
 		}
+		/*
+		 * A source whose shape is not the canvas's is FITTED — aspect kept,
+		 * centred, the bars transparent — never stretched. Stretching was what
+		 * this used to do, and it meant the export distorted exactly the clips
+		 * the preview letterboxed: two different pictures from one document.
+		 * The bars are transparent rather than black so whatever is under the
+		 * clip shows through, which is also what the preview's object-fit does.
+		 *
+		 * It runs AFTER chroma (which must key the source's own pixels) and
+		 * after redactions (whose geometry is fractions of the source's own
+		 * frame), and not at all under a device frame, which pads the picture
+		 * into its screen itself. The half-percent tolerance mirrors
+		 * canvasForSource: capture pipelines round dimensions, and refitting a
+		 * rounding error would soften every frame for nothing.
+		 */
+		prefit := ""
+		zoomClip := clipHasZoomKeyframes(v.keyframes)
+		cameraClip := v.cursorFX != nil || zoomClip
+		if v.device == nil && v.bubble == nil && v.srcW > 0 && v.srcH > 0 {
+			usePrefit := v.backdrop == nil || cameraClip
+			if usePrefit {
+				srcA := float64(v.srcW) / float64(v.srcH)
+				canA := float64(w) / float64(h)
+				if math.Abs(srcA-canA)/canA > 0.005 {
+					if cameraClip {
+						prefit = fmt.Sprintf(
+							"scale=%d:%d:force_original_aspect_ratio=increase:flags=bicubic,crop=%d:%d,format=rgba,",
+							w, h, w, h)
+					} else {
+						prefit = fmt.Sprintf(
+							"scale=%d:%d:force_original_aspect_ratio=decrease:flags=bicubic,format=rgba,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black@0,",
+							w, h, w, h)
+					}
+				}
+			}
+		}
+		// Redactions branch the chain (split → crop → resample → overlay), so the
+		// source segment is cut short and handed to them; without any, the chain
+		// stays exactly as linear as it was.
+		redacting := len(v.redactions) > 0
 		if v.still {
 			// Looped still (title PNG): bound to its span, PTS shifted to start.
 			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", v.path)
-			fmt.Fprintf(&fc,
-				"[%d:v]setpts=PTS-STARTPTS+%.3f/TB,%s,format=rgba",
-				inputIdx, v.start, scaleSeg)
+			fmt.Fprintf(&fc, "[%d:v]setpts=PTS-STARTPTS+%.3f/TB", inputIdx, v.start)
 		} else {
 			args = append(args, "-i", v.path)
 			fmt.Fprintf(&fc,
-				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB,%s,format=rgba",
-				inputIdx, v.in, v.out, sp, v.start, scaleSeg)
-			// Hold: clone the last frame for `hold` more seconds so the clip covers
-			// trailing audio with a freeze-frame instead of cutting to background.
-			if v.hold > 0 {
-				fmt.Fprintf(&fc, ",tpad=stop_mode=clone:stop_duration=%.3f", v.hold)
+				"[%d:v]trim=start=%.3f:end=%.3f,setpts=(PTS-STARTPTS)/%.4f+%.3f/TB",
+				inputIdx, v.in, v.out, sp, v.start)
+		}
+		// The device frame is a second input for this visual. Appended directly
+		// after the source so its index follows, and counted in extraInputs so
+		// the running index stays in step with `args` once this clip is done.
+		devIdx, extraInputs := -1, 0
+		var devGeom deviceGeom
+		if v.device != nil {
+			png := filepath.Join(srtDir, fmt.Sprintf("device-%d.png", i))
+			if err := renderDevicePNG(v.device, w, h, png); err != nil {
+				return nil, err
+			}
+			devGeom = deviceLayout(v.device.Kind, w, h)
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", png)
+			devIdx = inputIdx + 1
+			extraInputs = 1
+		}
+		// A bubble is ignored under a device frame — a phone inside a circle is
+		// two framings fighting over one picture.
+		bubble := v.bubble
+		if v.device != nil {
+			bubble = nil
+		}
+		// The bubble's mask and its frame (shadow + ring) are two more inputs.
+		bbMaskIdx, bbFrameIdx := -1, -1
+		var bbGeom bubbleGeom
+		if bubble != nil {
+			bbGeom = bubbleLayout(bubble, w, h)
+			maskPNG := filepath.Join(srtDir, fmt.Sprintf("bubble-mask-%d.png", i))
+			if err := renderBubbleMaskPNG(bbGeom, maskPNG); err != nil {
+				return nil, err
+			}
+			framePNG := filepath.Join(srtDir, fmt.Sprintf("bubble-frame-%d.png", i))
+			if err := renderBubbleFramePNG(bubble, bbGeom, w, h, framePNG); err != nil {
+				return nil, err
+			}
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", maskPNG)
+			bbMaskIdx = inputIdx + 1 + extraInputs
+			extraInputs++
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", framePNG)
+			bbFrameIdx = bbMaskIdx + 1
+			extraInputs++
+		}
+		// A backdrop adds its wallpaper (and, without a device, the card's
+		// corner mask) as further inputs — skipped when zoom keyframes are
+		// present, because scaling the card composite exposes the wallpaper.
+		bgIdx, maskIdx := -1, -1
+		var bdGeom backdropGeom
+		useBackdropCard := v.backdrop != nil && !cameraClip
+		if useBackdropCard {
+			bdGeom = backdropLayout(v.backdrop, v.srcW, v.srcH, w, h)
+			wallPNG := filepath.Join(srtDir, fmt.Sprintf("backdrop-%d.png", i))
+			if err := renderBackdropPNG(v.backdrop, bdGeom, w, h, v.device == nil, wallPNG); err != nil {
+				return nil, err
+			}
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", wallPNG)
+			bgIdx = inputIdx + 1 + extraInputs
+			extraInputs++
+			if v.device == nil {
+				maskPNG := filepath.Join(srtDir, fmt.Sprintf("backdrop-mask-%d.png", i))
+				if err := renderBackdropMaskPNG(bdGeom, maskPNG); err != nil {
+					return nil, err
+				}
+				args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", maskPNG)
+				maskIdx = bgIdx + 1
+				extraInputs++
 			}
 		}
-		// Static rotation about the clip's center. format=rgba first so the corners
-		// exposed by the rotation are transparent (c=none), not black. rotw/roth grow
-		// the box to fit the rotated content; positioning below re-centers dynamically.
-		if v.rot != 0 {
+		// Key first, on the source's own pixels. After a scale, the subject's
+		// edges are already blended with the screen and no threshold can tell a
+		// real edge from a green-tinted one — see chroma.go.
+		fc.WriteString(chromaFilters(v.chroma))
+		// Redactions and device frames both branch the chain (redactions split and
+		// overlay a patch, a device insets the picture and lays a frame over it),
+		// so the source segment is cut short and handed to them. With neither, the
+		// chain stays exactly as linear as it was.
+		if redacting || v.device != nil || useBackdropCard || bubble != nil {
+			src := fmt.Sprintf("[rs%d]", i)
+			fmt.Fprintf(&fc, "%s;", src)
+			last := src
+			// Redactions first: they are fractions of the clip's own picture, and
+			// that is still what this is until the device insets it.
+			for k, r := range v.redactions {
+				last = writeRedaction(&fc, last, i, k, r)
+			}
+			if v.device != nil {
+				last = writeDeviceFrame(&fc, last, i, devIdx, devGeom, w, h)
+			}
+			if bubble != nil {
+				last = writeBubble(&fc, last, i, bbMaskIdx, bbFrameIdx, bbGeom, w, h)
+			}
+			// The backdrop goes on last: it wants the finished picture — device
+			// frame and all — sitting on its wallpaper.
+			if useBackdropCard {
+				if v.device != nil {
+					last = writeBackdropUnder(&fc, last, i, bgIdx)
+				} else {
+					last = writeBackdrop(&fc, last, i, bgIdx, maskIdx, bdGeom)
+				}
+			}
+			fmt.Fprintf(&fc, "%s%s%s,format=rgba", last, prefit, scaleSeg)
+		} else {
+			fmt.Fprintf(&fc, ",%s%s,format=rgba", prefit, scaleSeg)
+		}
+		// Hold: clone the last frame for `hold` more seconds so the clip covers
+		// trailing audio with a freeze-frame instead of cutting to background.
+		if !v.still && v.hold > 0 {
+			fmt.Fprintf(&fc, ",tpad=stop_mode=clone:stop_duration=%.3f", v.hold)
+		}
+		// Rotation about the clip's center. format=rgba first so the corners exposed
+		// by the rotation are transparent (c=none), not black. Positioning below
+		// re-centers dynamically, since either form grows the box.
+		rotActive := len(v.keyframes["rotation"]) > 0
+		switch {
+		case rotActive:
+			// Animated: `rotate` re-evaluates its angle per frame, but ow/oh are
+			// evaluated once at config time — so they can't track the live angle.
+			// Size the box to the diagonal, which contains the frame at *any* angle;
+			// this also stays correct under overshoot easings that swing past the
+			// keyed values.
+			fmt.Fprintf(&fc, ",format=rgba,rotate=a=%s:ow='hypot(iw,ih)':oh='hypot(iw,ih)':c=none",
+				kfRotExpr(v.start, v.keyframes["rotation"]))
+		case v.rot != 0:
+			// Static: rotw/roth size the box exactly to the rotated content.
 			rad := v.rot * math.Pi / 180
 			fmt.Fprintf(&fc, ",format=rgba,rotate=%.6f:ow=rotw(%.6f):oh=roth(%.6f):c=none", rad, rad, rad)
 		}
@@ -323,17 +569,19 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		if tr.alphaOut > 0 {
 			fmt.Fprintf(&fc, ",fade=t=out:st=%.3f:d=%.3f:alpha=1", math.Max(v.start, v.end-tr.alphaOut), tr.alphaOut)
 		}
+		fc.WriteString(motionBlurFilter(v.motionBlur, v.keyframes))
 		fmt.Fprintf(&fc, "%s;", lbl)
 		out := fmt.Sprintf("[b%d]", i)
 		// Position — motion keyframes win per axis, else a slide expression, else
-		// static. When scale is animated the center must track the clip's live
-		// size, so use overlay's own w/h ("(W-w)/2") instead of the static center.
-		// Rotation (like scale animation) grows the overlay box, so its center must
-		// track the overlay's live size instead of the static pre-transform center.
-		dynCenter := scaleActive || v.rot != 0
+		// static. When scale is animated the anchor must track the clip's live
+		// size, so use overlay's own w/h ("ax*(W-w)") instead of the static base.
+		// Rotation (like scale animation) grows the overlay box, so it too has to
+		// track the live size rather than the static pre-transform position.
+		dynCenter := scaleActive || rotActive || v.rot != 0
 		cxExpr, cyExpr := fmt.Sprintf("%d", v.cx), fmt.Sprintf("%d", v.cy)
 		if dynCenter {
-			cxExpr, cyExpr = "(W-w)/2", "(H-h)/2"
+			cxExpr = fmt.Sprintf("%.4f*(W-w)", v.ax)
+			cyExpr = fmt.Sprintf("%.4f*(H-h)", v.ay)
 		}
 		var xPos, yPos string
 		switch {
@@ -356,7 +604,50 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			"%s%soverlay=x=%s:y=%s:enable='between(t,%.3f,%.3f)':eof_action=pass:format=auto%s;",
 			base, lbl, xPos, yPos, v.start, v.end, out)
 		base = out
-		inputIdx++
+		inputIdx += 1 + extraInputs
+
+		// Cursor emphasis sits directly on top of the clip it belongs to, so a
+		// later clip covering this one also covers its highlight.
+		if v.cursor != nil {
+			for si, seg := range v.cursor.segments {
+				args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", seg.png)
+				src := fmt.Sprintf("[cx%d_%d]", i, si)
+				// Shift the looped still onto the clip's span so that `t` inside
+				// its own filters is timeline time — the scale and fade below are
+				// written against the timeline, not against the still's 0-based PTS.
+				fmt.Fprintf(&fc, "[%d:v]setpts=PTS-STARTPTS+%.3f/TB,format=rgba", inputIdx, v.start)
+				// A click ring grows and fades over its short life; the highlight
+				// and spotlight are fixed and only move.
+				if seg.scaleExpr != "" {
+					fmt.Fprintf(&fc, ",scale=w='max(2,%s)':h='max(2,%s)':eval=frame:flags=bicubic", seg.scaleExpr, seg.scaleExpr)
+				}
+				// A named scale filter so sendcmd can grow the overlay in step
+				// with the clip's zoom; it starts at the authored size, which is
+				// already correct for an unzoomed clip.
+				if seg.scaleName != "" {
+					fmt.Fprintf(&fc, ",scale@%s=w=%d:h=%d:flags=bicubic", seg.scaleName, seg.baseW, seg.baseH)
+				}
+				if seg.fadeDur > 0 {
+					fmt.Fprintf(&fc, ",fade=t=out:st=%.3f:d=%.3f:alpha=1", seg.fadeStart, seg.fadeDur)
+				}
+				fmt.Fprintf(&fc, "%s;", src)
+				out := fmt.Sprintf("[bc%d_%d]", i, si)
+				// format=auto is deliberately omitted when the overlay input
+				// resizes every frame (a click ring): overlay's format
+				// auto-negotiation does not survive the reconfiguration and the
+				// render dies mid-way with EINVAL. Everything else keeps it, to
+				// match the rest of the graph.
+				format := ":format=auto"
+				if seg.scaleExpr != "" {
+					format = ""
+				}
+				fmt.Fprintf(&fc,
+					"%s%soverlay@%s=x='%s':y='%s':enable='%s':eof_action=pass%s%s;",
+					base, src, seg.name, seg.x, seg.y, seg.enable, format, out)
+				base = out
+				inputIdx++
+			}
+		}
 	}
 
 	// Caption burn-in: render each cue to a full-canvas transparent PNG and
@@ -400,6 +691,9 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			for _, t := range atempoChain(a.speed) {
 				fmt.Fprintf(&fc, ",atempo=%.4f", t)
 			}
+			// Denoise before volume/EQ: the reduction should judge the source's
+			// own noise floor, not one already moved by gain or shelving.
+			fc.WriteString(denoiseFilter(a.denoise))
 			fmt.Fprintf(&fc, ",volume=%.3f", a.volume)
 			fc.WriteString(eqFilters(a.eq))
 			if a.fadeIn > 0 {
@@ -454,11 +748,26 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	// An audio-only project (music over a bare background) still builds a
 	// filtergraph, so the background must be routed through a passthrough too —
 	// otherwise the bare "[0:v]" input pad gets mapped as a filter label.
-	hasVideoGraph := len(visuals) > 0 || strings.Contains(fc.String(), "[c") || rangeActive || presetActive || gif || haveAudio
+	hasVideoGraph := len(visuals) > 0 || strings.Contains(fc.String(), "[c") || rangeActive || presetActive || gif || haveAudio || doc.Watermark != nil
 	if vlab == "[0:v]" && hasVideoGraph {
 		// route the bare bg through a passthrough so we can attach finalize filters
 		fmt.Fprintf(&fc, "[0:v]null[vpass];")
 		vlab = "[vpass]"
+	}
+
+	// The brand mark, over EVERYTHING already composited — clips, captions,
+	// cursor effects — and before the range trim, so a partial export carries
+	// it too. Frame grabs included: a watermark you can't preview isn't one.
+	if wm := doc.Watermark; wm != nil {
+		if p, ok := resolve(wm.AssetID); ok {
+			g := watermarkLayout(wm, srcDims[wm.AssetID][0], srcDims[wm.AssetID][1], w, h)
+			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", dur), "-i", p)
+			fmt.Fprintf(&fc, "[%d:v]scale=%d:%d:flags=bicubic,format=rgba,colorchannelmixer=aa=%.3f[wmk];",
+				inputIdx, g.w, g.h, watermarkOpacity(wm))
+			fmt.Fprintf(&fc, "%s[wmk]overlay=%d:%d:format=auto[vwm];", vlab, g.x, g.y)
+			vlab = "[vwm]"
+			inputIdx++
+		}
 	}
 
 	if rangeActive {
@@ -544,7 +853,7 @@ func codecArgs(format string, withAudio bool) []string {
 	return a
 }
 
-func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool, lutDir string) {
+func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool, lutDir string, src [2]int) {
 	p, ok := resolve(c.AssetID)
 	if !ok {
 		return
@@ -577,19 +886,26 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 	if sh < 2 {
 		sh = 2
 	}
-	cx, cy := (w-sw)/2, (h-sh)/2
+	// The anchor is the point scaling holds fixed: at anchor fraction a, the box
+	// sits at a*(canvas-box), which is the old (canvas-box)/2 when a = 0.5.
+	ax, ay := c.Transform.AnchorFrac()
+	cx, cy := int(ax*float64(w-sw)), int(ay*float64(h-sh))
 	x := cx + int(c.Transform.X)
 	y := cy + int(c.Transform.Y)
 	if isBG {
 		sw, sh, x, y, cx, cy = w, h, 0, 0, 0, 0
+		ax, ay = 0.5, 0.5
 	}
 	*visuals = append(*visuals, visual{
 		path: p, in: c.In, out: c.Out, start: c.Start, end: c.Start + span + hold,
-		x: x, y: y, sw: sw, sh: sh, opacity: op,
+		x: x, y: y, sw: sw, sh: sh, srcW: src[0], srcH: src[1], opacity: op,
 		speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
-		cx: cx, cy: cy, rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
-		hold: hold,
+		cx: cx, cy: cy, ax: ax, ay: ay,
+		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
+		hold: hold, cursorFX: c.Cursor, cursorPath: p, motionBlur: c.MotionBlur,
+		redactions: validRedactions(c.Redactions),
+		chroma: c.Chroma, device: c.Device, backdrop: c.Backdrop, bubble: c.Bubble,
 	})
 	if !muted && !isBG && !c.Mute {
 		vol := c.Volume
@@ -599,6 +915,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		*audios = append(*audios, audio{
 			path: p, in: c.In, out: c.Out, start: c.Start, volume: vol,
 			speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut, duck: duck,
+			eq: c.EQ, denoise: c.Denoise,
 		})
 	}
 }
@@ -714,6 +1031,34 @@ func escapeFilterPath(p string) string {
 // eqFilters emits the ffmpeg audio-EQ chain (bass/equalizer/treble) for a clip's
 // 3-band EQ (empty when nil or flat). Leading comma so it appends to the clip's
 // audio filter string. Gains are clamped to ±24 dB for safety.
+// denoiseFilter compiles a clip's Denoise strength to afftdn (empty when off).
+//
+// afftdn over the alternatives on purpose: arnndn needs a model file shipped
+// beside the binary, and anlmdn is tuned for impulsive clicks rather than the
+// broadband fan/hiss/room-tone a screen recording's microphone actually picks
+// up.
+//
+// Strength drives BOTH knobs. nr alone does nearly nothing (measured: 0.06dB
+// on white noise at nr=27), because reduction only applies to what sits under
+// the noise-floor estimate — so the floor has to rise with the strength. And
+// the obvious fix, tn=1 auto-tracking, measurably DEFEATS the filter on steady
+// noise (the tracker decides an unchanging hiss is signal); a fixed floor is
+// what actually works, which is why there is no tracking here. Do not
+// "improve" this back; the end-to-end test measures the reduction in dB.
+//
+// Maps 0..1 → nr 3..27dB, floor -45..-22dB. Both tops are deliberately shy of
+// the filter's limits: past ~30dB of reduction speech gets the underwater
+// artefact, and a floor above -20 starts eating quiet speech tails.
+func denoiseFilter(strength float64) string {
+	if strength <= 0 {
+		return ""
+	}
+	if strength > 1 {
+		strength = 1
+	}
+	return fmt.Sprintf(",afftdn=nr=%.1f:nf=%.1f", 3+strength*24, -45+strength*23)
+}
+
 func eqFilters(eq *schema.AudioEQ) string {
 	if eq == nil {
 		return ""
@@ -775,66 +1120,72 @@ func easeProgress(ease, p string) string {
 		return fmt.Sprintf("(1+2.70158*pow((%s)-1,3)+1.70158*pow((%s)-1,2))", p, p)
 	case "easeOutElastic": // decaying oscillation (c4 = 2π/3)
 		return fmt.Sprintf("(pow(2,-10*(%s))*sin(((%s)*10-0.75)*2.0943951)+1)", p, p)
-	case "springOut": // soft single-overshoot settle; pinned to 0 at p=0
-		return fmt.Sprintf("if(lte(%s,0),0,(1+pow(2,-9*(%s))*sin(((%s)*8-0.75)*1.8479957)*0.9))", p, p, p)
+	case "springOut":
+		// Soft single-overshoot settle, pinned at BOTH ends.
+		//
+		// The p=1 pin is not cosmetic. The decaying sine has not quite returned
+		// to zero by p=1, so unpinned this lands on 1.0013 — the export finishes
+		// 0.13% past every keyed value while the preview, which pins, finishes
+		// exactly on it. Invisible on one zoom and still wrong: this is the
+		// default curve for every auto-zoom, and the two halves are supposed to
+		// agree to the number. easeValue() and ease() in TypeScript pin both
+		// ends; this is the third implementation and must match them.
+		return fmt.Sprintf(
+			"if(lte(%s,0),0,if(gte(%s,1),1,(1+pow(2,-9*(%s))*sin(((%s)*8-0.75)*1.8479957)*0.22)))",
+			p, p, p, p)
 	default: // linear
 		return "(" + p + ")"
 	}
 }
 
-// kfExpr compiles animation keyframes into an overlay coordinate: a base
-// position (a plain integer center, or a dynamic "(W-w)/2" expression when the
-// clip's size animates) plus a piecewise-linear function of clip-local time
-// (t-S), holding the first/last value outside the keyed range. Values are
-// canvas-px offsets from center.
-func kfExpr(base string, S float64, kfs []schema.Keyframe) string {
+// kfPiecewise compiles keyframes into a piecewise function of clip-local time,
+// eased per the LEFT keyframe's curve and holding the first/last value outside
+// the keyed range — the exact shape kfValue() interpolates in the browser.
+//
+// timeVar is the filter's own time variable: "t" for most filters, "T" inside
+// geq. The result is bare; callers wrap, quote, and unit-convert it. Note that
+// an ffmpeg filter argument containing commas must be single-quoted, which is
+// why every wrapper below either quotes or is used inside a quoted context.
+func kfPiecewise(timeVar string, S float64, kfs []schema.Keyframe) string {
 	pts := append([]schema.Keyframe(nil), kfs...)
 	sort.SliceStable(pts, func(i, j int) bool { return pts[i].T < pts[j].T })
 	if len(pts) == 1 {
-		return fmt.Sprintf("'(%s+%.3f)'", base, pts[0].Value)
+		return fmt.Sprintf("%.4f", pts[0].Value)
 	}
-	local := fmt.Sprintf("(t-%.3f)", S)
-	// Innermost fallback: hold the last value.
-	expr := fmt.Sprintf("%.3f", pts[len(pts)-1].Value)
+	local := fmt.Sprintf("(%s-%.3f)", timeVar, S)
+	expr := fmt.Sprintf("%.4f", pts[len(pts)-1].Value) // innermost: hold the last
 	for i := len(pts) - 2; i >= 0; i-- {
 		a, b := pts[i], pts[i+1]
-		dt := b.T - a.T
-		if dt < 1e-3 {
-			dt = 1e-3
-		}
-		p := easeProgress(a.Ease, fmt.Sprintf("(%s-%.3f)/%.3f", local, a.T, dt))
-		seg := fmt.Sprintf("(%.3f+(%.3f)*%s)", a.Value, b.Value-a.Value, p)
-		expr = fmt.Sprintf("if(lt(%s,%.3f),%s,%s)", local, b.T, seg, expr)
-	}
-	// Before the first key: hold the first value.
-	expr = fmt.Sprintf("if(lt(%s,%.3f),%.3f,%s)", local, pts[0].T, pts[0].Value, expr)
-	return fmt.Sprintf("'(%s+%s)'", base, expr)
-}
-
-// kfScaleExpr compiles scale keyframes into a bare multiplier expression of
-// timeline time t (piecewise-linear, held outside the keyed range), for a
-// scale filter in eval=frame mode. A keyframe Value is an absolute scale
-// multiplier (1 = canvas-fit), overriding the clip's static Transform.Scale.
-func kfScaleExpr(S float64, kfs []schema.Keyframe) string {
-	pts := append([]schema.Keyframe(nil), kfs...)
-	sort.SliceStable(pts, func(i, j int) bool { return pts[i].T < pts[j].T })
-	if len(pts) == 1 {
-		return fmt.Sprintf("(%.4f)", math.Max(0, pts[0].Value))
-	}
-	local := fmt.Sprintf("(t-%.3f)", S)
-	expr := fmt.Sprintf("%.4f", pts[len(pts)-1].Value)
-	for i := len(pts) - 2; i >= 0; i-- {
-		a, b := pts[i], pts[i+1]
-		dt := b.T - a.T
-		if dt < 1e-3 {
-			dt = 1e-3
-		}
+		dt := math.Max(b.T-a.T, 1e-3)
 		p := easeProgress(a.Ease, fmt.Sprintf("(%s-%.3f)/%.3f", local, a.T, dt))
 		seg := fmt.Sprintf("(%.4f+(%.4f)*%s)", a.Value, b.Value-a.Value, p)
 		expr = fmt.Sprintf("if(lt(%s,%.3f),%s,%s)", local, b.T, seg, expr)
 	}
-	expr = fmt.Sprintf("if(lt(%s,%.3f),%.4f,%s)", local, pts[0].T, pts[0].Value, expr)
-	return "(" + expr + ")"
+	// Before the first key: hold the first value.
+	return fmt.Sprintf("if(lt(%s,%.3f),%.4f,%s)", local, pts[0].T, pts[0].Value, expr)
+}
+
+// kfExpr compiles position keyframes into an overlay coordinate: a base position
+// (a plain integer anchor, or a dynamic "ax*(W-w)" expression when the clip's
+// size animates) plus the keyed offset. Values are canvas-px offsets from the
+// anchored base.
+func kfExpr(base string, S float64, kfs []schema.Keyframe) string {
+	return fmt.Sprintf("'(%s+%s)'", base, kfPiecewise("t", S, kfs))
+}
+
+// kfScaleExpr compiles scale keyframes into a bare multiplier expression for a
+// scale filter in eval=frame mode. A keyframe Value is an absolute scale
+// multiplier (1 = canvas-fit), overriding the clip's static Transform.Scale.
+// Negative values need no guard here — the call site clamps to max(2,…) px.
+func kfScaleExpr(S float64, kfs []schema.Keyframe) string {
+	return "(" + kfPiecewise("t", S, kfs) + ")"
+}
+
+// kfRotExpr compiles rotation keyframes into an angle expression for the rotate
+// filter, which re-evaluates its angle every frame. Keyframe values are degrees
+// (matching Transform.Rotation); rotate wants radians.
+func kfRotExpr(S float64, kfs []schema.Keyframe) string {
+	return fmt.Sprintf("'((%s)*%.10f)'", kfPiecewise("t", S, kfs), math.Pi/180)
 }
 
 // addTitleClip renders a text clip to a PNG and appends it as a still visual so
@@ -844,11 +1195,15 @@ func kfScaleExpr(S float64, kfs []schema.Keyframe) string {
 // prefix PNGs is composited, each shown for its slice of the reveal window (the
 // full text then holds to the end). A reveal can't be expressed as transform
 // keyframes on one still, so it bypasses the keyframe/transition path.
-func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int) error {
-	span := c.Out - c.In
-	if span <= 0 {
-		span = 3
-	}
+// stillBox is where an assetless, full-canvas PNG clip (a title or an
+// annotation) lands on the canvas. The two kinds differ only in what they
+// rasterise, so the placement lives in one place and they cannot drift apart.
+type stillBox struct {
+	x, y, sw, sh, cx, cy int
+	ax, ay, opacity      float64
+}
+
+func stillBoxFor(c schema.Clip, w, h int) stillBox {
 	scale := c.Transform.Scale
 	if scale == 0 {
 		scale = 1
@@ -858,8 +1213,49 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 		op = 1
 	}
 	sw, sh := int(float64(w)*scale), int(float64(h)*scale)
-	cx, cy := (w-sw)/2, (h-sh)/2
-	x, y := cx+int(c.Transform.X), cy+int(c.Transform.Y)
+	ax, ay := c.Transform.AnchorFrac()
+	cx, cy := int(ax*float64(w-sw)), int(ay*float64(h-sh))
+	return stillBox{
+		x: cx + int(c.Transform.X), y: cy + int(c.Transform.Y),
+		sw: sw, sh: sh, cx: cx, cy: cy, ax: ax, ay: ay, opacity: op,
+	}
+}
+
+// stillSpan is an assetless clip's on-screen duration. Speed and hold are
+// deliberately ignored: there is no source to run faster or freeze.
+func stillSpan(c schema.Clip) float64 {
+	if span := c.Out - c.In; span > 0 {
+		return span
+	}
+	return 3
+}
+
+// addAnnotationClip composites one callout. The raster is the only thing that
+// differs from a title, so it inherits transforms, keyframes, transitions,
+// fades, effects and z-order without touching the filtergraph.
+func addAnnotationClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int) error {
+	png := filepath.Join(srtDir, fmt.Sprintf("anno-%d.png", idx))
+	if err := renderAnnotationPNG(*c.Annotation, w, h, png); err != nil {
+		return err
+	}
+	b := stillBoxFor(c, w, h)
+	span := stillSpan(c)
+	*visuals = append(*visuals, visual{
+		path: png, start: c.Start, end: c.Start + span,
+		x: b.x, y: b.y, sw: b.sw, sh: b.sh, opacity: b.opacity,
+		fadeIn: c.FadeIn, fadeOut: c.FadeOut,
+		transIn: c.TransitionIn, transOut: c.TransitionOut,
+		cx: b.cx, cy: b.cy, ax: b.ax, ay: b.ay,
+		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects,
+		still: true,
+	})
+	return nil
+}
+
+func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int) error {
+	span := stillSpan(c)
+	b := stillBoxFor(c, w, h)
+	x, y, sw, sh, cx, cy, ax, ay, op := b.x, b.y, b.sw, b.sh, b.cx, b.cy, b.ax, b.ay, b.opacity
 
 	reveal := strings.TrimSpace(c.Title.Reveal)
 	if reveal == "" {
@@ -872,7 +1268,8 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 			x: x, y: y, sw: sw, sh: sh, opacity: op,
 			fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 			transIn: c.TransitionIn, transOut: c.TransitionOut,
-			cx: cx, cy: cy, keyframes: c.Keyframes, effects: c.Effects,
+			cx: cx, cy: cy, ax: ax, ay: ay,
+			rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects,
 			still: true,
 		})
 		return nil
@@ -906,7 +1303,8 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 			path: png, start: start, end: end,
 			x: x, y: y, sw: sw, sh: sh, opacity: op,
 			fadeIn: fadeIn, fadeOut: fadeOut,
-			cx: cx, cy: cy, effects: c.Effects,
+			cx: cx, cy: cy, ax: ax, ay: ay,
+			rot: c.Transform.Rotation, effects: c.Effects,
 			still: true,
 		})
 	}
@@ -964,27 +1362,10 @@ func titleRevealSteps(text, mode string) []int {
 	return bounds
 }
 
-// kfOpacityExpr builds a bare piecewise-linear 0..1 expression of geq time T
-// (clip-local via T-S), for animating a clip's alpha. Held outside the range.
+// kfOpacityExpr builds a bare piecewise 0..1 expression for animating a clip's
+// alpha. geq exposes time as T rather than t.
 func kfOpacityExpr(S float64, kfs []schema.Keyframe) string {
-	pts := append([]schema.Keyframe(nil), kfs...)
-	sort.SliceStable(pts, func(i, j int) bool { return pts[i].T < pts[j].T })
-	if len(pts) == 1 {
-		return fmt.Sprintf("%.4f", pts[0].Value)
-	}
-	local := fmt.Sprintf("(T-%.3f)", S)
-	expr := fmt.Sprintf("%.4f", pts[len(pts)-1].Value)
-	for i := len(pts) - 2; i >= 0; i-- {
-		a, b := pts[i], pts[i+1]
-		dt := b.T - a.T
-		if dt < 1e-3 {
-			dt = 1e-3
-		}
-		p := easeProgress(a.Ease, fmt.Sprintf("(%s-%.3f)/%.3f", local, a.T, dt))
-		seg := fmt.Sprintf("(%.4f+(%.4f)*%s)", a.Value, b.Value-a.Value, p)
-		expr = fmt.Sprintf("if(lt(%s,%.3f),%s,%s)", local, b.T, seg, expr)
-	}
-	return fmt.Sprintf("if(lt(%s,%.3f),%.4f,%s)", local, pts[0].T, pts[0].Value, expr)
+	return kfPiecewise("T", S, kfs)
 }
 
 // playSpan is the on-timeline duration of a source range after speed scaling.

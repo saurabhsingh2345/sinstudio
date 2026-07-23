@@ -17,6 +17,9 @@ import (
 // and it never modifies or deletes the JSON files — they stay put as a backup
 // until someone decides to remove them by hand.
 func (s *Store) ImportLegacy(ctx context.Context) (int, error) {
+	if s.local {
+		return 0, nil
+	}
 	entries, err := os.ReadDir(filepath.Join(s.root, "projects"))
 	if err != nil {
 		if os.IsNotExist(err) {

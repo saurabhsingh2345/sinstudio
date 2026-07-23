@@ -34,6 +34,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"sync"
 
 	"studio/internal/schema"
 )
@@ -51,9 +52,12 @@ var (
 var schemaSQL string
 
 // Store is a Postgres-backed project store with filesystem media.
+// When local is true, projects are stored as timeline.json files instead.
 type Store struct {
-	db   *pgxpool.Pool
-	root string
+	db    *pgxpool.Pool
+	root  string
+	local bool
+	mu    *sync.Mutex
 }
 
 // ProjectMeta is a lightweight listing entry.
@@ -97,8 +101,12 @@ func New(ctx context.Context, databaseURL, root string) (*Store, error) {
 	return &Store{db: db, root: abs}, nil
 }
 
-// Close releases the connection pool.
-func (s *Store) Close() { s.db.Close() }
+// Close releases the connection pool (no-op for local mode).
+func (s *Store) Close() {
+	if s.db != nil {
+		s.db.Close()
+	}
+}
 
 // Root returns the absolute media root path.
 func (s *Store) Root() string { return s.root }
@@ -189,6 +197,11 @@ func NewID(prefix string) string {
 
 // CreateProject writes a fresh edit document and returns it.
 func (s *Store) CreateProject(ctx context.Context, name string) (*schema.EditDoc, error) {
+	if s.local {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.createProjectLocal(ctx, name)
+	}
 	if name == "" {
 		name = "Untitled"
 	}
@@ -222,6 +235,11 @@ func (s *Store) CreateProject(ctx context.Context, name string) (*schema.EditDoc
 // GetProject reads an edit document by id, assembling the editor-owned body with
 // the project's live assets.
 func (s *Store) GetProject(ctx context.Context, id string) (*schema.EditDoc, error) {
+	if s.local {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.readLocal(id)
+	}
 	var (
 		name     string
 		revision int64
@@ -291,6 +309,11 @@ func (s *Store) listAssets(ctx context.Context, projID string) ([]schema.Asset, 
 // replace, and honouring it here is exactly how a finished export used to get
 // deleted by the next autosave.
 func (s *Store) SaveProject(ctx context.Context, doc *schema.EditDoc, baseRevision int) (int, error) {
+	if s.local {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.saveProjectLocal(doc, baseRevision)
+	}
 	body, err := json.Marshal(docBody{Canvas: doc.Canvas, Tracks: doc.Tracks, Markers: doc.Markers})
 	if err != nil {
 		return 0, err
@@ -319,6 +342,11 @@ func (s *Store) SaveProject(ctx context.Context, doc *schema.EditDoc, baseRevisi
 
 // ListProjects returns all projects, newest first.
 func (s *Store) ListProjects(ctx context.Context) ([]ProjectMeta, error) {
+	if s.local {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.listProjectsLocal(ctx)
+	}
 	rows, err := s.db.Query(ctx,
 		`SELECT id, name, updated_at FROM projects ORDER BY updated_at DESC`)
 	if err != nil {
@@ -345,6 +373,11 @@ func (s *Store) ListProjects(ctx context.Context) ([]ProjectMeta, error) {
 // revision: an asset arriving from a background job is not a timeline edit and
 // must not invalidate an editor's in-flight save.
 func (s *Store) AddAsset(ctx context.Context, projID string, asset schema.Asset) error {
+	if s.local {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.addAssetLocal(ctx, projID, asset)
+	}
 	data, err := json.Marshal(asset)
 	if err != nil {
 		return err
@@ -367,6 +400,11 @@ func (s *Store) UpdateAsset(ctx context.Context, projID string, asset schema.Ass
 // deliberately left on disk, so a mistaken removal costs nothing to undo and no
 // other project or finished render breaks by referencing a vanished file.
 func (s *Store) DeleteAsset(ctx context.Context, projID, assetID string) error {
+	if s.local {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.deleteAssetLocal(ctx, projID, assetID)
+	}
 	tag, err := s.db.Exec(ctx,
 		`UPDATE assets SET deleted_at = now()
 		  WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL`,

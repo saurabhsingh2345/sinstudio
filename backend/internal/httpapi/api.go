@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"studio/internal/apps"
+	"studio/internal/cursor"
 	"studio/internal/generator"
 	"studio/internal/jobs"
 	"studio/internal/library"
@@ -108,6 +109,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/transcribe", s.transcribe)
 	mux.HandleFunc("POST /api/projects/{id}/export", s.export)
 	mux.HandleFunc("GET /api/projects/{id}/waveform", s.waveform)
+	mux.HandleFunc("GET /api/projects/{id}/cursor", s.cursorTrack)
 	mux.HandleFunc("GET /api/projects/{id}/frame", s.frame)
 	mux.HandleFunc("GET /api/projects/{id}/renders", s.listRenders)
 	mux.HandleFunc("DELETE /api/projects/{id}/renders/{name}", s.deleteRender)
@@ -337,6 +339,13 @@ func (s *Server) deleteAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 // registerAsset probes a file and builds an Asset (with thumbnail).
+// fileExists is a presence check that treats every error as absence — the only
+// question here is whether a sidecar is there to read.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 func (s *Server) registerAsset(ctx context.Context, projID, assetID, path, name, source string) (*schema.Asset, error) {
 	info, err := media.Probe(ctx, path)
 	if err != nil {
@@ -354,6 +363,15 @@ func (s *Server) registerAsset(ctx context.Context, projID, assetID, path, name,
 		HasAudio:  &info.HasAudio,
 		Source:    source,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		// A pointer track beside the media makes this a screen recording the
+		// editor can add cursor effects to. Checked here rather than inferred in
+		// the UI, since only the server can see the sidecar.
+		HasCursor: fileExists(cursor.Path(path)),
+	}
+	// Whether Studio owns the cursor is a property of how it was captured, so
+	// it is read from the track rather than assumed.
+	if track, err := cursor.Read(path); err == nil && track != nil {
+		asset.CursorHidden = track.Hidden
 	}
 	if info.Kind != "audio" {
 		thumbs, _ := s.Store.ThumbsDir(projID)

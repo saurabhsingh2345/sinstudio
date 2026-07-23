@@ -1,17 +1,22 @@
 import { useMemo, useState } from "react";
 import { api } from "../../api";
-import type { EditDoc, Track } from "../../types";
+import type { Clip, EditDoc, Track } from "../../types";
+import { newId } from "../../types";
 import { toast } from "../../toast";
+import { trackBackgroundCSS } from "../../trackBackground";
+import { PROJECT_TEMPLATES } from "../../projectTemplates";
 import { ArcLogo, ThemeToggle } from "./bits";
 import type { ArcTheme } from "./theme";
 
-type BgType = "solid" | "image" | "looped" | "gradient" | "animated";
+type BgType = "solid" | "gradient";
+type WizardAspect = "16:9" | "4:3" | "9:16";
 
 interface Draft {
   name: string;
-  aspect: "16:9" | "4:3";
+  aspect: WizardAspect;
   bgType: BgType;
   bgColor: string;
+  bgColor2: string;
   fps: number;
   segments: number;
   segmentSeconds: number;
@@ -20,20 +25,56 @@ interface Draft {
   subtitleTrack: boolean;
 }
 
-const STEPS = ["Project", "Canvas", "Timeline", "Tracks"] as const;
+const STEPS = ["Template", "Project", "Canvas", "Timeline", "Tracks"] as const;
 
 const BG_OPTIONS: { id: BgType; title: string; sub: string; swatch: string }[] = [
   { id: "solid", title: "Solid color", sub: "A clean, single-color canvas", swatch: "#111827" },
-  { id: "image", title: "Image", sub: "Use a still image as the canvas", swatch: "linear-gradient(135deg,#5b6b8c,#3dd0c0)" },
-  { id: "looped", title: "Looped video", sub: "Repeat a video behind all tracks", swatch: "#1c2233" },
-  { id: "gradient", title: "Gradient", sub: "Blend two colors across the canvas", swatch: "linear-gradient(135deg,#6366f1,#3ddc97)" },
-  { id: "animated", title: "Animated gradient", sub: "Continuously shift between two colors", swatch: "linear-gradient(135deg,#8b5cf6,#3ddc97)" },
+  { id: "gradient", title: "Gradient", sub: "Blend two colors top to bottom", swatch: "linear-gradient(180deg,#6366f1,#3ddc97)" },
 ];
 
 const CANVAS_SIZE: Record<Draft["aspect"], { w: number; h: number }> = {
   "16:9": { w: 1920, h: 1080 },
   "4:3": { w: 1440, h: 1080 },
+  "9:16": { w: 1080, h: 1920 },
 };
+
+function buildBackgroundTrack(d: Draft): Track {
+  const track: Track = {
+    id: "t_bg",
+    kind: "background",
+    name: "Background",
+    backgroundColor: d.bgColor,
+  };
+  if (d.bgType === "gradient") {
+    track.backgroundColor2 = d.bgColor2 || "#3ddc97";
+  }
+  return track;
+}
+
+function buildSegmentClips(segments: number, segmentSeconds: number): Clip[] {
+  const clips: Clip[] = [];
+  let start = 0;
+  for (let i = 0; i < segments; i++) {
+    clips.push({
+      id: newId("seg_"),
+      assetId: "",
+      start,
+      in: 0,
+      out: segmentSeconds,
+      transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+      volume: 0,
+      title: {
+        text: segments > 1 ? `Segment ${i + 1}` : "Your clip here",
+        size: segments > 1 ? 56 : 72,
+        color: "#ffffff66",
+        align: "center",
+        posY: 0.5,
+      },
+    });
+    start += segmentSeconds;
+  }
+  return clips;
+}
 
 export function NewProjectWizard({
   theme,
@@ -48,33 +89,32 @@ export function NewProjectWizard({
 }) {
   const [step, setStep] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [d, setD] = useState<Draft>({
-    name: "Untitled video",
-    aspect: "16:9",
-    bgType: "solid",
-    bgColor: "#111827",
-    fps: 30,
-    segments: 1,
-    segmentSeconds: 10,
-    videoTracks: 2,
-    audioTrack: true,
-    subtitleTrack: true,
-  });
+  const [templateId, setTemplateId] = useState(PROJECT_TEMPLATES[0].id);
+  const [d, setD] = useState<Draft>(PROJECT_TEMPLATES[0].draft as Draft);
   const set = <K extends keyof Draft>(k: K, v: Draft[K]) => setD((p) => ({ ...p, [k]: v }));
 
+  const applyTemplate = (id: string) => {
+    setTemplateId(id);
+    const t = PROJECT_TEMPLATES.find((x) => x.id === id);
+    if (t) setD(t.draft as Draft);
+  };
+
   const size = CANVAS_SIZE[d.aspect];
-  const showColor = d.bgType === "solid" || d.bgType === "gradient" || d.bgType === "animated";
 
   const create = async () => {
     setBusy(true);
     try {
       const doc = await api.createProject(d.name.trim() || "Untitled video");
-      const tracks: Track[] = [
-        { id: "t_bg", kind: "background", name: "Background", backgroundColor: showColor ? d.bgColor : "#000000" },
-      ];
+      const tracks: Track[] = [buildBackgroundTrack(d)];
       const n = Math.max(1, Math.min(6, d.videoTracks));
+      const segmentClips = buildSegmentClips(d.segments, d.segmentSeconds);
       for (let i = 0; i < n; i++) {
-        tracks.push({ id: i === 0 ? "t_video" : `t_video${i + 1}`, kind: "video", name: n > 1 ? `Video ${i + 1}` : "Video" });
+        tracks.push({
+          id: i === 0 ? "t_video" : `t_video${i + 1}`,
+          kind: "video",
+          name: n > 1 ? `Video ${i + 1}` : "Video",
+          clips: i === 0 ? segmentClips : [],
+        });
       }
       tracks.push({ id: "t_overlay", kind: "overlay", name: "Overlay" });
       if (d.audioTrack) tracks.push({ id: "t_music", kind: "audio", name: "Music" });
@@ -120,10 +160,11 @@ export function NewProjectWizard({
       <div className="arc-wizard__stage">
         <div className="arc-wizard-card">
           <div className="arc-wizard-card__body">
-            {step === 0 && <StepProject d={d} set={set} />}
-            {step === 1 && <StepCanvas d={d} set={set} showColor={showColor} size={size} />}
-            {step === 2 && <StepTimeline d={d} set={set} />}
-            {step === 3 && <StepTracks d={d} set={set} />}
+            {step === 0 && <StepTemplate templateId={templateId} onPick={applyTemplate} />}
+            {step === 1 && <StepProject d={d} set={set} />}
+            {step === 2 && <StepCanvas d={d} set={set} size={size} />}
+            {step === 3 && <StepTimeline d={d} set={set} />}
+            {step === 4 && <StepTracks d={d} set={set} />}
           </div>
           <div className="arc-wizard-card__foot">
             <span className="arc-wizard-card__hint">Nothing is permanent — settings remain editable.</span>
@@ -174,6 +215,34 @@ function StepNode({ label, index, step, last }: { label: string; index: number; 
 
 type SetFn = <K extends keyof Draft>(k: K, v: Draft[K]) => void;
 
+function StepTemplate({ templateId, onPick }: { templateId: string; onPick: (id: string) => void }) {
+  return (
+    <>
+      <StepHead
+        eyebrow="Start faster"
+        title="Pick a template"
+        sub="Pre-configures canvas shape, tracks and background — everything stays editable."
+      />
+      <div className="arc-tiles" style={{ maxWidth: 720 }}>
+        {PROJECT_TEMPLATES.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            className={`arc-option${templateId === t.id ? " arc-option--on" : ""}`}
+            onClick={() => onPick(t.id)}
+          >
+            <span className="arc-option__swatch" style={{ background: t.swatch }} />
+            <span className="arc-option__body">
+              <span className="arc-option__title">{t.name}</span>
+              <span className="arc-option__sub">{t.description}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
 function StepHead({ eyebrow, title, sub }: { eyebrow: string; title: string; sub: string }) {
   return (
     <div className="arc-wizard-card__head">
@@ -207,26 +276,26 @@ function StepProject({ d, set }: { d: Draft; set: SetFn }) {
 function StepCanvas({
   d,
   set,
-  showColor,
   size,
 }: {
   d: Draft;
   set: SetFn;
-  showColor: boolean;
   size: { w: number; h: number };
 }) {
   const previewStyle = useMemo(() => {
-    const ratio = d.aspect === "16:9" ? "16 / 9" : "4 / 3";
-    let bg = d.bgColor;
-    if (d.bgType === "gradient") bg = `linear-gradient(135deg, ${d.bgColor}, #3ddc97)`;
-    else if (d.bgType === "animated") bg = `linear-gradient(135deg, ${d.bgColor}, #8b5cf6)`;
-    else if (d.bgType === "image" || d.bgType === "looped") bg = "linear-gradient(135deg,#334155,#1e293b)";
-    return { aspectRatio: ratio, width: "100%", maxWidth: 520, background: bg } as React.CSSProperties;
-  }, [d.aspect, d.bgType, d.bgColor]);
+    const ratio = d.aspect === "16:9" ? "16 / 9" : d.aspect === "9:16" ? "9 / 16" : "4 / 3";
+    const bgTrack = buildBackgroundTrack(d);
+    return {
+      aspectRatio: ratio,
+      width: "100%",
+      maxWidth: 520,
+      background: trackBackgroundCSS(bgTrack, d.bgColor),
+    } as React.CSSProperties;
+  }, [d]);
 
   return (
     <>
-      <StepHead eyebrow="Canvas setup" title="Choose the shape and background" sub="Your canvas controls composition. Export resolution is selected later when you render." />
+      <StepHead eyebrow="Canvas setup" title="Choose the shape and background" sub="Your canvas controls composition. Import images or looped video to the Background track after creating." />
       <div style={{ maxWidth: 760, margin: "0 auto" }}>
         <div className="arc-split">
           <div>
@@ -236,6 +305,7 @@ function StepCanvas({
           <div className="arc-tiles">
             <ShapeTile on={d.aspect === "16:9"} onClick={() => set("aspect", "16:9")} title="16:9" sub="Widescreen" w={30} h={17} />
             <ShapeTile on={d.aspect === "4:3"} onClick={() => set("aspect", "4:3")} title="4:3" sub="Classic" w={24} h={18} />
+            <ShapeTile on={d.aspect === "9:16"} onClick={() => set("aspect", "9:16")} title="9:16" sub="Vertical" w={17} h={30} />
           </div>
         </div>
 
@@ -260,16 +330,20 @@ function StepCanvas({
               </button>
             ))}
 
-            {showColor && (
-              <div className="arc-field" style={{ marginTop: 16 }}>
-                <label className="arc-label">Background color</label>
+            <div className="arc-field" style={{ marginTop: 16 }}>
+              <label className="arc-label">{d.bgType === "gradient" ? "Top color" : "Background color"}</label>
+              <div className="arc-color-row">
+                <input type="color" value={d.bgColor} onChange={(e) => set("bgColor", e.target.value)} aria-label="Background color" />
+                <input className="arc-input" value={d.bgColor} onChange={(e) => set("bgColor", e.target.value)} />
+              </div>
+            </div>
+
+            {d.bgType === "gradient" && (
+              <div className="arc-field" style={{ marginTop: 12 }}>
+                <label className="arc-label">Bottom color</label>
                 <div className="arc-color-row">
-                  <input type="color" value={d.bgColor} onChange={(e) => set("bgColor", e.target.value)} aria-label="Background color" />
-                  <input
-                    className="arc-input"
-                    value={d.bgColor}
-                    onChange={(e) => set("bgColor", e.target.value)}
-                  />
+                  <input type="color" value={d.bgColor2} onChange={(e) => set("bgColor2", e.target.value)} aria-label="Gradient end color" />
+                  <input className="arc-input" value={d.bgColor2} onChange={(e) => set("bgColor2", e.target.value)} />
                 </div>
               </div>
             )}
@@ -299,9 +373,10 @@ function ShapeTile({ on, onClick, title, sub, w, h }: { on: boolean; onClick: ()
 }
 
 function StepTimeline({ d, set }: { d: Draft; set: SetFn }) {
+  const totalSeconds = d.segments * d.segmentSeconds;
   return (
     <>
-      <StepHead eyebrow="Timeline basics" title="Set up your starting timeline" sub="Segments combine in order to create the complete video." />
+      <StepHead eyebrow="Timeline basics" title="Set up your starting timeline" sub="Placeholder segments land on the first video track — replace them with recordings or imports." />
       <div className="arc-form">
         <div className="arc-field">
           <label className="arc-label" htmlFor="arc-fps">Frame rate</label>
@@ -321,6 +396,9 @@ function StepTimeline({ d, set }: { d: Draft; set: SetFn }) {
             <input id="arc-segdur" className="arc-input" type="number" min={1} max={600} value={d.segmentSeconds} onChange={(e) => set("segmentSeconds", clampInt(e.target.value, 1, 600))} />
           </div>
         </div>
+        <p className="arc-sub" style={{ marginTop: 8 }}>
+          Timeline length: {totalSeconds}s ({d.segments} segment{d.segments === 1 ? "" : "s"} × {d.segmentSeconds}s)
+        </p>
       </div>
     </>
   );

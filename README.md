@@ -1,6 +1,17 @@
 # Studio — Editing Engine
 
-A non-linear video editor that **assembles** the clips produced by the sibling
+Studio is two things sharing one timeline.
+
+**A screen recorder that edits its own footage.** Record your screen, and the
+recording arrives already framed: pushed in where you clicked, drifting to
+follow you, pulling back when you move on. The camera work is ordinary
+keyframes, so every move it guesses stays draggable. Callouts, keystroke badges,
+region blur, green screen, device frames, backdrop scenes, webcam bubbles and
+cursor effects finish the picture; silence cuts, idle speed-up, noise removal
+and auto-ducking finish the sound. See
+**[docs/screen-recording.md](docs/screen-recording.md)**.
+
+**A non-linear editor that assembles** the clips produced by the sibling
 projects (`newaniAdv`, `hyper/hyperframes`, `funkycode`) into a finished video:
 generate/import clips → arrange on a multi-track timeline → add music, a
 transcript/caption track, and background layers → **export an MP4 server-side
@@ -19,6 +30,9 @@ with FFmpeg**.
 studio/
   backend/    Go API + generator orchestration + FFmpeg export
   frontend/   React editor (timeline, preview, assets, transcript, inspector)
+  plugins/    generator manifests, loaded at runtime  (see plugins/README.md)
+  tools/      cursord — the optional local pointer helper the recorder uses
+  docs/       screen-recording.md
   media/      per-project media: assets, thumbs, renders, luts  (gitignored)
 ```
 
@@ -26,8 +40,10 @@ studio/
 
 - **Go** 1.26+, **Node** 20+, **FFmpeg + ffprobe** on `PATH` (used for probing, thumbnails, export).
 - **Postgres** — `./dev.sh` starts one via `docker compose up -d postgres` (host port **5544**).
+  Or skip Docker entirely: `./dev-local.sh` uses `STUDIO_DATABASE_URL=local` (projects as
+  `media/projects/*/timeline.json`).
   Projects still living in `media/projects/*/timeline.json` are adopted automatically on first
-  start; the JSON files are left untouched as a backup.
+  Postgres start; the JSON files are left untouched as a backup.
 - The sibling generators live next to `studio/`:
   - `newaniAdv` — works out of the box (`npx tsx`).
   - `hyper/hyperframes` — build its CLI once: `cd ../hyper/hyperframes && bun install && bun run build`.
@@ -43,8 +59,10 @@ studio/
 ## Run
 
 ```bash
-./dev.sh                       # backend :8788 + frontend :5273
+./dev.sh                       # backend :8788 + frontend :5273 (Postgres via Docker)
+./dev-local.sh                 # same, but STUDIO_DATABASE_URL=local — no Docker
 # open http://localhost:5273
+./scripts/e2e-smoke.sh         # API + markers + export smoke (backend must be running)
 ```
 
 Or production-style (Go serves the built UI):

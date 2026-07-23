@@ -8,6 +8,60 @@ export interface Transform {
   scale: number;
   opacity: number;
   rotation?: number; // clockwise degrees about the clip's center
+  // The zoom origin — the point scaling holds fixed — relative to the clip's
+  // center, where ±0.5 is an edge and 0 (the default) is the center. Stored
+  // center-relative so documents predating anchors still zoom from the middle.
+  anchorX?: number;
+  anchorY?: number;
+}
+
+// Properties that can be keyframed. A keyed property overrides the matching
+// static Transform field for the clip's life.
+export const KEYABLE = ["x", "y", "scale", "rotation", "opacity"] as const;
+export type Keyable = (typeof KEYABLE)[number];
+
+// anchorFrac converts a center-relative anchor to a 0..1 box fraction (0.5 =
+// center). Mirrors schema.Transform.AnchorFrac.
+export const anchorFrac = (t: Transform): [number, number] => {
+  const f = (v: number | undefined) => Math.max(0, Math.min(1, (v ?? 0) + 0.5));
+  return [f(t.anchorX), f(t.anchorY)];
+};
+
+// Cursor emphasis for a screen recording. Only does anything when the clip's
+// asset has a recorded pointer track beside it; inert on any other clip.
+export interface CursorHighlight {
+  size?: number; // diameter in canvas px
+  color?: string;
+  opacity?: number; // 0..1
+}
+export interface CursorClicks {
+  size?: number; // final ring diameter in canvas px
+  color?: string;
+  duration?: number; // seconds per ring
+}
+export interface CursorSpotlight {
+  radius?: number; // clear radius in canvas px
+  dim?: number; // 0..1 darkness outside it
+}
+export interface CursorPointer {
+  size?: number;
+  opacity?: number; // 0..1
+  style?: string; // arrow | dot | ring
+  color?: string;
+  smoothing?: number; // 0..1
+}
+export interface CursorClickSound {
+  volume?: number; // 0..1
+  style?: string; // click | tick | soft
+}
+export interface CursorFX {
+  highlight?: CursorHighlight;
+  clicks?: CursorClicks;
+  spotlight?: CursorSpotlight;
+  /** An audible click at each press. Independent of the visual rings. */
+  sound?: CursorClickSound;
+  /** Studio's own drawn cursor — only for recordings captured without one. */
+  pointer?: CursorPointer;
 }
 
 // Transition types: fade | dissolve | slide-left | slide-right | slide-top | slide-bottom
@@ -40,6 +94,95 @@ export interface Title {
   reveal?: TitleReveal; // per-word/character text build-on (renderer-composited)
 }
 
+// Redaction: a blurred/pixelated region of a clip's own picture.
+// Mirrors backend/internal/schema Redaction — keep the two in step.
+export type RedactKind = "blur" | "pixelate";
+
+export interface Redaction {
+  kind: RedactKind;
+  // Fractions of THE CLIP'S OWN FRAME (0..1), not of the canvas — which is what
+  // makes a redaction stick to the thing it hides when the clip is zoomed.
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  amount?: number; // 0..1 strength (0 = unset)
+}
+
+// DeviceFrame: a drawn phone/laptop/browser the clip's picture sits inside.
+// Mirrors backend/internal/schema DeviceFrame — keep the two in step.
+export type DeviceKind = "browser" | "phone" | "tablet" | "laptop";
+
+export interface DeviceFrame {
+  kind: DeviceKind;
+  color?: string; // body colour; empty = a near-black
+}
+
+// Watermark: a project-wide corner logo, on every frame of every export.
+// Mirrors schema.Watermark.
+export interface Watermark {
+  assetId: string; // an image asset in this project's library
+  corner?: "tl" | "tr" | "bl" | "br"; // default br
+  size?: number; // fraction of canvas width (0 = default 0.12)
+  opacity?: number; // 0..1 (0 = default 0.6)
+  margin?: number; // fraction of the short side (0 = default 0.03)
+}
+
+// Bubble: the webcam-bubble treatment. Mirrors schema.Bubble — zero/absent
+// values mean the defaults in bubble.ts.
+export interface Bubble {
+  shape?: "circle" | "rounded"; // default circle
+  size?: number; // diameter as a fraction of canvas height (0 = default 0.28)
+  border?: number; // ring px at 1080 ref (0 = default 6; negative = none)
+  borderColor?: string; // empty = white
+  shadow?: number; // 0..1 (0 = default 0.5)
+}
+
+// Backdrop: the styled scene behind a clip's picture. Mirrors schema.Backdrop —
+// zero/absent values mean the defaults in backdrop.ts, so an empty object is
+// already a usable scene.
+export interface Backdrop {
+  color1?: string; // wallpaper gradient top (empty = dark slate)
+  color2?: string; // gradient bottom (empty = flat color1)
+  inset?: number; // fraction pulled in from each edge (0 = default 0.06, max 0.35)
+  radius?: number; // corner radius px at 1080-high reference (0 = default 14)
+  shadow?: number; // 0..1 strength (0 = default 0.55)
+}
+
+// ChromaKey: a background colour removed so the clip below shows through.
+// Mirrors backend/internal/schema ChromaKey — keep the two in step.
+export interface ChromaKey {
+  color?: string; // the screen's colour; empty = standard chroma green
+  similarity?: number; // 0..1 — how far from `color` still counts as background
+  blend?: number; // 0..1 — softness of the edge between kept and keyed
+  spill?: number; // 0..1 — neutralise the screen's light bouncing on the subject
+}
+
+// Annotation: a callout shape drawn over the video (clip has no asset when set).
+// Mirrors backend/internal/schema Annotation — keep the two in step.
+export type AnnoKind = "arrow" | "box" | "ellipse" | "highlight" | "number" | "text" | "keys";
+
+export interface Annotation {
+  kind: AnnoKind;
+  // Canvas fractions (0..1), not pixels, so a callout keeps its place at any
+  // export size. For an arrow (x,y) is the tail and (x2,y2) the point; for every
+  // other kind they are the bounding box.
+  x: number;
+  y: number;
+  w?: number;
+  h?: number;
+  x2?: number;
+  y2?: number;
+  color?: string; // stroke/shape colour
+  fill?: string; // interior; "" = hollow
+  thickness?: number; // px at 1080 reference
+  opacity?: number; // 0..1
+  radius?: number; // corner rounding, px at 1080 reference
+  text?: string;
+  textSize?: number; // px at 1080 reference
+  textColor?: string;
+}
+
 // Effects: per-clip color/blur adjustments. Identity = brightness 0, contrast 1,
 // saturation 1, hue 0, blur 0.
 export interface Effects {
@@ -70,15 +213,25 @@ export interface Clip {
   fadeOut?: number; // seconds
   transitionIn?: Transition;
   transitionOut?: Transition;
-  keyframes?: Record<string, Keyframe[]>; // property ("x"|"y"|"scale"|"opacity") -> control points
+  keyframes?: Record<string, Keyframe[]>; // Keyable property -> control points
+  cursor?: CursorFX; // pointer emphasis, only for clips with a recorded pointer track
   effects?: Effects;
   eq?: AudioEQ; // 3-band audio equalizer
+  denoise?: number; // 0..1 broadband noise-removal strength (0/absent = off; export-side afftdn)
+  backdrop?: Backdrop; // styled scene behind the picture (wallpaper, inset, rounded corners, shadow)
+  bubble?: Bubble; // webcam-bubble mask (circle/rounded, ring, shadow); ignored under device
   lut?: string; // .cube color LUT filename (in the project's luts dir)
   mute?: boolean; // silence this clip's own audio (used after detaching audio)
   hold?: number; // seconds of frozen last frame appended after the source plays out
   sourceClip?: string; // detached audio clip → the video clip it came from (UI grouping)
   disabled?: boolean; // excluded from render/preview without deleting (per-clip enable toggle)
   title?: Title; // when set, this is a text clip (no asset)
+  annotation?: Annotation; // when set, this is a callout clip (no asset)
+  redactions?: Redaction[]; // blurred/pixelated regions of this clip's picture
+  chroma?: ChromaKey; // when set, this colour is keyed out of the clip
+  device?: DeviceFrame; // when set, the picture sits inside a drawn device
+  /** Temporal blur on camera moves (scale/x/y keyframes). 0 = off, 0..1 strength. */
+  motionBlur?: number;
 }
 
 export interface ExportOptions {
@@ -112,6 +265,10 @@ export interface CaptionStyle {
   color: string;
   align: string;
   posY: number;
+  /** Semi-transparent box behind caption text. */
+  background?: string;
+  /** Outline/stroke colour for readability on busy footage. */
+  stroke?: string;
 }
 
 export interface CaptionCue {
@@ -129,6 +286,8 @@ export interface Track {
   clips?: Clip[];
   cues?: CaptionCue[];
   backgroundColor?: string;
+  /** Gradient end colour (top → bottom). Empty = solid backgroundColor. */
+  backgroundColor2?: string;
   muted?: boolean;
   hidden?: boolean;
   solo?: boolean;
@@ -154,6 +313,12 @@ export interface Asset {
   // as the generator id for generated assets.
   genInput?: string;
   genParams?: Record<string, string>;
+  // True when a pointer track arrived beside the media, i.e. this is a screen
+  // recording cursor effects can be drawn on.
+  hasCursor?: boolean;
+  // True when the OS cursor was kept out of the capture, so Studio owns drawing
+  // it — and only then can it be resized, restyled or smoothed.
+  cursorHidden?: boolean;
 }
 
 export interface Canvas {
@@ -177,6 +342,7 @@ export interface EditDoc {
   tracks: Track[];
   assets: Asset[];
   markers?: Marker[];
+  watermark?: Watermark; // project-wide corner logo on every export
   updated?: string;
 }
 
@@ -267,6 +433,31 @@ export interface RenderEntry {
 // changes when the file is rewritten in place — e.g. a re-rendered asset's
 // createdAt) to cache-bust: re-render overwrites the SAME path, so without a
 // changing query the browser keeps serving the stale cached video/thumbnail.
+/*
+A human name for an asset, for the timeline and the media list.
+
+The stored name is built by the generic ingest path as source + stamp +
+filename, and Studio's own recorder supplies a filename that already carries
+the kind and a timestamp — so a screen capture arrives called
+"recording-screen-20260722-045414-screen-20260722-102409.mp4", with the kind and
+the date each written twice. Stretched across a clip bar that is most of what
+the timeline shows.
+
+The ingest naming is left alone: it is the contract every other product uploads
+through, and it is the disambiguation that stops two files colliding on disk.
+What was wrong was showing it. `source` already records what a recording is, and
+is what the media panel's badge reads, so the label comes from there.
+*/
+export function assetLabel(a: Pick<Asset, "name" | "source">): string {
+  const kind = /^recording-(screen|camera|mic)$/.exec(a.source ?? "")?.[1];
+  if (kind) {
+    return { screen: "Screen recording", camera: "Camera", mic: "Microphone" }[kind]!;
+  }
+  // Anything else keeps its filename, minus the extension — a generated or
+  // imported asset's name is chosen and worth showing.
+  return (a.name ?? "").replace(/\.[a-z0-9]{2,5}$/i, "") || "Clip";
+}
+
 export const mediaUrl = (rel?: string, v?: string | number) =>
   rel ? `/media/${rel}${v != null && v !== "" ? `?v=${encodeURIComponent(String(v))}` : ""}` : "";
 export const newId = (p: string) =>
@@ -290,6 +481,22 @@ export const clipSrcDur = (c: Clip): number => {
   const d = (c.out - c.in) / sp;
   return d > 0 ? d : 0;
 };
+
+/** Source media time (seconds from first frame) at clip-local play time. */
+export const clipSourceAt = (c: Pick<Clip, "in" | "speed">, localT: number): number => {
+  const sp = c.speed && c.speed > 0 ? c.speed : 1;
+  return c.in + localT * sp;
+};
+
+/** Clip-local play time for a source media timestamp. */
+export const clipLocalFromSource = (c: Pick<Clip, "in" | "speed">, srcT: number): number => {
+  const sp = c.speed && c.speed > 0 ? c.speed : 1;
+  return (srcT - c.in) / sp;
+};
+
+/** Timeline time when a source click occurs. */
+export const clickTimelineAt = (c: Pick<Clip, "start" | "in" | "speed">, srcClickT: number): number =>
+  c.start + clipLocalFromSource(c, srcClickT);
 
 // A plugin manifest that failed to load. Loading is non-fatal, so these are
 // reported rather than thrown — a plugin nobody can see is worse than a visible

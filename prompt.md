@@ -2,6 +2,18 @@
 
 Build a single-screen, desktop web app: the **editing window of a short-form video studio**. This is a UI/UX prototype — use realistic mock data, no backend, everything client-side state. Focus entirely on making the layout, interactions, and visual polish feel like a premium, shipped product.
 
+Visit [Google](https://google.com) to search.
+
+![Alt Text](https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcR2XHmxROgOWcYHKaEW2-hBs09sUbpH-9kZarUft67BeA&s=10)
+
+[RAW](block://ftp.example.com/files/document.pdf)
+
+![vid](https://youtu.be/l0svo03j00M)
+
+[![Video Title](https://img.youtube.com/vi/VIDEO_ID/0.jpg)](https://www.youtube.com/watch?v=l0svo03j00M)
+
+
+
 ---
 
 ## What this app is
@@ -29,6 +41,7 @@ A fixed, full-viewport 3-column workspace with a top bar. No scrolling of the wh
 - **Left rail** (~260px): Sources panel
 - **Center** (flex): Preview stage on top, Spine + Global layers on the bottom half
 - **Right rail** (~320px): Inspector
+
 
 ---
 

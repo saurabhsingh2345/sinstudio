@@ -1,9 +1,15 @@
 import { create } from "zustand";
 import { api, ConflictError } from "./api";
-import type { Asset, CaptionCue, Clip, EditDoc, Keyframe, Track, TitleAnim, TitleReveal } from "./types";
+import type { Annotation, AnnoKind, Asset, CaptionCue, Clip, EditDoc, Keyable, Keyframe, Track, TitleAnim, TitleReveal } from "./types";
 import { newId, clipPlayDur } from "./types";
 import { buildTitleAnim } from "./titleAnim";
+import { newAnnotation } from "./annotation";
+import { buildMotionPreset, type MotionPreset } from "./motionPresets";
 import { clearPeaks } from "./peaks";
+import { rippleCutTrackClips } from "./rippleCut";
+import { cutClipSilences, planSilenceCuts, type SilenceSpan } from "./silence";
+import { applySpeedup, planSpeedup, type IdleSpan } from "./idle";
+import { clearCursorTracks } from "./cursorTracks";
 
 interface StudioState {
   doc: EditDoc | null;
@@ -42,6 +48,9 @@ interface StudioState {
   removeAsset: (assetId: string) => void;
   addClip: (trackId: string, assetId: string, start: number) => void;
   addClipToLane: (assetId: string, start?: number) => void;
+  addSyncedClips: (
+    items: { assetId: string; lane: "video" | "overlay" | "audio"; startedAt: number }[]
+  ) => void;
   updateClip: (trackId: string, clipId: string, patch: Partial<Clip>) => void;
   moveClip: (fromTrackId: string, toTrackId: string, clipId: string, start: number) => void;
   removeClip: (trackId: string, clipId: string) => void;
@@ -51,6 +60,10 @@ interface StudioState {
   splitAtPlayhead: () => void;
   deleteSelected: () => void;
   rippleDelete: () => void;
+  /** Replace a clip with its non-silent segments and pull everything after it left. */
+  removeSilences: (trackId: string, clipId: string, silences: SilenceSpan[]) => number;
+  /** Split a clip around its idle stretches and play those at `factor` speed. */
+  speedUpIdle: (trackId: string, clipId: string, idles: IdleSpan[], factor: number) => number;
   copySelected: () => void;
   paste: () => void;
   nudgePlayhead: (delta: number) => void;
@@ -60,7 +73,7 @@ interface StudioState {
   addCue: () => void;
   removeCue: (id: string) => void;
 
-  setBackground: (color: string) => void;
+  setBackground: (color: string, color2?: string) => void;
 
   detachAudio: (trackId: string, clipId: string) => void;
   attachAudio: (trackId: string, clipId: string) => void;
@@ -71,7 +84,8 @@ interface StudioState {
   moveTrackZ: (trackId: string, dir: -1 | 1) => void;
   toggleTrackFlag: (trackId: string, flag: "muted" | "hidden" | "solo" | "duck") => void;
 
-  addKeyframe: (trackId: string, clipId: string, prop: "x" | "y" | "scale" | "opacity") => void;
+  addKeyframe: (trackId: string, clipId: string, prop: Keyable) => void;
+  applyMotionPreset: (trackId: string, clipId: string, preset: MotionPreset) => void;
   updateKeyframe: (trackId: string, clipId: string, prop: string, index: number, value: number) => void;
   moveKeyframe: (trackId: string, clipId: string, prop: string, index: number, t: number) => void;
   setKeyframeEase: (trackId: string, clipId: string, prop: string, index: number, ease: string) => void;
@@ -84,10 +98,14 @@ interface StudioState {
   updateTitle: (trackId: string, clipId: string, patch: Partial<NonNullable<Clip["title"]>>) => void;
   applyTitleAnim: (trackId: string, clipId: string, preset: TitleAnim) => void;
   applyTitleReveal: (trackId: string, clipId: string, reveal: TitleReveal) => void;
+  addAnnotation: (kind: AnnoKind) => void;
+  updateAnnotation: (trackId: string, clipId: string, patch: Partial<Annotation>) => void;
 
-  addMarker: () => void;
+  addMarker: () => string | null;
   removeMarker: (id: string) => void;
   updateMarker: (id: string, patch: { t?: number; label?: string; color?: string }) => void;
+  /** Remove a timeline span and ripple everything after it left. */
+  rippleCutRange: (start: number, end: number) => void;
 
   select: (trackId: string, clipId: string) => void;
   toggleSelect: (trackId: string, clipId: string) => void;
@@ -129,6 +147,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   load: async (id) => {
     const doc = await api.getProject(id);
     clearPeaks(); // drop cached waveforms from any previously-open project
+    clearCursorTracks();
     set({ doc, dirty: false, conflict: null, past: [], future: [], selClip: null, selClips: [], selCue: null, playhead: 0 });
   },
 
@@ -166,6 +185,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     const c = get().conflict;
     if (!c) return;
     clearPeaks();
+    clearCursorTracks();
     set({
       doc: c.current,
       conflict: null,
@@ -340,6 +360,40 @@ export const useStudio = create<StudioState>((set, get) => ({
         transform: { x: 0, y: 0, scale: 1, opacity: 1 },
         volume: 1,
       });
+    }),
+
+  // addSyncedClips places several assets that were captured together so they
+  // stay in sync. Unlike addClipToLane it never appends to the end of a lane —
+  // a screen recording and its narration have to start at the same instant, and
+  // "after the last clip" would slide them apart. Each source's own start time
+  // preserves the few ms the recorders drifted from each other at launch.
+  addSyncedClips: (items) =>
+    get().mutate((d) => {
+      const present = items.filter((i) => d.assets.some((a) => a.id === i.assetId));
+      if (!present.length) return;
+      const origin = Math.min(...present.map((i) => i.startedAt));
+      const at = Math.max(0, get().playhead);
+      for (const item of present) {
+        const asset = d.assets.find((a) => a.id === item.assetId)!;
+        let t = d.tracks.find((t) => t.kind === item.lane);
+        if (!t) {
+          const label = item.lane === "audio" ? "Audio" : item.lane === "overlay" ? "Overlay" : "Video";
+          t = { id: newId("t_"), kind: item.lane, name: `${label} 1`, clips: [] };
+          const capIdx = d.tracks.findIndex((x) => x.kind === "caption");
+          if (capIdx >= 0) d.tracks.splice(capIdx, 0, t);
+          else d.tracks.push(t);
+        }
+        const dur = asset.duration > 0 ? asset.duration : 5;
+        (t.clips ||= []).push({
+          id: newId("clip_"),
+          assetId: item.assetId,
+          start: +(at + (item.startedAt - origin) / 1000).toFixed(3),
+          in: 0,
+          out: dur,
+          transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+          volume: 1,
+        });
+      }
     }),
 
   updateClip: (trackId, clipId, patch) =>
@@ -536,6 +590,62 @@ export const useStudio = create<StudioState>((set, get) => ({
     set({ selClip: null, selClips: [] });
   },
 
+  /*
+   * The jump-cut pass, as ONE mutate — one undo brings the whole take back.
+   * The clip becomes its kept segments back to back, and everything after it
+   * on the same track ripples left by the time removed, so the cut tightens
+   * the timeline instead of leaving a hole where each pause was.
+   */
+  removeSilences: (trackId, clipId, silences) => {
+    const { doc } = get();
+    if (!doc) return 0;
+    const track = doc.tracks.find((t) => t.id === trackId);
+    const clip = track?.clips?.find((c) => c.id === clipId);
+    if (!track || !clip) return 0;
+    const plan = planSilenceCuts(clip, silences);
+    if (!plan) return 0;
+    const clipEnd = clip.start + clipPlayDur(clip);
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      const c = t?.clips?.find((c) => c.id === clipId);
+      if (!t || !t.clips || !c) return;
+      const segments = cutClipSilences(c, plan, () => newId("clip_"));
+      const idx = t.clips.findIndex((x) => x.id === clipId);
+      t.clips.splice(idx, 1, ...segments);
+      for (const other of t.clips) {
+        if (segments.includes(other)) continue;
+        if (other.start >= clipEnd - 1e-6) other.start = +(other.start - plan.removed).toFixed(4);
+      }
+    });
+    return plan.removed;
+  },
+
+  // The timelapse pass — same shape as removeSilences: one mutate, one undo,
+  // segments back to back, downstream clips pulled left by the time saved.
+  speedUpIdle: (trackId, clipId, idles, factor) => {
+    const { doc } = get();
+    if (!doc) return 0;
+    const track = doc.tracks.find((t) => t.id === trackId);
+    const clip = track?.clips?.find((c) => c.id === clipId);
+    if (!track || !clip) return 0;
+    const plan = planSpeedup(clip, idles, factor);
+    if (!plan) return 0;
+    const clipEnd = clip.start + clipPlayDur(clip);
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      const c = t?.clips?.find((c) => c.id === clipId);
+      if (!t || !t.clips || !c) return;
+      const segments = applySpeedup(c, plan, factor, () => newId("clip_"));
+      const idx = t.clips.findIndex((x) => x.id === clipId);
+      t.clips.splice(idx, 1, ...segments);
+      for (const other of t.clips) {
+        if (segments.includes(other)) continue;
+        if (other.start >= clipEnd - 1e-6) other.start = +(other.start - plan.saved).toFixed(4);
+      }
+    });
+    return plan.saved;
+  },
+
   copySelected: () => {
     const { doc, selClips } = get();
     if (!doc) return;
@@ -602,10 +712,16 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (t?.cues) t.cues = t.cues.filter((c) => c.id !== id);
     }),
 
-  setBackground: (color) =>
+  setBackground: (color, color2) =>
     get().mutate((d) => {
       const t = d.tracks.find((t) => t.kind === "background");
-      if (t) t.backgroundColor = color;
+      if (t) {
+        t.backgroundColor = color;
+        if (color2 !== undefined) {
+          if (color2) t.backgroundColor2 = color2;
+          else delete t.backgroundColor2;
+        }
+      }
     }),
 
   // detachAudio splits a video clip's audio into an independent clip on a dedicated
@@ -615,7 +731,7 @@ export const useStudio = create<StudioState>((set, get) => ({
     get().mutate((d) => {
       const vt = d.tracks.find((t) => t.id === trackId);
       const c = vt?.clips?.find((c) => c.id === clipId);
-      if (!c || c.title) return; // titles carry no audio
+      if (!c || c.title || c.annotation) return; // assetless clips carry no audio
       for (const t of d.tracks)
         if (t.kind === "audio")
           for (const ac of t.clips || []) if (ac.sourceClip === clipId) return; // already detached
@@ -723,7 +839,8 @@ export const useStudio = create<StudioState>((set, get) => ({
       const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
       if (!c) return;
       const tLocal = Math.max(0, +(get().playhead - c.start).toFixed(3));
-      const value = c.transform[prop];
+      // rotation is optional on Transform; an absent one keys as 0°.
+      const value = c.transform[prop] ?? 0;
       const kf = (c.keyframes ||= {});
       const list = (kf[prop] ||= []);
       const existing = list.findIndex((k) => Math.abs(k.t - tLocal) < 0.02);
@@ -732,6 +849,19 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (existing >= 0) list[existing] = { ...list[existing], t: tLocal, value };
       else list.push({ t: tLocal, value, ease: prop === "opacity" ? "linear" : "easeInOut" });
       list.sort((a, b) => a.t - b.t);
+    }),
+
+  // applyMotionPreset writes a camera move onto a clip. It replaces only the
+  // properties the preset animates, so a hand-built opacity fade survives a
+  // later "Ken Burns" — and re-applying a preset is idempotent rather than
+  // additive.
+  applyMotionPreset: (trackId, clipId, preset) =>
+    get().mutate((d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      if (!c) return;
+      const kf = buildMotionPreset(preset, clipPlayDur(c), d.canvas.width, d.canvas.height);
+      const merged = { ...(c.keyframes ?? {}), ...kf };
+      c.keyframes = Object.keys(merged).length ? merged : undefined;
     }),
 
   updateKeyframe: (trackId, clipId, prop, index, value) =>
@@ -829,6 +959,37 @@ export const useStudio = create<StudioState>((set, get) => ({
       if (c?.title) Object.assign(c.title, patch);
     }),
 
+  // addAnnotation drops a callout on the overlay lane at the playhead. Callouts
+  // live above the footage they point at, so the overlay track is the right
+  // home; falling back to video keeps it working on a project without one.
+  addAnnotation: (kind) => {
+    const { doc, playhead } = get();
+    if (!doc) return;
+    const track = doc.tracks.find((t) => t.kind === "overlay") || doc.tracks.find((t) => t.kind === "video");
+    if (!track) return;
+    const clipId = newId("anno_");
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === track.id)!;
+      (t.clips ||= []).push({
+        id: clipId,
+        assetId: "",
+        start: Math.max(0, playhead),
+        in: 0,
+        out: 3,
+        transform: { x: 0, y: 0, scale: 1, opacity: 1 },
+        volume: 0,
+        annotation: newAnnotation(kind),
+      });
+    });
+    set({ selClip: { trackId: track.id, clipId }, selCue: null });
+  },
+
+  updateAnnotation: (trackId, clipId, patch) =>
+    get().mutate((d) => {
+      const c = d.tracks.find((t) => t.id === trackId)?.clips?.find((c) => c.id === clipId);
+      if (c?.annotation) Object.assign(c.annotation, patch);
+    }),
+
   // applyTitleAnim writes an animation preset's keyframes/transitions onto a
   // title clip (replacing any prior motion), scaled to the clip's play duration.
   applyTitleAnim: (trackId, clipId, preset) =>
@@ -861,11 +1022,13 @@ export const useStudio = create<StudioState>((set, get) => ({
 
   addMarker: () => {
     const playhead = get().playhead;
+    const id = newId("mk_");
     get().mutate((d) => {
       const n = (d.markers?.length ?? 0) + 1;
-      (d.markers ||= []).push({ id: newId("mk_"), t: +playhead.toFixed(3), label: `Marker ${n}`, color: "#f4b740" });
+      (d.markers ||= []).push({ id, t: +playhead.toFixed(3), label: `Marker ${n}`, color: "#f4b740" });
       d.markers.sort((a, b) => a.t - b.t);
     });
+    return id;
   },
 
   removeMarker: (id) =>
@@ -878,6 +1041,32 @@ export const useStudio = create<StudioState>((set, get) => ({
       const m = d.markers?.find((m) => m.id === id);
       if (m) Object.assign(m, patch);
     }),
+
+  rippleCutRange: (start, end) => {
+    if (!(end > start)) return;
+    const len = end - start;
+    get().mutate((d) => {
+      const mkId = () => newId("c_");
+      for (const t of d.tracks) {
+        if (t.clips?.length) t.clips = rippleCutTrackClips(t.clips, start, end, mkId);
+      }
+      const cap = d.tracks.find((t) => t.kind === "caption");
+      if (cap?.cues?.length) {
+        cap.cues = cap.cues
+          .filter((q) => q.end <= start || q.start >= end)
+          .map((q) =>
+            q.start >= end
+              ? { ...q, start: +(q.start - len).toFixed(3), end: +(q.end - len).toFixed(3) }
+              : q
+          );
+      }
+      if (d.markers?.length) {
+        d.markers = d.markers
+          .filter((m) => m.t < start || m.t >= end)
+          .map((m) => (m.t >= end ? { ...m, t: +(m.t - len).toFixed(3) } : m));
+      }
+    });
+  },
 
   select: (trackId, clipId) =>
     set({ selClip: { trackId, clipId }, selClips: [{ trackId, clipId }], selCue: null }),

@@ -1,5 +1,12 @@
-// Scopes Go tooling to the backend module so editors resolve intra-module
-// imports. Affects only the Go subtree; the sibling JS projects are untouched.
+// Scopes Go tooling to the Go modules in this repo so editors resolve
+// intra-module imports. Affects only the Go subtree; the sibling JS projects
+// are untouched.
+//
+// cursord is a separate module on purpose: it needs cgo and per-OS code, while
+// the backend is built CGO_ENABLED=0 with no platform files.
 go 1.26
 
-use ./backend
+use (
+	./backend
+	./tools/cursord
+)
