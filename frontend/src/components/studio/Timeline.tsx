@@ -29,6 +29,8 @@ import {
   Type,
   ChevronUp,
   ChevronDown,
+  ChevronsUp,
+  ChevronsDown,
   Copy,
   Link2,
   RotateCcw,
@@ -53,6 +55,7 @@ import {
 import type { Clip, EditDoc, Track } from "../../types";
 import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { getPeaks, peaksNow } from "../../peaks";
+import { zOrder } from "../../clipZ";
 import { hueFor, fmtTC } from "./bridge";
 import type { Selection } from "./selection";
 import { findClip } from "./selection";
@@ -392,7 +395,7 @@ export function Timeline({
 
 // ─────────────────────────── context menu (#2) ────────────────────────────
 
-type ClipMenu = { x: number; y: number; trackId: string; clipId: string; isTitle: boolean; isStill: boolean; hasAudio: boolean; detached: boolean; disabled: boolean; speed: number };
+type ClipMenu = { x: number; y: number; trackId: string; clipId: string; isTitle: boolean; isStill: boolean; hasAudio: boolean; detached: boolean; disabled: boolean; speed: number; siblings: number };
 
 function ClipContextMenu({
   menu,
@@ -407,7 +410,7 @@ function ClipContextMenu({
   zoomToClip: (c: Clip) => void;
   onSelect: (s: Selection) => void;
 }) {
-  const { trackId, clipId, isTitle, isStill, hasAudio, detached, disabled, speed } = menu;
+  const { trackId, clipId, isTitle, isStill, hasAudio, detached, disabled, speed, siblings } = menu;
   const run = (fn: () => void) => () => {
     fn();
     onClose();
@@ -433,6 +436,15 @@ function ClipContextMenu({
       : []),
     ...(detached ? [{ label: "Re-attach audio", icon: Link2, onClick: () => st().attachAudio(trackId, clipId) }] : []),
     { label: "Reset transform", icon: RotateCcw, onClick: () => st().updateClip(trackId, clipId, { transform: { x: 0, y: 0, scale: 1, opacity: 1, rotation: 0 } }) },
+    ...(siblings > 1
+      ? [
+          "sep" as const,
+          { label: "Bring to front", icon: ChevronsUp, onClick: () => st().moveClipZ(trackId, clipId, "front") },
+          { label: "Bring forward", icon: ChevronUp, onClick: () => st().moveClipZ(trackId, clipId, "forward") },
+          { label: "Send backward", icon: ChevronDown, onClick: () => st().moveClipZ(trackId, clipId, "backward") },
+          { label: "Send to back", icon: ChevronsDown, onClick: () => st().moveClipZ(trackId, clipId, "back") },
+        ]
+      : []),
     ...(isStill ? [] : (["speedrow"] as const)),
     { label: disabled ? "Enable clip" : "Disable clip", icon: disabled ? Eye : Ban, onClick: () => st().updateClip(trackId, clipId, { disabled: !disabled }) },
     {
@@ -818,7 +830,9 @@ function TrackRow({
           ? (track.cues || []).map((cue) => (
               <CueBlock key={cue.id} cue={cue} px={px} rowH={rowH} selection={selection} onSelect={onSelect} timeAt={timeAt} snapEnabled={snapEnabled} snapCandidates={snapCandidates} setSnapLine={setSnapLine} />
             ))
-          : (track.clips || []).map((clip) => (
+          : // Drawn in z order, so where two clips overlap in a lane the one you
+            // see and click is the one that is actually in front on the canvas.
+            zOrder(track.clips || []).map((clip) => (
               <ClipBar
                 key={clip.id}
                 doc={doc}
@@ -1010,6 +1024,13 @@ function ClipBar({
   // own inspector rather than the overlay one.
   const isAnno = !!clip.annotation;
   const isStill = isTitle || isAnno;
+  // An image asset is a single frame too, so it behaves like a title everywhere
+  // a source timeline is assumed: no waveform, no audio to detach, no speed to
+  // retime, and trimming it stretches the span instead of seeking a source that
+  // has no other frames to reach. It keeps the level/fade envelope, though —
+  // fading a logo in is the whole point, where a title fades its own text.
+  const isImage = asset?.kind === "image";
+  const isPicture = isStill || isImage;
   const hue = hueFor(clip.id);
   const dur = clipPlayDur(clip);
   const srcPlay = clipSrcDur(clip);
@@ -1022,7 +1043,7 @@ function ClipBar({
 
   const label = isTitle ? clip.title!.text || "Title" : isAnno ? clip.annotation!.kind : asset ? assetLabel(asset) : "Clip";
   const isAudioLane = track.kind === "audio";
-  const showWave = !!asset && !isStill && (isAudioLane || asset.hasAudio !== false);
+  const showWave = !!asset && !isPicture && (isAudioLane || asset.hasAudio !== false);
 
   // #3 Level (volume for audio, opacity for visual) and fades — drawn as an
   // envelope and adjustable with on-clip handles.
@@ -1124,13 +1145,13 @@ function ClipBar({
         const rawEnd = snapValue(origStart + dur + dx);
         const desiredPlay = Math.max(0.1, rawEnd - origStart);
         setSnapLine(snapEnabled ? rawEnd : null);
-        if (retime && !isStill) {
+        if (retime && !isPicture) {
           // #10 retime: stretch/compress the source span to fill the new length.
           const srcSpan = origOut - origIn;
           const targetSrcPlay = Math.max(0.05, desiredPlay - origHold);
           const newSpeed = Math.max(0.1, Math.min(10, srcSpan / targetSrcPlay));
           s2.updateClip(curTrack, clip.id, { speed: +newSpeed.toFixed(3) });
-        } else if (isStill) {
+        } else if (isPicture) {
           s2.updateClip(curTrack, clip.id, { out: +desiredPlay.toFixed(3) });
         } else {
           const maxSrcPlay = (srcDur - origIn) / sp; // seconds of real footage left
@@ -1143,8 +1164,8 @@ function ClipBar({
         // trim-in: move the head; keep the tail fixed in time.
         const rawStart = snapValue(Math.max(0, origStart + dx));
         setSnapLine(snapEnabled ? rawStart : null);
-        if (isStill) {
-          const end = origStart + origOut; // in=0 for assetless clips
+        if (isPicture) {
+          const end = origStart + origOut; // in=0 for a single-frame source
           const ns = Math.min(rawStart, end - 0.1);
           s2.updateClip(curTrack, clip.id, { start: +ns.toFixed(3), out: +(end - ns).toFixed(3) });
         } else {
@@ -1252,11 +1273,14 @@ function ClipBar({
       trackId: track.id,
       clipId: clip.id,
       isTitle,
-      isStill,
-      hasAudio: !isStill && asset?.hasAudio !== false,
+      isStill: isPicture,
+      hasAudio: !isPicture && asset?.hasAudio !== false,
       detached,
       disabled: !!clip.disabled,
       speed: clip.speed && clip.speed > 0 ? clip.speed : 1,
+      // Restacking is only offered where it can do something: a lane with a
+      // single clip has nothing to go in front of.
+      siblings: track.clips?.length ?? 0,
     });
   };
 

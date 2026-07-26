@@ -10,6 +10,7 @@ import { rippleCutTrackClips } from "./rippleCut";
 import { cutClipSilences, planSilenceCuts, type SilenceSpan } from "./silence";
 import { applySpeedup, planSpeedup, type IdleSpan } from "./idle";
 import { clearCursorTracks } from "./cursorTracks";
+import { restack, type RestackMode } from "./clipZ";
 
 interface StudioState {
   doc: EditDoc | null;
@@ -82,6 +83,8 @@ interface StudioState {
   removeTrack: (trackId: string) => void;
   moveTrack: (trackId: string, dir: -1 | 1) => void;
   moveTrackZ: (trackId: string, dir: -1 | 1) => void;
+  /** Restack a clip against the other clips of its own track. */
+  moveClipZ: (trackId: string, clipId: string, mode: RestackMode) => void;
   toggleTrackFlag: (trackId: string, flag: "muted" | "hidden" | "solo" | "duck") => void;
 
   addKeyframe: (trackId: string, clipId: string, prop: Keyable) => void;
@@ -823,6 +826,15 @@ export const useStudio = create<StudioState>((set, get) => ({
       const a = d.tracks[i]!;
       d.tracks[i] = d.tracks[j]!;
       d.tracks[j] = a;
+    }),
+
+  // moveClipZ restacks one clip against its own track's siblings. moveTrackZ
+  // settles which lane sits over which; this settles two logos dropped on the
+  // SAME lane. The ordering itself is in clipZ.ts, twinned with the exporter.
+  moveClipZ: (trackId, clipId, mode) =>
+    get().mutate((d) => {
+      const t = d.tracks.find((t) => t.id === trackId);
+      if (t?.clips) restack(t.clips, clipId, mode);
     }),
 
   toggleTrackFlag: (trackId, flag) =>

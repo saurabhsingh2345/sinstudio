@@ -150,8 +150,14 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 
 	// Source dimensions, for fitting a clip whose shape isn't the canvas's.
 	srcDims := map[string][2]int{}
+	// A still asset (PNG/JPG) has exactly one frame, so it has to be LOOPED for
+	// the clip's span. Trimmed like a video it decodes that single frame and the
+	// overlay's eof_action=pass drops it after 1/fps of a second — the picture
+	// the preview holds for five seconds flashed once in the export.
+	stillAsset := map[string]bool{}
 	for _, a := range doc.Assets {
 		srcDims[a.ID] = [2]int{a.Width, a.Height}
+		stillAsset[a.ID] = a.Kind == "image"
 	}
 
 	for _, t := range tracks {
@@ -167,14 +173,14 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			if t.BackgroundColor2 != "" {
 				bgColor2 = t.BackgroundColor2
 			}
-			for _, c := range t.Clips {
+			for _, c := range byZ(t.Clips) {
 				if c.Disabled {
 					continue
 				}
-				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID])
+				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID], stillAsset[c.AssetID])
 			}
 		case schema.TrackVideo, schema.TrackOverlay:
-			for _, c := range t.Clips {
+			for _, c := range byZ(t.Clips) {
 				if c.Disabled {
 					continue
 				}
@@ -190,7 +196,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 					}
 					continue
 				}
-				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID])
+				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID], stillAsset[c.AssetID])
 			}
 		case schema.TrackAudio:
 			if t.Muted {
@@ -853,7 +859,21 @@ func codecArgs(format string, withAudio bool) []string {
 	return a
 }
 
-func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool, lutDir string, src [2]int) {
+// byZ orders one track's clips bottom->top. Stable, so clips left at the
+// default Z keep the array order the document was written in — the only order
+// that existed before Z, and the one every untouched project still relies on.
+// Twins with activeVisuals' sort in frontend/src/components/studio/preview-engine.ts:
+// if these two disagree, the preview shows a different picture than the export.
+func byZ(clips []schema.Clip) []schema.Clip {
+	if len(clips) < 2 {
+		return clips
+	}
+	out := append([]schema.Clip(nil), clips...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Z < out[j].Z })
+	return out
+}
+
+func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool, lutDir string, src [2]int, still bool) {
 	p, ok := resolve(c.AssetID)
 	if !ok {
 		return
@@ -906,8 +926,12 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		hold: hold, cursorFX: c.Cursor, cursorPath: p, motionBlur: c.MotionBlur,
 		redactions: validRedactions(c.Redactions),
 		chroma: c.Chroma, device: c.Device, backdrop: c.Backdrop, bubble: c.Bubble,
+		still: still,
 	})
-	if !muted && !isBG && !c.Mute {
+	// A still has no audio stream to contribute. The ffprobe sweep below would
+	// drop it anyway, but that sweep fails open when ffprobe is missing — and a
+	// [N:a] reference to a PNG aborts the entire render.
+	if !still && !muted && !isBG && !c.Mute {
 		vol := c.Volume
 		if vol == 0 {
 			vol = 1

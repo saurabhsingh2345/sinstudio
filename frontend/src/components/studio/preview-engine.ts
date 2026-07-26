@@ -120,19 +120,32 @@ export function cssFilter(e: Clip["effects"], stageH: number, H: number): string
 }
 
 // Visual clips active at time t, ordered bottom->top (bg, video, overlay).
+//
+// The full stacking rule, and the one the export implements in render.go's
+// track sort + byZ: track kind, then the track's position in the document,
+// then the clip's z within its track (see clipZ.ts), then array order. Every
+// tiebreak is explicit here rather than leaning on sort stability — the
+// previous version sorted by kind alone and let stability carry the rest,
+// which would have made z unreachable the moment it existed.
 export function activeVisuals(tracks: Track[], t: number) {
   const order: Record<string, number> = { background: 0, video: 1, overlay: 2 };
-  const out: { track: Track; clip: Clip }[] = [];
-  for (const tr of tracks) {
-    if (tr.hidden || !(tr.kind in order)) continue;
-    for (const c of tr.clips || []) {
-      if (c.disabled) continue;
+  const out: { track: Track; clip: Clip; ti: number; ci: number }[] = [];
+  tracks.forEach((tr, ti) => {
+    if (tr.hidden || !(tr.kind in order)) return;
+    (tr.clips || []).forEach((c, ci) => {
+      if (c.disabled) return;
       const end = c.start + clipPlayDur(c);
-      if (t >= c.start && t < end) out.push({ track: tr, clip: c });
-    }
-  }
-  out.sort((a, b) => order[a.track.kind] - order[b.track.kind]);
-  return out;
+      if (t >= c.start && t < end) out.push({ track: tr, clip: c, ti, ci });
+    });
+  });
+  out.sort(
+    (a, b) =>
+      order[a.track.kind] - order[b.track.kind] ||
+      a.ti - b.ti ||
+      (a.clip.z ?? 0) - (b.clip.z ?? 0) ||
+      a.ci - b.ci
+  );
+  return out.map(({ track, clip }) => ({ track, clip }));
 }
 
 // Audio-track clips audible at time t, honoring mute/hide/solo.

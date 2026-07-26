@@ -817,9 +817,11 @@ function TrackLayerRow({
   const siblings = doc.tracks.filter((t) => t.kind === track.kind).length;
 
   // Asset kinds this track row accepts on drop: audio → audio tracks, visual
-  // media → video tracks. Drops append the asset as a clip at the track's end.
+  // media → video and overlay tracks (an overlay lane is where a logo or a
+  // still belongs). Drops append the asset as a clip at the track's end.
   const [dropOk, setDropOk] = useState(false);
-  const accepts = track.kind === "audio" ? ["audio"] : track.kind === "video" ? ["video", "image"] : [];
+  const accepts =
+    track.kind === "audio" ? ["audio"] : track.kind === "video" || track.kind === "overlay" ? ["video", "image"] : [];
   const canDrop = (dt: DataTransfer) => accepts.some((k) => dt.types.includes(`asset/${k}`));
   const onLaneDragOver = (e: React.DragEvent) => {
     if (!canDrop(e.dataTransfer)) return;

@@ -6,6 +6,10 @@ import {
   Scissors,
   Link2,
   Palette,
+  ChevronUp,
+  ChevronDown,
+  ChevronsUp,
+  ChevronsDown,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -47,6 +51,7 @@ import type {
   Watermark,
 } from "../../types";
 import { clipPlayDur, clipSrcDur, anchorFrac } from "../../types";
+import { zOrder, type RestackMode } from "../../clipZ";
 import { MOTION_PRESETS } from "../../motionPresets";
 import { SMART_FOCUS_DEFAULTS, smartFocus, type SmartFocusOptions } from "../../smartFocus";
 import { api } from "../../api";
@@ -263,19 +268,46 @@ function PluginLiveEditor({ asset, gen }: { asset: Asset; gen: GeneratorStatus }
   const [busy, setBusy] = useState(false);
   const preview = useLivePreview(projectId, gen.id, `asset:${asset.id}`, !!gen.preview);
 
-  // Ask for a cheap preview whenever the edit settles. The hook debounces and
+  // Has the USER changed anything in this editor? Only their edits may spend a
+  // render. An effect runs on mount as well as on change, so keying the preview
+  // on the state alone fired one the instant a generated clip was selected —
+  // seconds of render for a document nobody had touched, twice over, because
+  // re-seeding below replaces the same values with fresh object identities.
+  // A ref, set by the edit handlers, is the only thing that distinguishes "the
+  // user typed" from "React ran the effect".
+  const edited = useRef(false);
+  const editDoc = (next: Doc) => {
+    edited.current = true;
+    setDoc(next);
+  };
+  const editRaw = (next: string) => {
+    edited.current = true;
+    setRaw(next);
+  };
+  const editParams = (fn: (p: Record<string, string>) => Record<string, string>) => {
+    edited.current = true;
+    setParams(fn);
+  };
+
+  // Ask for a cheap preview once an edit settles. The hook debounces and
   // supersedes, so this is safe to call on every change.
   useEffect(() => {
+    if (!edited.current) return;
     preview.request(hasSchema ? serializeDoc(doc) : raw, params);
   }, [doc, raw, params]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-seed the draft when the committed provenance changes (i.e. after a
-  // re-render replaces the asset). Doesn't fire while editing, since only our own
-  // re-render mutates genInput.
+  // Re-seed the draft when the committed provenance changes: a re-render
+  // replaced this asset, or the inspector was pointed at a different clip (the
+  // component is reused, so the state has to be reset rather than remounted).
+  // Either way the draft is untouched again, and the preview on screen belongs
+  // to the document we just replaced — keeping it would caption clip B with a
+  // render of clip A.
   useEffect(() => {
+    edited.current = false;
     setDoc(parseDoc(asset.genInput, gen.docRoot));
     setRaw(asset.genInput ?? "");
     setParams({ ...(asset.genParams ?? {}) });
+    preview.clear();
   }, [asset.id, asset.genInput]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const rerender = async () => {
@@ -331,12 +363,12 @@ function PluginLiveEditor({ asset, gen }: { asset: Asset; gen: GeneratorStatus }
       <PreviewPane preview={preview} spec={gen.preview} />
 
       {hasSchema ? (
-        <PluginDocEditor fields={gen.fields!} doc={doc} onChange={setDoc} />
+        <PluginDocEditor fields={gen.fields!} doc={doc} onChange={editDoc} />
       ) : (
         <Textarea
           className="h-40 resize-y font-mono text-[11px]"
           value={raw}
-          onChange={(e) => setRaw(e.target.value)}
+          onChange={(e) => editRaw(e.target.value)}
           spellCheck={false}
         />
       )}
@@ -348,7 +380,7 @@ function PluginLiveEditor({ asset, gen }: { asset: Asset; gen: GeneratorStatus }
               key={spec.flag}
               spec={spec}
               value={params[spec.flag] ?? spec.default ?? ""}
-              onChange={(v) => setParams((p) => ({ ...p, [spec.flag]: v }))}
+              onChange={(v) => editParams((p) => ({ ...p, [spec.flag]: v }))}
             />
           ))}
         </div>
@@ -362,6 +394,41 @@ function PluginLiveEditor({ asset, gen }: { asset: Asset; gen: GeneratorStatus }
         {busy ? "Re-rendering…" : "Re-render clip"}
       </button>
     </Section>
+  );
+}
+
+// LayerRow restacks a clip against the others on its OWN track — the case a
+// track's own bring-forward can't reach, two logos sharing one overlay lane.
+// Hidden on a lane with nothing to stack against, and it reads out the position
+// so "why is my badge hidden" has a visible answer rather than a guess.
+function LayerRow({ trackId, clip }: { trackId: string; clip: Clip }) {
+  const moveClipZ = useStudio((s) => s.moveClipZ);
+  const clips = useStudio((s) => s.doc?.tracks.find((t) => t.id === trackId)?.clips);
+  if (!clips || clips.length < 2) return null;
+  const order = zOrder(clips);
+  const i = order.findIndex((c) => c.id === clip.id);
+  const btn = (title: string, disabled: boolean, mode: RestackMode, Icon: React.ComponentType<{ className?: string }>) => (
+    <button
+      title={title}
+      disabled={disabled}
+      onClick={() => moveClipZ(trackId, clip.id, mode)}
+      className="rounded p-1 text-muted-foreground hover:bg-white/10 hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent"
+    >
+      <Icon className="h-3.5 w-3.5" />
+    </button>
+  );
+  return (
+    <Field label="Layer">
+      <div className="flex items-center gap-0.5">
+        {btn("Send to back", i === 0, "back", ChevronsDown)}
+        {btn("Send backward", i === 0, "backward", ChevronDown)}
+        {btn("Bring forward", i === order.length - 1, "forward", ChevronUp)}
+        {btn("Bring to front", i === order.length - 1, "front", ChevronsUp)}
+        <span className="ml-1 text-[11px] tabular-nums text-muted-foreground">
+          {i + 1} of {order.length}
+        </span>
+      </div>
+    </Field>
   );
 }
 
@@ -387,6 +454,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
         <SliderRow label="Rotate" value={tr.rotation || 0} min={-180} max={180} step={1} onChange={(v) => setTr({ rotation: v })} fmt={(v) => `${v}°`} />
         <SliderRow label="Opacity" value={Math.round(tr.opacity * 100)} min={0} max={100} step={1} onChange={(v) => setTr({ opacity: v / 100 })} fmt={(v) => `${v}%`} />
         <AnchorPicker tr={tr} onChange={setTr} />
+        <LayerRow trackId={trackId} clip={clip} />
       </Section>
 
       {asset && asset.kind !== "audio" && <StylePresetsSection trackId={trackId} clip={clip} asset={asset} />}
