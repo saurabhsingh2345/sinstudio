@@ -125,6 +125,12 @@ type Clip struct {
 	// MotionBlur adds temporal smoothing on camera moves (scale/x/y keyframes).
 	// 0 = off; 0..1 controls strength (compiled to ffmpeg tmix).
 	MotionBlur float64 `json:"motionBlur,omitempty"`
+	// Z stacks clips WITHIN one track: higher = nearer the viewer, ties broken by
+	// array order. Track kind (background < video < overlay) and track order
+	// still decide first, so this only reorders siblings — which is what a
+	// bring-to-front on two logos sharing an overlay lane needs. Zero (the value
+	// every pre-Z document decodes to) leaves the old array order intact.
+	Z int `json:"z,omitempty"`
 }
 
 // CursorFX turns on pointer emphasis for a screen recording. Each effect is a

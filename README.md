@@ -177,7 +177,12 @@ sequence of prefix PNGs server-side.
 1. **Generate / import** clips in the Asset panel. Generation spawns the sibling CLI
    (`internal/generator/adapters/*.json` describe each one) and streams progress over SSE.
 2. **Arrange** clips on the timeline (background / video / overlay / music / caption lanes):
-   drag to move, drag edges to trim, drop assets onto lanes.
+   drag to move, drag edges to trim, drop assets onto lanes. Images (PNG/JPG) are clips like
+   any other — they land on the Overlay lane, take the same transform/keyframes/fades, and
+   stretch to whatever length you trim them to.
+   **Stacking** runs lane kind (background < video < overlay) → lane order → clip `z` within a
+   lane. Reorder lanes from the track header arrows, and clips sharing one lane from the clip's
+   right-click menu or the inspector's Layer row (bring to front / send to back).
 3. **Music / captions / background:** add an audio clip to the Music lane, transcribe or hand-write
    caption cues, set a background color/clip.
 4. **Export:** `POST /api/projects/{id}/export` → `internal/render` compiles `timeline.json` into an

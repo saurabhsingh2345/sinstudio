@@ -232,6 +232,13 @@ export interface Clip {
   device?: DeviceFrame; // when set, the picture sits inside a drawn device
   /** Temporal blur on camera moves (scale/x/y keyframes). 0 = off, 0..1 strength. */
   motionBlur?: number;
+  /**
+   * Stacking among the clips of ONE track: higher = nearer the viewer, ties
+   * broken by array order. Track kind (background < video < overlay) and track
+   * order still win first, so this only reorders siblings — two logos sharing
+   * an overlay lane. Absent/0 = the array order every pre-Z document has.
+   */
+  z?: number;
 }
 
 export interface ExportOptions {
