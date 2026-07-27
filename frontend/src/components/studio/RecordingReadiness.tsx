@@ -66,7 +66,11 @@ export function buildRecordingReadiness(
     } else {
       items.push({
         label: "Cursor helper",
-        detail: "Run tools/cursord for auto-zoom and cursor effects",
+        // Name what is lost, not what to run. "Run tools/cursord" reads as an
+        // optional extra you can get to later; it is in fact the difference
+        // between a framed recording and a flat one, and the way you find that
+        // out is by finishing a take and seeing nothing happen.
+        detail: "Not running — no auto-zoom, no click rings, no cursor effects",
         status: "warn",
       });
     }

@@ -1,5 +1,12 @@
-import { describe, it, expect } from "vitest";
-import { AUDIO_MIMES, VIDEO_MIMES, extForMime, pickMime, recordingName } from "./recorder";
+import { afterEach, describe, it, expect, vi } from "vitest";
+import {
+  AUDIO_MIMES,
+  VIDEO_MIMES,
+  acquireDisplay,
+  extForMime,
+  pickMime,
+  recordingName,
+} from "./recorder";
 
 describe("pickMime", () => {
   it("takes the first supported candidate, in preference order", () => {
@@ -59,5 +66,106 @@ describe("recordingName", () => {
 describe("audio candidates", () => {
   it("offers opus first — every target browser has it and it's the best fit for speech", () => {
     expect(AUDIO_MIMES[0]).toContain("opus");
+  });
+});
+
+/*
+ * The combination that used to hand back a recording with no cursor in it at
+ * all: cursor tracking on (so `cursor: "never"` was requested before the picker
+ * opened), and then a window or tab picked in the picker — which cannot be
+ * mapped to pointer coordinates, so the track that would have let Studio draw a
+ * cursor is thrown away. Real cursor removed, drawn cursor unavailable, and
+ * nothing said about it until the take was over.
+ */
+describe("acquireDisplay", () => {
+  type Asked = { cursor?: string };
+
+  function harness(
+    surface: string,
+    opts: { reportsCursor?: boolean; applyWorks?: boolean } = {}
+  ) {
+    const { reportsCursor = true, applyWorks = false } = opts;
+    const asked: Asked[] = [];
+    const stopped: boolean[] = [];
+
+    const make = (hideCursor: boolean) => {
+      let hidden = hideCursor;
+      const track = {
+        getSettings: () => ({
+          width: 1920,
+          height: 1080,
+          displaySurface: surface,
+          ...(reportsCursor ? { cursor: hidden ? "never" : "always" } : {}),
+        }),
+        applyConstraints: async (c: { cursor?: string }) => {
+          if (!applyWorks) throw new Error("not settable");
+          hidden = c.cursor === "never";
+        },
+        stop: () => stopped.push(true),
+      };
+      return { getVideoTracks: () => [track], getTracks: () => [track] } as unknown as MediaStream;
+    };
+
+    const navigatorStub = {
+      mediaDevices: {
+        getDisplayMedia: async (c: { video: Asked }) => {
+          asked.push({ cursor: c.video.cursor });
+          return make(c.video.cursor === "never");
+        },
+      },
+    };
+    vi.stubGlobal("navigator", navigatorStub);
+    return { asked, stopped };
+  }
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("asks for one share and keeps the hidden cursor on a whole-monitor capture", async () => {
+    const { asked, stopped } = harness("monitor");
+    const notices: string[] = [];
+    await acquireDisplay({ fps: 30, systemAudio: false, hideCursor: true }, (m) => notices.push(m));
+    expect(asked).toEqual([{ cursor: "never" }]);
+    expect(stopped).toHaveLength(0);
+    expect(notices).toHaveLength(0);
+  });
+
+  it("never touches the cursor when it was not asked to hide it", async () => {
+    const { asked } = harness("browser");
+    await acquireDisplay({ fps: 30, systemAudio: false, hideCursor: false });
+    expect(asked).toEqual([{ cursor: undefined }]);
+  });
+
+  it("reshares without the constraint when a tab is picked and the cursor was removed", async () => {
+    const { asked, stopped } = harness("browser");
+    const notices: string[] = [];
+    await acquireDisplay({ fps: 30, systemAudio: false, hideCursor: true }, (m) => notices.push(m));
+    expect(asked).toEqual([{ cursor: "never" }, { cursor: undefined }]);
+    expect(stopped).toHaveLength(1); // the cursorless share is not left running
+    expect(notices).toHaveLength(1);
+  });
+
+  it("does the same for a window share", async () => {
+    const { asked } = harness("window");
+    await acquireDisplay({ fps: 30, systemAudio: false, hideCursor: true });
+    expect(asked).toHaveLength(2);
+  });
+
+  // Cheapest repair: if the live track will reconsider, the user never sees a
+  // second picker.
+  it("prefers fixing the live track over a second picker", async () => {
+    const { asked, stopped } = harness("browser", { applyWorks: true });
+    const notices: string[] = [];
+    await acquireDisplay({ fps: 30, systemAudio: false, hideCursor: true }, (m) => notices.push(m));
+    expect(asked).toEqual([{ cursor: "never" }]);
+    expect(stopped).toHaveLength(0);
+    expect(notices).toHaveLength(0);
+  });
+
+  // Same policy as cursorIsHidden: a browser that will not say is treated as
+  // not having hidden it, so a suspicion never costs the user a second picker.
+  it("keeps the share when the browser won't report the cursor state", async () => {
+    const { asked } = harness("browser", { reportsCursor: false });
+    await acquireDisplay({ fps: 30, systemAudio: false, hideCursor: true });
+    expect(asked).toEqual([{ cursor: "never" }]);
   });
 });

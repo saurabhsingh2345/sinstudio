@@ -13,6 +13,7 @@
 // into one MediaRecorder anyway without routing through canvas + WebAudio,
 // which costs quality and CPU to produce a *less* useful result.
 
+import { canMapToVideo } from "./cursor";
 import {
   cropStream,
   isRegionRecordingSupported,
@@ -195,6 +196,72 @@ export function trackFrameSize(track: MediaStreamTrack | undefined): { width: nu
   return s?.width && s?.height ? { width: s.width, height: s.height } : undefined;
 }
 
+export function displaySurfaceOf(track: MediaStreamTrack | undefined): string | undefined {
+  return (track?.getSettings?.() as (MediaTrackSettings & { displaySurface?: string }) | undefined)?.displaySurface;
+}
+
+/**
+ * Acquire the screen share, and never come back with a capture that has no
+ * cursor in it at all.
+ *
+ * `cursor: "never"` is a getDisplayMedia constraint, so the decision to keep the
+ * OS cursor out has to be made BEFORE the picker opens — which is before anyone
+ * knows what the user is going to pick. That is fine for a whole monitor, where
+ * cursord's coordinates can be placed in the frame and Studio draws its own
+ * cursor. It is not fine for a window or a tab: those surfaces cannot be mapped
+ * (see canMapToVideo), so the pointer track is discarded — and a discarded
+ * pointer track plus a capture with the real cursor removed is a recording with
+ * NO cursor whatsoever. Silently. For the whole take.
+ *
+ * So the surface is read the moment the share is granted, and an unmappable one
+ * gets the cursor put back: first by asking the live track, and if the browser
+ * won't reconsider, by taking a fresh share without the constraint. The second
+ * picker is the cost of not handing back a cursorless recording, and it is only
+ * ever paid on the exact combination that would have produced one.
+ *
+ * `onNotice` explains that second picker. Nothing else here talks to the user.
+ */
+export async function acquireDisplay(
+  opts: Pick<RecordOptions, "fps" | "systemAudio" | "hideCursor">,
+  onNotice?: (message: string) => void
+): Promise<MediaStream> {
+  const ask = (hideCursor: boolean) =>
+    navigator.mediaDevices.getDisplayMedia({
+      video: {
+        frameRate: { ideal: opts.fps },
+        // Not universally supported, and browsers may quietly ignore it — which
+        // is why what actually happened is read back below rather than inferred
+        // from having asked.
+        ...(hideCursor ? { cursor: "never" } : {}),
+      } as MediaTrackConstraints,
+      audio: opts.systemAudio,
+    });
+
+  const stream = await ask(!!opts.hideCursor);
+  if (!opts.hideCursor) return stream;
+
+  const track = stream.getVideoTracks()[0];
+  if (canMapToVideo(displaySurfaceOf(track))) return stream;
+
+  // Cheapest repair first: some browsers will reconsider a cursor constraint on
+  // a live display track, which costs the user nothing.
+  try {
+    await track?.applyConstraints({ cursor: "always" } as MediaTrackConstraints);
+  } catch {
+    /* not settable here; fall through to the reshare */
+  }
+  // Same policy as cursorIsHidden: only a positive "never" counts as hidden. A
+  // browser that won't say is treated as not hidden, so it keeps the share it
+  // already granted rather than being sent through the picker on a suspicion.
+  if (!cursorIsHidden(track)) return stream;
+
+  stream.getTracks().forEach((t) => t.stop());
+  onNotice?.(
+    "A window or tab share can't be matched to pointer data, and the real cursor was being left out. Pick the same one again — Studio will keep the cursor this time."
+  );
+  return ask(false);
+}
+
 function record(
   stream: MediaStream,
   kind: RecordKind,
@@ -255,7 +322,10 @@ function record(
   return { rec, started, finished, stream };
 }
 
-export async function startRecording(opts: RecordOptions): Promise<RecordingHandle> {
+export async function startRecording(
+  opts: RecordOptions,
+  onNotice?: (message: string) => void
+): Promise<RecordingHandle> {
   if (!isRecordingSupported()) throw new Error("This browser can't capture the screen.");
   if (!opts.screen && !opts.camera && !opts.mic) throw new Error("Pick at least one source to record.");
 
@@ -267,20 +337,9 @@ export async function startRecording(opts: RecordOptions): Promise<RecordingHand
     if (opts.screen) {
       // Reuse a share the caller already has — region picking needs the stream
       // to exist before the region can be drawn on it.
-      screenStream =
-        opts.screenStream ??
-        // The browser shows its own picker here; there is no way to preselect a
-        // display, and the call rejects if the user cancels it.
-        (await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            frameRate: { ideal: opts.fps },
-            // Not universally supported, and browsers may quietly ignore it —
-            // which is why what actually happened is read back below rather than
-            // inferred from having asked.
-            ...(opts.hideCursor ? { cursor: "never" } : {}),
-          } as MediaTrackConstraints,
-          audio: opts.systemAudio,
-        }));
+      // The browser shows its own picker here; there is no way to preselect a
+      // display, and the call rejects if the user cancels it.
+      screenStream = opts.screenStream ?? (await acquireDisplay(opts, onNotice));
     }
     if (opts.camera) {
       cameraStream = await navigator.mediaDevices.getUserMedia({

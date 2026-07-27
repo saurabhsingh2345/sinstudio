@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { api } from "../../api";
@@ -20,6 +21,8 @@ import {
   type Region,
 } from "../../region";
 import {
+  acquireDisplay,
+  displaySurfaceOf,
   isRecordingSupported,
   listInputs,
   startRecording,
@@ -49,6 +52,22 @@ const RECORD_LANE: Record<RecordKind, "video" | "overlay" | "audio"> = {
   camera: "overlay",
   mic: "audio",
 };
+
+/**
+ * Say that a window or tab share gets no cursor effects, while it still costs
+ * nothing to change your mind.
+ *
+ * The same fact used to be reported only in finish(), which is after the take —
+ * so the way you learned that a twenty-minute recording would have no auto-zoom
+ * and no click rings was by finishing it. The surface is known the instant the
+ * share is granted, which is when this is worth saying.
+ */
+function warnIfUnmappable(stream: MediaStream, cursorTracking: boolean) {
+  if (!cursorTracking) return;
+  const surface = displaySurfaceOf(stream.getVideoTracks()[0]);
+  if (canMapToVideo(surface)) return;
+  toast.info("Sharing a window or tab: pointer data can't be placed in it, so there'll be no auto-zoom or click rings. Share the whole screen for those.");
+}
 
 export function RecordPanel({
   projectId,
@@ -115,11 +134,37 @@ export function RecordPanel({
     void listInputs().then(({ mics }) => setMics(mics));
   }, [handle]);
 
-  // The cursor helper is optional and usually absent, so this is a quiet probe
-  // whose only effect is whether we offer the checkbox.
-  useEffect(() => {
+  // The cursor helper is optional, so this is a quiet probe whose only effect
+  // is whether we offer the checkbox.
+  const reprobeCursord = useCallback(() => {
     void probeCursord().then(setCursord);
   }, []);
+  useEffect(() => reprobeCursord(), [reprobeCursord]);
+
+  /*
+   * Look again when the tab comes back.
+   *
+   * The helper is started in a terminal, so the sequence is always: open this
+   * panel, notice it is missing, switch away, start it, switch back. Probing
+   * only on mount meant that last step showed the same "not running" panel it
+   * showed before, and the only way out was to close and reopen — which the
+   * copy had to instruct people to do.
+   *
+   * Only while it is absent: once found there is nothing to re-discover, and a
+   * listener that keeps firing during a take is overhead for no answer.
+   */
+  useEffect(() => {
+    if (cursord?.supported) return;
+    const look = () => {
+      if (!document.hidden) reprobeCursord();
+    };
+    window.addEventListener("focus", look);
+    document.addEventListener("visibilitychange", look);
+    return () => {
+      window.removeEventListener("focus", look);
+      document.removeEventListener("visibilitychange", look);
+    };
+  }, [cursord?.supported, reprobeCursord]);
 
   // Elapsed clock. Derived from the handle's start rather than counted up, so
   // it stays honest if the tab is backgrounded and timers are throttled.
@@ -190,6 +235,14 @@ export function RecordPanel({
         if (cursorRec && !tracks.some((tr) => tr.kind === "screen" && canMapToVideo(tr.surface))) {
           toast.info("Cursor data needs a whole-screen recording — a window or tab share can't be mapped.");
         }
+        // A screen recording that landed with no pointer data at all, because
+        // the helper was never there to offer. Silence here is what turns a
+        // missing daemon into a mystery about the camera: the take looks fine,
+        // it just never zooms. Not said when tracking was switched off on
+        // purpose — that is a choice, not a surprise.
+        if (!cursorRec && !cursord?.supported && tracks.some((tr) => tr.kind === "screen")) {
+          toast.info("Recorded without cursor tracking, so there's no auto-zoom or click rings. Start tools/cursord before the next take.");
+        }
         if (placed.length) {
           addSyncedClips(placed);
           toast.success(`${placed.length} recorded track${placed.length > 1 ? "s" : ""} → timeline`);
@@ -243,13 +296,8 @@ export function RecordPanel({
       setTracking(t);
       trackingRef.current = t;
 
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          frameRate: { ideal: opts.fps },
-          ...(t && ownCursor ? { cursor: "never" } : {}),
-        } as MediaTrackConstraints,
-        audio: opts.systemAudio,
-      });
+      const stream = await acquireDisplay({ ...opts, hideCursor: t && ownCursor }, (m) => toast.info(m));
+      warnIfUnmappable(stream, t);
       const frame = trackFrameSize(stream.getVideoTracks()[0]);
       if (!frame) {
         stream.getTracks().forEach((x) => x.stop());
@@ -448,11 +496,17 @@ export function RecordPanel({
       // recording would have no cursor at all rather than an editable one.
       opts.hideCursor = t && ownCursor;
 
-      const h = await startRecording({
-        ...opts,
-        screenStream: framing?.stream,
-        region: framing && wantRegion ? region : undefined,
-      });
+      const h = await startRecording(
+        {
+          ...opts,
+          screenStream: framing?.stream,
+          region: framing && wantRegion ? region : undefined,
+        },
+        (m) => toast.info(m)
+      );
+      // Framing already said this when it acquired the share; only the direct
+      // path still needs telling.
+      if (!framing && h.preview.screen) warnIfUnmappable(h.preview.screen, t);
       // The recorder owns the share from here; framing must let go of it
       // WITHOUT stopping it.
       framingRef.current = null;
@@ -637,9 +691,38 @@ export function RecordPanel({
                 onChange={setTrackCursor}
               />
             ) : (
-              <div className="px-1 py-1 text-[10px] leading-snug text-muted-foreground">
-                Cursor effects need the local <code className="font-mono">cursord</code> helper.
-                Run it from <code className="font-mono">tools/cursord</code> and reopen this panel.
+              /*
+               * The one thing on this panel worth interrupting for.
+               *
+               * Without the helper a screen recording lands flat — no auto-zoom,
+               * no click rings, no cursor at all — and nothing about the take
+               * itself looks wrong, so the failure is invisible until you are
+               * looking at finished footage wondering what happened to the
+               * camera. This said the same thing in 10px grey, which is the
+               * styling of a footnote.
+               */
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-400" />
+                  <div className="space-y-1.5">
+                    <p className="text-[11px] font-medium leading-snug text-amber-200">
+                      Cursor helper isn't running — this recording gets no auto-zoom, no click rings and no cursor effects.
+                    </p>
+                    <p className="text-[10px] leading-snug text-muted-foreground">
+                      Start it and it'll be picked up automatically:
+                    </p>
+                    <code className="block rounded bg-black/30 px-1.5 py-1 font-mono text-[10px] text-foreground">
+                      cd tools/cursord &amp;&amp; go run .
+                    </code>
+                    <button
+                      type="button"
+                      onClick={reprobeCursord}
+                      className="text-[10px] font-medium text-amber-300 underline underline-offset-2 hover:text-amber-200"
+                    >
+                      Check again
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
             {cursord?.supported && (
