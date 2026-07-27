@@ -6,6 +6,7 @@ import {
   clusterEvents,
   dwellEvents,
   findFocusSegments,
+  focusKeyframes,
   followPath,
   smartFocus,
   type SmartFocusOptions,
@@ -582,6 +583,63 @@ describe("following the cursor within a hold", () => {
    * pointer that runs to a corner mid-hold drags the frame only as far as the
    * zoom can cover.
    */
+  /*
+   * The camera viewport must AIM, not merely stay legal.
+   *
+   * "Never uncovers the canvas" is satisfied perfectly by a camera that parks
+   * in one corner and never moves, which is exactly what shipped: the cover-fit
+   * branch clamped the focus POINT with clampPanOffset, whose argument is an
+   * offset. At 1.26x the bound is ±width*0.13, so every focus point past that —
+   * i.e. almost all of them — came out as the same number. Two zooms at
+   * opposite ends of the screen produced identical pan offsets, so a screen
+   * recording zoomed in once and then sat still however far the pointer moved.
+   *
+   * Asserting the sign is what pins it: a target left of centre needs a
+   * positive offset to reach the middle and one right of centre a negative,
+   * which no single clamped constant can satisfy.
+   */
+  it("aims the cover-fit camera at the focus point, not at one clamped corner", () => {
+    const canvas = { width: 1728, height: 1080 };
+    const video = { width: 3456, height: 2160 };
+    const camera = opts({ cameraViewport: true, zoom: 1.26, follow: false });
+    const at = (x: number, y: number) =>
+      focusKeyframes([{ start: 2, end: 4, x, y, zoom: 1.26 }], 8, video, canvas, camera);
+
+    const left = at(400, 1080);
+    const right = at(3056, 1080);
+    const top = at(1728, 200);
+    const bottom = at(1728, 1960);
+
+    // Held offsets, sampled mid-hold.
+    const panX = (kf: ReturnType<typeof focusKeyframes>) => kfValue(kf.x!, 3);
+    const panY = (kf: ReturnType<typeof focusKeyframes>) => kfValue(kf.y!, 3);
+
+    expect(panX(left)).toBeGreaterThan(0);
+    expect(panX(right)).toBeLessThan(0);
+    expect(panY(top)).toBeGreaterThan(0);
+    expect(panY(bottom)).toBeLessThan(0);
+    // And the two horizontal extremes must not land on the same number.
+    expect(Math.abs(panX(left) - panX(right))).toBeGreaterThan(canvas.width * 0.1);
+  });
+
+  it("drifts the cover-fit camera with the pointer during a hold", () => {
+    const canvas = { width: 1728, height: 1080 };
+    const video = { width: 3456, height: 2160 };
+    // One hold whose follow path walks from the left of the frame to the right.
+    const follow = Array.from({ length: 9 }, (_, i) => ({ t: 2.2 + i * 0.2, x: 600 + i * 280, y: 1080 }));
+    const kf = focusKeyframes(
+      [{ start: 2, end: 4, x: 600, y: 1080, zoom: 1.26, follow }],
+      8,
+      video,
+      canvas,
+      opts({ cameraViewport: true, zoom: 1.26 })
+    );
+    const start = kfValue(kf.x!, 2.05);
+    const end = kfValue(kf.x!, 3.95);
+    // The pointer crossed most of the frame; the camera must have travelled too.
+    expect(start - end).toBeGreaterThan(canvas.width * 0.1);
+  });
+
   it("never uncovers the canvas while drifting", () => {
     const canvas = { width: 1920, height: 1080 };
     // Click near the middle, then walk the pointer hard into a corner.
