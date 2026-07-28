@@ -100,7 +100,18 @@ type Clip struct {
 	Annotation *Annotation `json:"annotation,omitempty"`
 	// Redactions blur or pixelate regions of this clip's picture. Applied to the
 	// clip's own pixels before any transform, so they travel with the content.
+	// Their fractions are of the UNCROPPED source, so a crop cannot silently
+	// move a blur off the thing it was hiding.
 	Redactions []Redaction `json:"redactions,omitempty"`
+	// Crop trims edges off this clip's picture — the top bar of a screen
+	// recording, the dead space beside a portrait capture. Applied after
+	// redactions and before everything that fits the picture to the canvas, so
+	// what remains is treated as the clip's real shape from then on.
+	Crop *Crop `json:"crop,omitempty"`
+	// Fit decides how that shape meets the canvas: letterboxed, filled, or
+	// stretched. Empty keeps the behaviour every document had before this
+	// existed — see FitAuto.
+	Fit string `json:"fit,omitempty"`
 	// Chroma removes a background colour from this clip, so whatever sits below
 	// it on the timeline shows through. Applied before any scaling.
 	Chroma *ChromaKey `json:"chroma,omitempty"`
@@ -233,6 +244,124 @@ type Redaction struct {
 
 	// Amount is 0..1 strength (0 = unset → a sensible default).
 	Amount float64 `json:"amount,omitempty"`
+}
+
+// Fit modes: how a clip's picture is fitted to the canvas before its own
+// transform moves and scales it.
+const (
+	// FitAuto keeps the historical behaviour: letterbox, except on a clip the
+	// camera is working (cursor effects or zoom keyframes), which fills instead
+	// so a push-in never reveals the bar beside the picture.
+	FitAuto = ""
+	// FitContain shows all of the picture, with transparent bars where the
+	// shapes disagree.
+	FitContain = "fit"
+	// FitCover fills the canvas and lets the overflow fall outside it. This is
+	// what "make it match the other clips" means when the crop left a picture
+	// the wrong shape.
+	FitCover = "fill"
+	// FitStretch distorts to fill. Offered because it is occasionally what
+	// someone actually wants, and because its absence is otherwise mistaken for
+	// a bug in the other two.
+	FitStretch = "stretch"
+)
+
+/*
+Crop trims edges off a clip's own picture.
+
+Stored as fractions of the source frame rather than pixels, so a crop survives
+the asset being re-encoded at another resolution, and so the same numbers mean
+the same picture in the preview (which knows the frame in CSS pixels) and the
+export (which knows it in real ones).
+
+It is a genuinely different operation from a static zoom, which is what the
+Zoom & Pan panel would otherwise be asked to fake. A zoom keeps the frame and
+moves the picture inside it; a crop changes what the picture IS — its shape, and
+therefore how it is fitted to the canvas. Cutting a menu bar off the top of a
+screen recording and then filling the frame with what is left is two operations,
+and only the first of them is a crop.
+*/
+type Crop struct {
+	Top    float64 `json:"top,omitempty"`
+	Right  float64 `json:"right,omitempty"`
+	Bottom float64 `json:"bottom,omitempty"`
+	Left   float64 `json:"left,omitempty"`
+}
+
+// minCropSpan is the least a crop may leave on an axis. Zero would be a frame
+// with no pixels in it, which ffmpeg rejects and which no drag should be able
+// to produce by accident.
+const minCropSpan = 0.05
+
+// Empty reports a crop that trims nothing, so callers can skip the whole
+// pipeline rather than emitting an identity filter.
+func (c *Crop) Empty() bool {
+	if c == nil {
+		return true
+	}
+	return c.Top <= 0 && c.Right <= 0 && c.Bottom <= 0 && c.Left <= 0
+}
+
+/*
+Pixels resolves a crop against a real frame.
+
+Every value is forced EVEN, for the same reason region recording does it: H.264
+stores chroma at half resolution, so an odd width or an odd offset has no
+representation in 4:2:0. ffmpeg will accept them and quietly shift the picture
+by a pixel, which is the kind of error that shows up as a preview and an export
+that disagree by a hair and nothing that explains why.
+
+The size is rounded down and the origin then pulled back if it would overhang,
+so the result is always inside the frame.
+*/
+func (c *Crop) Pixels(frameW, frameH int) (x, y, w, h int) {
+	// A size must survive being rounded down, so it has a floor of 2. An origin
+	// must not: zero is where an untrimmed edge starts, and floor-ing it to 2
+	// shifts every uncropped axis by a pixel.
+	evenSize := func(v int) int {
+		if v < 2 {
+			return 2
+		}
+		return v / 2 * 2
+	}
+	evenOrigin := func(v int) int {
+		if v < 0 {
+			return 0
+		}
+		return v / 2 * 2
+	}
+	clampSpan := func(lo, hi float64) (float64, float64) {
+		if lo < 0 {
+			lo = 0
+		}
+		if hi < 0 {
+			hi = 0
+		}
+		// A crop that eats the whole axis is a mistake, not an intention.
+		if lo+hi > 1-minCropSpan {
+			scale := (1 - minCropSpan) / (lo + hi)
+			lo, hi = lo*scale, hi*scale
+		}
+		return lo, hi
+	}
+	if c == nil {
+		return 0, 0, evenSize(frameW), evenSize(frameH)
+	}
+	l, r := clampSpan(c.Left, c.Right)
+	t, b := clampSpan(c.Top, c.Bottom)
+	w = evenSize(int(float64(frameW) * (1 - l - r)))
+	h = evenSize(int(float64(frameH) * (1 - t - b)))
+	x = evenOrigin(int(float64(frameW) * l))
+	y = evenOrigin(int(float64(frameH) * t))
+	// Origin last, so it absorbs the rounding rather than pushing the crop past
+	// the frame's edge.
+	if x+w > frameW {
+		x = evenOrigin(frameW - w)
+	}
+	if y+h > frameH {
+		y = evenOrigin(frameH - h)
+	}
+	return x, y, w, h
 }
 
 // Device frame kinds.

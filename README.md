@@ -2,13 +2,14 @@
 
 Studio is two things sharing one timeline.
 
-**A screen recorder that edits its own footage.** Record your screen, and the
-recording arrives already framed: pushed in where you clicked, drifting to
-follow you, pulling back when you move on. The camera work is ordinary
-keyframes, so every move it guesses stays draggable. Callouts, keystroke badges,
-region blur, green screen, device frames, backdrop scenes, webcam bubbles and
-cursor effects finish the picture; silence cuts, idle speed-up, noise removal
-and auto-ducking finish the sound. See
+**A screen recorder that edits its own footage.** Record a whole screen, a
+window or a browser tab, and the recording arrives already framed: pushed in
+where you clicked, drifting to follow you, pulling back when you move on. The
+camera work is ordinary keyframes, so every move it guesses stays draggable.
+Crop the edges off a clip and fill the frame with what is left; callouts,
+keystroke badges, region blur, green screen, device frames, backdrop scenes,
+webcam bubbles and cursor effects finish the picture; silence cuts, idle
+speed-up, noise removal and auto-ducking finish the sound. See
 **[docs/screen-recording.md](docs/screen-recording.md)**.
 
 **A non-linear editor that assembles** the clips produced by the sibling

@@ -30,6 +30,10 @@ interface StudioState {
   playing: boolean;
   pxPerSec: number;
   snapLine: number | null; // transient: seconds of the active snap guide (null = hidden)
+  // The clip being cropped on the canvas, if any. UI state rather than document
+  // state: it lives here so the Inspector's Crop section and the preview's drag
+  // handles are the same mode rather than two switches that can disagree.
+  croppingClip: string | null;
 
   load: (id: string) => Promise<void>;
   save: () => Promise<void>;
@@ -119,6 +123,7 @@ interface StudioState {
   setPlaying: (p: boolean) => void;
   setZoom: (px: number) => void;
   setSnapLine: (t: number | null) => void;
+  setCroppingClip: (clipId: string | null) => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -146,6 +151,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   playing: false,
   pxPerSec: 80,
   snapLine: null,
+  croppingClip: null,
 
   load: async (id) => {
     const doc = await api.getProject(id);
@@ -1112,6 +1118,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   setPlaying: (p) => set({ playing: p }),
   setZoom: (px) => set({ pxPerSec: Math.min(400, Math.max(4, px)) }),
   setSnapLine: (t) => set({ snapLine: t }),
+  setCroppingClip: (clipId) => set({ croppingClip: clipId }),
 }));
 
 // unmuteOrphanedSources restores audio on video clips whose detached-audio clip

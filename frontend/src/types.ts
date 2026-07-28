@@ -109,6 +109,34 @@ export interface Redaction {
   amount?: number; // 0..1 strength (0 = unset)
 }
 
+/*
+ * Crop: edges trimmed off a clip's own picture. Mirrors schema.Crop.
+ *
+ * Fractions of the source frame, not pixels, so the same numbers mean the same
+ * picture in a preview that measures in CSS pixels and an export that measures
+ * in real ones.
+ *
+ * Distinct from a static zoom, which is what the Zoom & Pan panel would
+ * otherwise be asked to fake: a zoom keeps the frame and moves the picture
+ * inside it, while a crop changes what the picture IS — its shape, and
+ * therefore how it is fitted to the canvas.
+ */
+export interface Crop {
+  top?: number;
+  right?: number;
+  bottom?: number;
+  left?: number;
+}
+
+/**
+ * How a clip's picture meets the canvas once its shape is settled.
+ *
+ * "" is not a fourth mode but a deferral: letterbox, unless the camera is
+ * working this clip, in which case fill — because pushing into a letterboxed
+ * picture slides its own transparent bar through frame.
+ */
+export type FitMode = "" | "fit" | "fill" | "stretch";
+
 // DeviceFrame: a drawn phone/laptop/browser the clip's picture sits inside.
 // Mirrors backend/internal/schema DeviceFrame — keep the two in step.
 export type DeviceKind = "browser" | "phone" | "tablet" | "laptop";
@@ -227,7 +255,9 @@ export interface Clip {
   disabled?: boolean; // excluded from render/preview without deleting (per-clip enable toggle)
   title?: Title; // when set, this is a text clip (no asset)
   annotation?: Annotation; // when set, this is a callout clip (no asset)
-  redactions?: Redaction[]; // blurred/pixelated regions of this clip's picture
+  redactions?: Redaction[]; // blurred/pixelated regions of this clip's picture (fractions of the UNCROPPED source)
+  crop?: Crop; // edges trimmed off this clip's picture, before it is fitted to the canvas
+  fit?: FitMode; // how what's left meets the canvas: letterbox, fill, or stretch
   chroma?: ChromaKey; // when set, this colour is keyed out of the clip
   device?: DeviceFrame; // when set, the picture sits inside a drawn device
   /** Temporal blur on camera moves (scale/x/y keyframes). 0 = off, 0..1 strength. */

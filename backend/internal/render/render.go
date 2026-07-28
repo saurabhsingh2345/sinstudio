@@ -71,6 +71,15 @@ type visual struct {
 	backdrop *schema.Backdrop
 	// Webcam-bubble mask (circle/rounded, ring, shadow).
 	bubble *schema.Bubble
+	// Edges trimmed off the clip's own picture, before it is fitted to the
+	// canvas. srcW/srcH above are already the CROPPED size — see crop.go.
+	crop *schema.Crop
+	// How the (possibly cropped) picture meets the canvas: "", fit, fill,
+	// stretch.
+	fit string
+	// The source's size before its crop, which is the frame the crop's fractions
+	// and the cursor sidecar's coordinates are both expressed in.
+	rawW, rawH int
 }
 
 // audio is a resolved audio contribution.
@@ -325,6 +334,11 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			// renders without them; a malformed sidecar must not fail the export.
 			continue
 		}
+		// A sidecar's coordinates are in the recorded video's own pixels, which
+		// a crop has just redefined. Shifting here, once, is what keeps the
+		// highlight, the rings, the spotlight and the drawn pointer all right
+		// without any of them knowing a crop exists — see cropCursor.
+		track = cropCursor(track, v.crop)
 		// Click sounds are one generated track per clip with every press already
 		// placed in it, rather than one input per click — a normal tutorial has
 		// hundreds, and the filtergraph should not grow with them.
@@ -382,40 +396,35 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		}
 		/*
 		 * A source whose shape is not the canvas's is FITTED — aspect kept,
-		 * centred, the bars transparent — never stretched. Stretching was what
-		 * this used to do, and it meant the export distorted exactly the clips
-		 * the preview letterboxed: two different pictures from one document.
-		 * The bars are transparent rather than black so whatever is under the
-		 * clip shows through, which is also what the preview's object-fit does.
+		 * centred, the bars transparent — never stretched by default.
+		 * Stretching was what this used to do, and it meant the export
+		 * distorted exactly the clips the preview letterboxed: two different
+		 * pictures from one document. The bars are transparent rather than
+		 * black so whatever is under the clip shows through, which is also what
+		 * the preview's object-fit does.
 		 *
-		 * It runs AFTER chroma (which must key the source's own pixels) and
-		 * after redactions (whose geometry is fractions of the source's own
-		 * frame), and not at all under a device frame, which pads the picture
-		 * into its screen itself. The half-percent tolerance mirrors
-		 * canvasForSource: capture pipelines round dimensions, and refitting a
-		 * rounding error would soften every frame for nothing.
+		 * It runs AFTER chroma (which must key the source's own pixels), after
+		 * redactions (whose geometry is fractions of the source's own frame)
+		 * and after the crop (which decides what the source's shape even is),
+		 * and not at all under a device frame, which pads the picture into its
+		 * screen itself.
+		 *
+		 * Which of fit and fill you get is the clip's own choice now — see
+		 * prefitFilter. The default still depends on whether the camera is
+		 * working the clip, because a letterboxed picture that is then pushed
+		 * into shows its own transparent bar sliding through frame.
 		 */
 		prefit := ""
 		zoomClip := clipHasZoomKeyframes(v.keyframes)
 		cameraClip := v.cursorFX != nil || zoomClip
 		if v.device == nil && v.bubble == nil && v.srcW > 0 && v.srcH > 0 {
-			usePrefit := v.backdrop == nil || cameraClip
-			if usePrefit {
-				srcA := float64(v.srcW) / float64(v.srcH)
-				canA := float64(w) / float64(h)
-				if math.Abs(srcA-canA)/canA > 0.005 {
-					if cameraClip {
-						prefit = fmt.Sprintf(
-							"scale=%d:%d:force_original_aspect_ratio=increase:flags=bicubic,crop=%d:%d,format=rgba,",
-							w, h, w, h)
-					} else {
-						prefit = fmt.Sprintf(
-							"scale=%d:%d:force_original_aspect_ratio=decrease:flags=bicubic,format=rgba,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black@0,",
-							w, h, w, h)
-					}
-				}
+			if v.backdrop == nil || cameraClip {
+				prefit = prefitFilter(v.fit, v.srcW, v.srcH, w, h, cameraClip)
 			}
 		}
+		// The crop is against the source's ORIGINAL frame, so it uses the raw
+		// dimensions rather than the cropped ones the rest of this loop sees.
+		cropSeg := cropFilter(v.crop, v.rawW, v.rawH)
 		// Redactions branch the chain (split → crop → resample → overlay), so the
 		// source segment is cut short and handed to them; without any, the chain
 		// stays exactly as linear as it was.
@@ -509,9 +518,19 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			fmt.Fprintf(&fc, "%s;", src)
 			last := src
 			// Redactions first: they are fractions of the clip's own picture, and
-			// that is still what this is until the device insets it.
+			// that is still what this is until the device insets it. Before the
+			// crop, too, so trimming an edge cannot slide a blur off the thing
+			// it was put there to hide.
 			for k, r := range v.redactions {
 				last = writeRedaction(&fc, last, i, k, r)
+			}
+			// Then the crop, so everything that frames the picture — device,
+			// bubble, backdrop, prefit — is framing what is left of it.
+			if cropSeg != "" {
+				next := fmt.Sprintf("[cr%d]", i)
+				fmt.Fprintf(&fc, "%s%s%s", last, trimComma(cropSeg), next)
+				fc.WriteString(";")
+				last = next
 			}
 			if v.device != nil {
 				last = writeDeviceFrame(&fc, last, i, devIdx, devGeom, w, h)
@@ -530,7 +549,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			}
 			fmt.Fprintf(&fc, "%s%s%s,format=rgba", last, prefit, scaleSeg)
 		} else {
-			fmt.Fprintf(&fc, ",%s%s,format=rgba", prefit, scaleSeg)
+			fmt.Fprintf(&fc, ",%s%s%s,format=rgba", cropSeg, prefit, scaleSeg)
 		}
 		// Hold: clone the last frame for `hold` more seconds so the clip covers
 		// trailing audio with a freeze-frame instead of cutting to background.
@@ -916,9 +935,13 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		sw, sh, x, y, cx, cy = w, h, 0, 0, 0, 0
 		ax, ay = 0.5, 0.5
 	}
+	// The crop is resolved here, once, so every later stage sees a source whose
+	// dimensions are the ones it will actually be handed — see crop.go.
+	cropW, cropH := croppedDims(src[0], src[1], c.Crop)
 	*visuals = append(*visuals, visual{
 		path: p, in: c.In, out: c.Out, start: c.Start, end: c.Start + span + hold,
-		x: x, y: y, sw: sw, sh: sh, srcW: src[0], srcH: src[1], opacity: op,
+		x: x, y: y, sw: sw, sh: sh, srcW: cropW, srcH: cropH, opacity: op,
+		crop: c.Crop, fit: c.Fit, rawW: src[0], rawH: src[1],
 		speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
 		cx: cx, cy: cy, ax: ax, ay: ay,
