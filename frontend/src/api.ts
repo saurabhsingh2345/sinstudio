@@ -38,13 +38,27 @@ async function j<T>(res: Response): Promise<T> {
   return res.json();
 }
 
+export type ProjectMeta = { id: string; name: string; updated: string };
+
 export const api = {
-  listProjects: () =>
-    fetch("/api/projects").then((r) => j<{ id: string; name: string; updated: string }[]>(r)),
+  listProjects: () => fetch("/api/projects").then((r) => j<ProjectMeta[]>(r)),
   createProject: (name: string) =>
     fetch("/api/projects", { method: "POST", body: JSON.stringify({ name }) }).then((r) =>
       j<EditDoc>(r)
     ),
+  renameProject: (id: string, name: string) =>
+    fetch(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify({ name }) }).then((r) =>
+      j<ProjectMeta>(r)
+    ),
+  // Copies the media too, so the two projects are independent — which also means
+  // this is not instant on a project with a lot of footage.
+  duplicateProject: (id: string, name?: string) =>
+    fetch(`/api/projects/${id}/duplicate`, { method: "POST", body: JSON.stringify({ name }) }).then(
+      (r) => j<EditDoc>(r)
+    ),
+  // Permanent: the project's media directory goes with it. Confirm first.
+  deleteProject: (id: string) =>
+    fetch(`/api/projects/${id}`, { method: "DELETE" }).then((r) => j<{ ok: boolean }>(r)),
   getProject: (id: string) => fetch(`/api/projects/${id}`).then((r) => j<EditDoc>(r)),
   saveProject: async (doc: EditDoc) => {
     const res = await fetch(`/api/projects/${doc.id}`, { method: "PUT", body: JSON.stringify(doc) });

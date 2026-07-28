@@ -100,6 +100,9 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/projects", s.createProject)
 	mux.HandleFunc("GET /api/projects/{id}", s.getProject)
 	mux.HandleFunc("PUT /api/projects/{id}", s.saveProject)
+	mux.HandleFunc("PATCH /api/projects/{id}", s.renameProject)
+	mux.HandleFunc("DELETE /api/projects/{id}", s.deleteProject)
+	mux.HandleFunc("POST /api/projects/{id}/duplicate", s.duplicateProject)
 
 	mux.HandleFunc("POST /api/projects/{id}/assets", s.importAsset)
 	mux.HandleFunc("DELETE /api/projects/{id}/assets/{assetId}", s.deleteAsset)
@@ -266,6 +269,71 @@ func (s *Server) saveProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "version": revision})
+}
+
+// renameProject changes a project's name from the project list, without having
+// to open it.
+func (s *Server) renameProject(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	if strings.TrimSpace(body.Name) == "" {
+		httpErr(w, 400, errors.New("name is required"))
+		return
+	}
+	meta, err := s.Store.RenameProject(r.Context(), r.PathValue("id"), body.Name)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		httpErr(w, 404, err)
+		return
+	case err != nil:
+		httpErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, meta)
+}
+
+// duplicateProject copies a project and its media into a new one. Copying the
+// media makes the two independent — see store.DuplicateProject — so this is
+// deliberately not instant on a project with hours of footage.
+func (s *Server) duplicateProject(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	doc, err := s.Store.DuplicateProject(r.Context(), r.PathValue("id"), body.Name)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		httpErr(w, 404, err)
+		return
+	case err != nil:
+		httpErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, doc)
+}
+
+// deleteProject removes a project and everything under its media directory.
+// This is not recoverable, so the client is expected to confirm first.
+func (s *Server) deleteProject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	// Stop anything still working on this project first: an export finishing into
+	// a directory that has just been deleted only fails noisily and leaves the
+	// directory recreated behind it.
+	s.Jobs.CancelProject(id)
+	if err := s.Store.DeleteProject(r.Context(), id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpErr(w, 404, err)
+			return
+		}
+		httpErr(w, 500, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 // ---- assets ----
@@ -676,7 +744,7 @@ func (s *Server) withCORS(h http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type,Authorization")
 		}
 		if r.Method == http.MethodOptions {

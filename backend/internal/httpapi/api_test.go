@@ -72,6 +72,73 @@ func TestProjectCRUD(t *testing.T) {
 	}
 }
 
+// TestProjectManageRoutes covers the project-list actions: rename in place,
+// duplicate into a second project, and delete.
+func TestProjectManageRoutes(t *testing.T) {
+	h := testServer(t, "").Routes()
+
+	w := do(h, "POST", "/api/projects", "", map[string]string{"name": "First"})
+	if w.Code != 200 {
+		t.Fatalf("create = %d: %s", w.Code, w.Body.String())
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &created)
+
+	w = do(h, "PATCH", "/api/projects/"+created.ID, "", map[string]string{"name": "Renamed"})
+	if w.Code != 200 {
+		t.Fatalf("rename = %d: %s", w.Code, w.Body.String())
+	}
+	var meta struct {
+		Name string `json:"name"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &meta)
+	if meta.Name != "Renamed" {
+		t.Fatalf("rename returned %q", meta.Name)
+	}
+	if w := do(h, "PATCH", "/api/projects/"+created.ID, "", map[string]string{"name": " "}); w.Code != 400 {
+		t.Fatalf("blank rename = %d, want 400", w.Code)
+	}
+	if w := do(h, "PATCH", "/api/projects/nope", "", map[string]string{"name": "x"}); w.Code != 404 {
+		t.Fatalf("rename missing = %d, want 404", w.Code)
+	}
+
+	w = do(h, "POST", "/api/projects/"+created.ID+"/duplicate", "", map[string]string{})
+	if w.Code != 200 {
+		t.Fatalf("duplicate = %d: %s", w.Code, w.Body.String())
+	}
+	var dup struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &dup)
+	if dup.ID == created.ID || dup.Name != "Renamed copy" {
+		t.Fatalf("bad duplicate: %+v", dup)
+	}
+
+	w = do(h, "GET", "/api/projects", "", nil)
+	var list []map[string]any
+	json.Unmarshal(w.Body.Bytes(), &list)
+	if len(list) != 2 {
+		t.Fatalf("list len = %d, want 2", len(list))
+	}
+
+	if w := do(h, "DELETE", "/api/projects/"+created.ID, "", nil); w.Code != 200 {
+		t.Fatalf("delete = %d: %s", w.Code, w.Body.String())
+	}
+	if w := do(h, "GET", "/api/projects/"+created.ID, "", nil); w.Code != 404 {
+		t.Fatalf("get after delete = %d, want 404", w.Code)
+	}
+	if w := do(h, "DELETE", "/api/projects/"+created.ID, "", nil); w.Code != 404 {
+		t.Fatalf("second delete = %d, want 404", w.Code)
+	}
+	// The copy is untouched by the original's deletion.
+	if w := do(h, "GET", "/api/projects/"+dup.ID, "", nil); w.Code != 200 {
+		t.Fatalf("copy after deleting source = %d", w.Code)
+	}
+}
+
 func TestMarkersRoundTrip(t *testing.T) {
 	h := testServer(t, "").Routes()
 

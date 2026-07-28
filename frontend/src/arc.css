@@ -190,7 +190,67 @@
 .arc-btn--primary:hover { background: var(--arc-accent-press); border-color: transparent; }
 .arc-btn--ghost { background: transparent; border-color: transparent; color: var(--arc-ink-2); }
 .arc-btn--ghost:hover { background: var(--arc-surface-sunken); color: var(--arc-ink); }
+.arc-btn--danger {
+  background: var(--arc-danger);
+  border-color: transparent;
+  color: #fff;
+}
+.arc-btn--danger:hover { background: var(--arc-danger); border-color: transparent; filter: brightness(0.93); }
 .arc-btn--lg { padding: 13px 22px; font-size: 15px; }
+.arc-btn--sm { padding: 8px 13px; font-size: 13px; border-radius: var(--arc-r-sm); }
+
+/* Icon-only affordance: quiet until the row it sits on is hovered or it is
+   focused, so a grid of cards doesn't read as a grid of buttons. */
+.arc-icon-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--arc-r-sm);
+  background: transparent;
+  color: var(--arc-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.14s var(--arc-ease), background 0.14s var(--arc-ease), color 0.14s var(--arc-ease);
+}
+.arc-icon-btn:hover { background: var(--arc-surface-sunken); color: var(--arc-ink); }
+.arc-icon-btn:focus-visible,
+.arc-icon-btn[aria-expanded="true"] { opacity: 1; outline: none; box-shadow: 0 0 0 3px var(--arc-accent-soft); }
+
+/* ---- popover menu ------------------------------------------------------- */
+.arc-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  min-width: 168px;
+  padding: 6px;
+  border: 1px solid var(--arc-border);
+  border-radius: var(--arc-r);
+  background: var(--arc-surface);
+  box-shadow: var(--arc-shadow-pop);
+}
+.arc-menu__item {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: var(--arc-r-sm);
+  background: none;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 550;
+  text-align: left;
+  color: var(--arc-ink);
+  cursor: pointer;
+}
+.arc-menu__item:hover { background: var(--arc-surface-sunken); }
+.arc-menu__item:focus-visible { outline: none; background: var(--arc-accent-soft); }
+.arc-menu__item--danger { color: var(--arc-danger); }
+.arc-menu__item--danger:hover { background: var(--arc-danger-soft); }
+.arc-menu__sep { height: 1px; margin: 5px 4px; background: var(--arc-border); }
 
 /* ---- brand mark --------------------------------------------------------- */
 .arc-logo {
@@ -313,10 +373,51 @@
 
 .arc-recent { margin-top: 52px; }
 .arc-recent__label { margin-bottom: 4px; }
-.arc-recent__title { margin: 0 0 16px; font-size: 18px; font-weight: 700; color: var(--arc-ink); }
+.arc-recent__title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin: 0 0 16px;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--arc-ink);
+}
+.arc-recent__head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.arc-recent__tools { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.arc-count {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--arc-surface-sunken);
+  border: 1px solid var(--arc-border);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--arc-muted);
+}
+.arc-search { position: relative; display: flex; align-items: center; }
+.arc-search svg { position: absolute; left: 11px; color: var(--arc-muted); pointer-events: none; }
+.arc-search input {
+  width: 216px;
+  padding: 9px 12px 9px 32px;
+  border: 1px solid var(--arc-border-strong);
+  border-radius: var(--arc-r-sm);
+  background: var(--arc-surface);
+  font-family: inherit;
+  font-size: 13.5px;
+  color: var(--arc-ink);
+}
+.arc-search input::placeholder { color: var(--arc-muted); }
+.arc-search input:focus { outline: none; border-color: var(--arc-accent); box-shadow: 0 0 0 3px var(--arc-accent-soft); }
+.arc-recent__tools .arc-select { width: auto; padding: 9px 12px; font-size: 13.5px; border-radius: var(--arc-r-sm); }
 
 .arc-projects { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
 .arc-pcard {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -325,14 +426,45 @@
   border: 1px solid var(--arc-border);
   background: var(--arc-surface);
   box-shadow: var(--arc-shadow-sm);
-  cursor: pointer;
   text-align: left;
   font-family: inherit;
   color: inherit;
   transition: transform 0.14s var(--arc-ease), box-shadow 0.14s var(--arc-ease), border-color 0.14s var(--arc-ease);
 }
 .arc-pcard:hover { transform: translateY(-2px); box-shadow: var(--arc-shadow-card); border-color: var(--arc-border-strong); }
-.arc-pcard:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--arc-accent-soft); }
+.arc-pcard:hover .arc-icon-btn { opacity: 1; }
+/* Cards are positioned siblings, so without this the open menu paints under the
+   card that follows it in the grid — and clicks land on that card instead. */
+.arc-pcard--menu { z-index: 30; }
+.arc-pcard--busy { opacity: 0.65; pointer-events: none; }
+.arc-pcard--editing,
+.arc-pcard--confirm { transform: none; border-color: var(--arc-border-strong); box-shadow: var(--arc-shadow-card); }
+.arc-pcard--confirm { flex-direction: column; align-items: stretch; gap: 0; }
+
+/* The card frame is a container now (it holds the action menu), so the part
+   that opens the project is its own full-bleed button inside it. */
+.arc-pcard__open {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.arc-pcard__open:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--arc-accent-soft); border-radius: var(--arc-r-sm); }
+.arc-pcard__actions { position: relative; flex: 0 0 auto; }
+.arc-pcard__rename { flex: 1 1 auto; min-width: 0; }
+.arc-pcard__rename .arc-input--sm { padding: 8px 10px; font-size: 14px; border-radius: var(--arc-r-sm); }
+.arc-pcard__hint { display: block; margin-top: 5px; font-size: 11.5px; color: var(--arc-muted); }
+.arc-pcard__confirm-title { margin: 0; font-size: 14.5px; font-weight: 650; color: var(--arc-ink); }
+.arc-pcard__confirm-note { margin: 5px 0 12px; font-size: 12.5px; line-height: 1.45; color: var(--arc-ink-2); }
+.arc-pcard__confirm-row { display: flex; justify-content: flex-end; gap: 8px; }
 .arc-pcard__thumb {
   display: grid;
   place-items: center;
