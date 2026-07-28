@@ -77,11 +77,13 @@ Run it while you're recording, stop it when you're done.
 
 ## API
 
-| Method | Path      | Purpose |
-|--------|-----------|---------|
-| `GET`  | `/health` | Presence, platform, whether clicks are visible, screen size |
-| `POST` | `/start`  | Begin a session, discarding any previous one |
-| `POST` | `/stop`   | End it and return the samples |
+| Method | Path        | Purpose |
+|--------|-------------|---------|
+| `GET`  | `/health`   | Presence, platform, whether clicks are visible, whether window geometry can be read, screen size |
+| `GET`  | `/surfaces` | Every display and on-screen window, with its rectangle |
+| `POST` | `/start`    | Begin a session, discarding any previous one |
+| `POST` | `/surface`  | Name the surface being captured, so its rectangle is recorded too |
+| `POST` | `/stop`     | End it and return the samples |
 
 Sample timestamps are **absolute epoch milliseconds**, deliberately. Studio
 aligns them against the moment its recorder actually started, which it can't
@@ -99,6 +101,14 @@ are this machine's, so the subtraction is exact.
     "screen": { "width": 1728, "height": 1117 },
     "clicks": true,          // false = buttons couldn't be observed at all,
                              // which is not the same as "no clicks happened"
+    "surface": {             // absent when nothing was attached
+      "id": "window:11800", "kind": "window", "app": "Google Chrome",
+      "title": "", "rect": { "x": 0, "y": 33, "w": 1728, "h": 1084 }, "front": 3
+    },
+    "bounds": [              // where that surface was, over time; deduped like
+                             // the samples, so a window that never moves is one row
+      { "t": 1784630967800, "x": 0, "y": 33, "w": 1728, "h": 1084 }
+    ],
     "samples": [
       { "t": 1784630967841, "x": 135, "y": 607 },
       { "t": 1784630967858, "x": 200, "y": 200, "down": 1 }  // 1 = left, 2 = right
@@ -107,28 +117,58 @@ are this machine's, so the subtraction is exact.
 }
 ```
 
-## Coordinates, and the one real limitation
+## Coordinates, and the surface they are measured against
 
-Samples are in whole-screen coordinates. They can only be placed on a video that
-**is** the whole screen, so cursor effects require sharing an entire display.
+Samples are in whole-screen coordinates, so something has to know where the
+recording *is* on that screen. The browser will not say: a share arrives as a
+size and one of three words — `monitor`, `window`, `browser` — and nothing more.
 
-Sharing a window or a browser tab produces a video whose origin is that
-surface's top-left, at an offset a browser tab has no way to learn. Studio
-detects this (`displaySurface`) and declines to attach the data rather than
-guessing — a wrong offset would misplace every highlight by a varying amount,
-which is worse than not offering the feature.
+`/surfaces` is the other half. It lists every display and on-screen window with
+its rectangle, in the same coordinate space the pointer is reported in. Studio
+matches the granted share against that list on aspect ratio, `POST`s the winner
+to `/surface`, and from then on the tracker samples that rectangle at 15 Hz
+alongside the pointer. Every capture then maps the same way — pointer minus the
+surface's origin, over the surface's size — and a whole display is just the case
+where the rectangle is the display.
 
-Scaling is handled: a display reported at 1728 wide but captured at 3456, or
-constrained down to 1280, maps correctly either way.
+Sampling the rectangle over time rather than once is what makes a window you
+drag mid-recording keep its effects, and it is why `bounds` is a series.
+
+Scaling is handled by construction: the conversion goes through a *fraction* of
+the surface, so a display reported at 1728 wide but captured at 3456, or
+constrained down to 1280, all map correctly and none of those numbers appears in
+the result.
+
+A session with no surface attached records no `bounds`, and a consumer falls
+back to treating the samples as whole-screen coordinates — which is exactly what
+they were before any of this existed.
+
+Two things this genuinely cannot do:
+
+- **Tell apart two windows of the same shape.** Aspect ratio is the only
+  evidence that survives; Studio reports the match as uncertain and offers the
+  alternatives rather than being confidently wrong.
+- **See a browser tab.** The OS knows about the window, not the tab inside it.
+  Studio infers the viewport from the window, which is an estimate and is
+  labelled as one.
 
 ## Other platforms
 
-macOS works today. `cursor_other.go` is a stub so the helper still builds, runs
-and answers `/health` elsewhere — reporting `supported: false`, which Studio
-reads to hide the feature rather than offering something that silently records
-nothing.
+macOS works today. `cursor_other.go` and `surfaces_other.go` are stubs so the
+helper still builds, runs and answers `/health` elsewhere — reporting
+`supported: false` / `surfaces: false`, which Studio reads to hide the feature
+rather than offering something that silently records nothing.
 
-Adding a platform means implementing four functions in a new build-tagged file:
+Adding pointer tracking to a platform means implementing four functions in a
+build-tagged file (Windows already has them):
 
 - **Windows** — `GetCursorPos`, plus `GetAsyncKeyState(VK_LBUTTON/VK_RBUTTON)`
 - **Linux/X11** — `XQueryPointer` returns position and button mask together
+
+Adding *surfaces* means two more, `listSurfaces` and `surfaceRect`, reporting in
+the same coordinate space `cursorPos` uses:
+
+- **Windows** — `EnumWindows` + `GetWindowRect`; `EnumDisplayMonitors` +
+  `GetMonitorInfo`
+- **Linux/X11** — `XQueryTree` + `XGetWindowAttributes`, translated to root
+  coordinates with `XTranslateCoordinates`

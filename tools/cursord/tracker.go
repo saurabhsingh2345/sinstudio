@@ -46,6 +46,16 @@ type Recording struct {
 	// it says so rather than silently emitting a stream of zeros that looks
 	// exactly like "the user never clicked".
 	Clicks bool `json:"clicks"`
+	// Surface is what the consumer said it was capturing, attached after
+	// tracking began: the share does not exist until the user has picked one,
+	// and the picker is slow, so waiting for it before sampling would lose the
+	// pointer's position at frame zero.
+	Surface *Surface `json:"surface,omitempty"`
+	// Bounds is where that surface was, over time. Absent when no surface was
+	// attached, and the consumer then falls back to treating the samples as
+	// whole-screen coordinates — which is exactly what they were before any of
+	// this existed.
+	Bounds []BoundsSample `json:"bounds,omitempty"`
 }
 
 // sampleHz is the polling rate. 60 matches the fastest frame rate we offer, so
@@ -58,12 +68,20 @@ const sampleHz = 60
 // whole time rather than drifting slowly.
 const heartbeat = 250 * time.Millisecond
 
+// boundsHz is how often the tracked surface's rectangle is re-read. A window
+// is moved by a hand, not by a program, so 15Hz is already finer than anything
+// a person can do to it — and unlike the pointer read, this one crosses into
+// the window server, so it is the sample worth being frugal with.
+const boundsHz = 15
+
 // Indirection so the sampling loop can be exercised without a real pointer.
 // The platform files supply the real readers.
 var (
 	readCursor  = cursorPos
 	readButtons = buttons
 	readScreen  = screenSize
+	readRect    = lookupRect
+	readList    = listSurfaces
 )
 
 // Tracker owns the sampling loop and the session buffer.
@@ -73,6 +91,10 @@ type Tracker struct {
 	stop    chan struct{}
 	done    chan struct{}
 	rec     Recording
+	// surfaceID is read by the sampling loop every few ticks. Held under the
+	// same lock as rec because attaching is a request that arrives mid-session,
+	// from a different goroutine than the one sampling.
+	surfaceID string
 }
 
 func (tr *Tracker) Running() bool {
@@ -98,6 +120,7 @@ func (tr *Tracker) Start() Recording {
 		Samples:   make([]Sample, 0, 4096),
 		Clicks:    buttonsSupported(),
 	}
+	tr.surfaceID = ""
 	tr.running = true
 	tr.stop = make(chan struct{})
 	tr.done = make(chan struct{})
@@ -119,7 +142,45 @@ func (tr *Tracker) Stop() Recording {
 	tr.rec.StoppedAt = time.Now().UnixMilli()
 	out := tr.rec
 	out.Samples = append([]Sample(nil), tr.rec.Samples...)
+	out.Bounds = append([]BoundsSample(nil), tr.rec.Bounds...)
 	return out
+}
+
+/*
+Attach names the surface being captured, mid-session.
+
+It has to be mid-session. The rectangle only becomes knowable once the user has
+chosen something in the browser's share picker, and tracking must already be
+running by then or the pointer's position at frame zero is a guess. So the
+sequence is: start sampling, let the picker happen, then say what was picked.
+
+The first rectangle is written immediately rather than waiting for the sampling
+loop's next bounds tick, so a recording is never left with samples that precede
+every bound it could be placed against.
+*/
+func (tr *Tracker) Attach(id string) (Surface, bool) {
+	list := readList()
+	s, ok := findSurface(list, id)
+	if !ok {
+		return Surface{}, false
+	}
+	rect, live := readRect(id)
+	if !live {
+		rect = s.Rect
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if !tr.running {
+		return Surface{}, false
+	}
+	tr.surfaceID = id
+	s.Rect = rect
+	tr.rec.Surface = &s
+	tr.rec.Bounds = append(tr.rec.Bounds[:0], BoundsSample{
+		T: time.Now().UnixMilli(), X: rect.X, Y: rect.Y, W: rect.W, H: rect.H,
+	})
+	return s, true
 }
 
 func (tr *Tracker) stopAndWait() {
@@ -150,11 +211,16 @@ func (tr *Tracker) loop(stop <-chan struct{}, done chan<- struct{}) {
 
 	var last Sample
 	var have bool
+	ticks := 0
 	for {
 		select {
 		case <-stop:
 			return
 		case <-tick.C:
+			ticks++
+			if ticks%(sampleHz/boundsHz) == 0 {
+				tr.sampleBounds()
+			}
 			x, y := readCursor()
 			s := Sample{T: time.Now().UnixMilli(), X: x, Y: y, Down: readButtons()}
 			// Drop samples that say nothing new. A still pointer would otherwise
@@ -172,4 +238,41 @@ func (tr *Tracker) loop(stop <-chan struct{}, done chan<- struct{}) {
 			last, have = s, true
 		}
 	}
+}
+
+/*
+sampleBounds records where the tracked surface is now, if it has moved.
+
+Deduplicated exactly like pointer samples, and for the same reason: a window
+that sits still for ten minutes is the normal case, and it should cost two rows
+rather than nine thousand. The heartbeat is deliberately absent here — a gap in
+this series means "unchanged", and unlike a pointer there is no interpolation to
+mislead, because a consumer reads the last bound at or before a sample's time
+rather than blending between two.
+
+A rectangle that cannot be read at all (the window was closed mid-take) is
+skipped rather than recorded as zero. The last known position is a far better
+answer than an origin at the corner of the screen, and holding it is what the
+consumer does with a gap anyway.
+*/
+func (tr *Tracker) sampleBounds() {
+	tr.mu.Lock()
+	id := tr.surfaceID
+	tr.mu.Unlock()
+	if id == "" {
+		return
+	}
+	rect, ok := readRect(id)
+	if !ok || !rect.valid() {
+		return
+	}
+
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if n := len(tr.rec.Bounds); n > 0 && tr.rec.Bounds[n-1].sameRect(rect) {
+		return
+	}
+	tr.rec.Bounds = append(tr.rec.Bounds, BoundsSample{
+		T: time.Now().UnixMilli(), X: rect.X, Y: rect.Y, W: rect.W, H: rect.H,
+	})
 }

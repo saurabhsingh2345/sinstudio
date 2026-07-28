@@ -12,7 +12,10 @@ import {
   stopCursorTracking,
   toSidecar,
   type CursorHealth,
+  type CursorSurface,
 } from "../../cursor";
+import { lockNotice, lockSurface, relockSurface, type SurfaceLock } from "../../surfaceLock";
+import { surfaceLabel } from "../../surfaceMatch";
 import {
   clampRegion,
   isRegionRecordingSupported,
@@ -30,6 +33,7 @@ import {
   type RecordKind,
   type RecordOptions,
   type RecordingHandle,
+  type SourceKind,
 } from "../../recorder";
 import {
   isFloatingControlsSupported,
@@ -54,20 +58,18 @@ const RECORD_LANE: Record<RecordKind, "video" | "overlay" | "audio"> = {
 };
 
 /**
- * Say that a window or tab share gets no cursor effects, while it still costs
- * nothing to change your mind.
+ * What each source is, in one line, at the moment you are choosing it.
  *
- * The same fact used to be reported only in finish(), which is after the take —
- * so the way you learned that a twenty-minute recording would have no auto-zoom
- * and no click rings was by finishing it. The surface is known the instant the
- * share is granted, which is when this is worth saying.
+ * Naming the intent before the picker opens is not decoration: it sets the
+ * constraints that keep monitors out of the window list and Studio's own tab
+ * out of the tab list, and it decides which surface cursord will be asked to
+ * follow.
  */
-function warnIfUnmappable(stream: MediaStream, cursorTracking: boolean) {
-  if (!cursorTracking) return;
-  const surface = displaySurfaceOf(stream.getVideoTracks()[0]);
-  if (canMapToVideo(surface)) return;
-  toast.info("Sharing a window or tab: pointer data can't be placed in it, so there'll be no auto-zoom or click rings. Share the whole screen for those.");
-}
+const SOURCES: { key: SourceKind; label: string; hint: string }[] = [
+  { key: "screen", label: "Whole screen", hint: "Everything on one display. The most reliable pointer tracking." },
+  { key: "window", label: "Window", hint: "One app's window. Follows it if you move or resize it mid-take." },
+  { key: "tab", label: "Browser tab", hint: "One tab's page. Its position is estimated from the browser window." },
+];
 
 export function RecordPanel({
   projectId,
@@ -84,6 +86,7 @@ export function RecordPanel({
   const addSyncedClips = useStudio((s) => s.addSyncedClips);
   const [opts, setOpts] = useState<RecordOptions>({
     screen: true,
+    source: "screen",
     camera: false,
     mic: true,
     systemAudio: false,
@@ -116,6 +119,20 @@ export function RecordPanel({
   // recording would unwind the framing session underneath the recorder.
   const framingRef = useRef<MediaStream | null>(null);
   const trackingRef = useRef(false);
+  /*
+   * Which surface the pointer data is being measured against.
+   *
+   * Held in a ref as well as state because finish() needs it — the tab inset in
+   * particular — and finish() is reached from the floating window's Stop button
+   * and from the browser's own sharing bar, neither of which re-renders this
+   * component first.
+   */
+  const [lock, setLock] = useState<SurfaceLock | null>(null);
+  const lockRef = useRef<SurfaceLock | null>(null);
+  const setLockBoth = (l: SurfaceLock | null) => {
+    lockRef.current = l;
+    setLock(l);
+  };
   // The floating controls live in another window and outlive any one render, so
   // they act through refs rather than closing over state that will be stale by
   // the time someone presses Stop.
@@ -204,16 +221,19 @@ export function RecordPanel({
           toast.error("Nothing was captured.");
           return;
         }
+        const surfaceLock = lockRef.current;
+        setLockBoth(null);
         const placed: { assetId: string; lane: "video" | "overlay" | "audio"; startedAt: number }[] = [];
         for (const tr of tracks) {
-          // Cursor data belongs only to the screen capture, and only when that
-          // capture is a whole monitor — see canMapToVideo.
-          const mappable = tr.kind === "screen" && tr.video && canMapToVideo(tr.surface);
+          // Cursor data belongs only to the screen capture, and only when the
+          // session recorded a rectangle to place it through — see canMapToVideo.
+          const mappable = tr.kind === "screen" && tr.video && canMapToVideo(tr.surface, cursorRec);
           // tr.crop is set only for a region recording, and carries the whole
           // frame the region came out of — pointer samples are still in screen
-          // coordinates, so both are needed to place them.
+          // coordinates, so both are needed to place them. The inset is a tab's
+          // toolbar: cursord followed the browser window, the video is its page.
           const sidecar = cursorRec && mappable
-            ? toSidecar(cursorRec, tr.startedAt, tr.video!, !!tr.cursorHidden, tr.crop)
+            ? toSidecar(cursorRec, tr.startedAt, tr.video!, !!tr.cursorHidden, tr.crop, surfaceLock?.inset)
             : undefined;
           const res = await api.ingestRecording(
             projectId,
@@ -232,8 +252,10 @@ export function RecordPanel({
           placed.push({ assetId: res.asset.id, lane: RECORD_LANE[tr.kind], startedAt: tr.startedAt });
         }
         // Say why, rather than leaving the effects mysteriously unavailable.
-        if (cursorRec && !tracks.some((tr) => tr.kind === "screen" && canMapToVideo(tr.surface))) {
-          toast.info("Cursor data needs a whole-screen recording — a window or tab share can't be mapped.");
+        if (cursorRec && !tracks.some((tr) => tr.kind === "screen" && canMapToVideo(tr.surface, cursorRec))) {
+          toast.info(
+            "Studio couldn't tell where this share was on screen, so the pointer data was left off — no auto-zoom or click rings on this take."
+          );
         }
         // A screen recording that landed with no pointer data at all, because
         // the helper was never there to offer. Silence here is what turns a
@@ -288,6 +310,28 @@ export function RecordPanel({
    * share exists. Tracking early is harmless: samples before the video's first
    * frame are dropped when the sidecar is built.
    */
+  /*
+   * Work out where on screen the share we were just granted actually is, and
+   * point cursord at it.
+   *
+   * This runs while the share is live, because that is the only moment both
+   * facts exist at once: the track's size and surface kind, and the machine's
+   * current window layout. It is also handed to acquireDisplay as the
+   * mappability test, so a share Studio cannot place still comes back with the
+   * real cursor in it rather than none at all.
+   */
+  const lockOntoShare = useCallback(
+    async (stream: MediaStream, cursorTracking: boolean): Promise<boolean> => {
+      if (!cursorTracking) return true;
+      const l = await lockSurface(stream);
+      setLockBoth(l);
+      const notice = lockNotice(l, { surface: displaySurfaceOf(stream.getVideoTracks()[0]) }, !!cursord?.surfaces);
+      if (notice) (notice.tone === "warn" ? toast.error : toast.info)(notice.text);
+      return !!l;
+    },
+    [cursord?.surfaces]
+  );
+
   const beginFraming = async () => {
     try {
       const wantCursor = !!cursord?.supported && trackCursor && opts.screen;
@@ -296,8 +340,9 @@ export function RecordPanel({
       setTracking(t);
       trackingRef.current = t;
 
-      const stream = await acquireDisplay({ ...opts, hideCursor: t && ownCursor }, (m) => toast.info(m));
-      warnIfUnmappable(stream, t);
+      const stream = await acquireDisplay({ ...opts, hideCursor: t && ownCursor }, (m) => toast.info(m), (s) =>
+        lockOntoShare(s, t)
+      );
       const frame = trackFrameSize(stream.getVideoTracks()[0]);
       if (!frame) {
         stream.getTracks().forEach((x) => x.stop());
@@ -335,6 +380,27 @@ export function RecordPanel({
     if (trackingRef.current) void stopCursorTracking();
     setTracking(false);
     trackingRef.current = false;
+    setLockBoth(null);
+  };
+
+  /*
+   * Correct the surface Studio matched.
+   *
+   * Two windows the same shape are genuinely indistinguishable from inside a
+   * tab, and a tab's own rectangle is inferred from its window rather than
+   * observed. Both are reported as uncertain, and both are one click from being
+   * right — which is worth far more than a matcher that is confident and wrong.
+   */
+  const correctSurface = async (s: CursorSurface) => {
+    const cur = lockRef.current;
+    if (!cur) return;
+    const next = await relockSurface(cur, s);
+    if (!next) {
+      toast.error("That surface has gone — is the window still open?");
+      return;
+    }
+    setLockBoth(next);
+    toast.success(`Now tracking the pointer in ${surfaceLabel(s)}.`);
   };
 
   /*
@@ -502,11 +568,11 @@ export function RecordPanel({
           screenStream: framing?.stream,
           region: framing && wantRegion ? region : undefined,
         },
-        (m) => toast.info(m)
+        (m) => toast.info(m),
+        // Framing already locked onto its share; the direct path acquires here,
+        // so this is where its surface gets matched.
+        framing ? undefined : (s) => lockOntoShare(s, t)
       );
-      // Framing already said this when it acquired the share; only the direct
-      // path still needs telling.
-      if (!framing && h.preview.screen) warnIfUnmappable(h.preview.screen, t);
       // The recorder owns the share from here; framing must let go of it
       // WITHOUT stopping it.
       framingRef.current = null;
@@ -561,6 +627,7 @@ export function RecordPanel({
             <span className="text-[12px] font-medium tabular">{mm}:{ss}</span>
             <span className="text-[10px] text-muted-foreground">{paused ? "paused" : "recording"}</span>
           </div>
+          {lock && <TrackedSurface lock={lock} onPick={correctSurface} />}
           {handle.preview.screen && (
             <video ref={screenRef} autoPlay muted playsInline className="w-full rounded border hairline bg-black" />
           )}
@@ -592,6 +659,7 @@ export function RecordPanel({
         </>
       ) : framing ? (
         <>
+          {lock && <TrackedSurface lock={lock} onPick={correctSurface} />}
           <RegionPicker
             stream={framing.stream}
             frame={framing.frame}
@@ -640,7 +708,8 @@ export function RecordPanel({
           />
           <Teleprompter active={!!handle} elapsed={elapsed} />
           <div className="space-y-1">
-            <ToggleRow label="Screen" hint="You'll pick the display or window next." checked={opts.screen} onChange={(v) => set({ screen: v })} />
+            <ToggleRow label="Screen" hint="You'll pick which one next." checked={opts.screen} onChange={(v) => set({ screen: v })} />
+            {opts.screen && <SourcePicker value={opts.source ?? "screen"} onChange={(source) => set({ source })} />}
             {opts.screen && (
               <ToggleRow
                 label="Just a region"
@@ -682,9 +751,11 @@ export function RecordPanel({
                 hint={
                   !opts.screen
                     ? "Needs a screen share."
-                    : cursord.clicks
-                      ? "Records pointer motion and clicks for cursor effects. Share a whole screen."
-                      : "Records pointer motion. Clicks aren't visible on this platform."
+                    : !cursord.surfaces && (opts.source ?? "screen") !== "screen"
+                      ? "This helper can only place the pointer in a whole-screen share. Rebuild tools/cursord for windows and tabs."
+                      : cursord.clicks
+                        ? "Records pointer motion and clicks — the auto-zoom and click rings are built from these."
+                        : "Records pointer motion. Clicks aren't visible on this platform."
                 }
                 checked={trackCursor && opts.screen}
                 disabled={!opts.screen}
@@ -795,6 +866,72 @@ export function RecordPanel({
   );
 }
 
+
+/**
+ * Whole screen, one window, or one tab — chosen before the picker opens.
+ *
+ * The browser puts all three behind a single button and picks which of its own
+ * tabs to open on. Saying which up front is what lets Studio ask for the right
+ * one, keep whole monitors out of the window list, and keep the editor's own
+ * tab out of the tab list.
+ */
+function SourcePicker({ value, onChange }: { value: SourceKind; onChange: (v: SourceKind) => void }) {
+  const hint = SOURCES.find((s) => s.key === value)?.hint;
+  return (
+    <div className="space-y-1 pb-0.5">
+      <div className="flex gap-1 rounded-md bg-panel-3 p-0.5">
+        {SOURCES.map((s) => (
+          <button
+            key={s.key}
+            type="button"
+            onClick={() => onChange(s.key)}
+            className={cn(
+              "flex-1 rounded px-1.5 py-1 text-[11px] font-medium transition-colors",
+              value === s.key ? "bg-brand text-brand-foreground" : "text-muted-foreground hover:text-foreground"
+            )}
+          >
+            {s.label}
+          </button>
+        ))}
+      </div>
+      <p className="px-0.5 text-[10px] leading-snug text-muted-foreground">{hint}</p>
+    </div>
+  );
+}
+
+/**
+ * Which surface the pointer data is being measured against, while there is
+ * still time to fix it.
+ *
+ * Shown only when the match was uncertain — two windows of the same shape, or a
+ * tab, whose rectangle is inferred from its window rather than observed. A
+ * confident match says nothing, because a line that appears on every recording
+ * is one nobody reads on the recording where it matters.
+ */
+function TrackedSurface({ lock, onPick }: { lock: SurfaceLock; onPick: (s: CursorSurface) => void }) {
+  if (!lock.ambiguous || lock.candidates.length < 2) return null;
+  return (
+    <div className="space-y-1 rounded-md border border-amber-500/30 bg-amber-500/10 p-2">
+      <p className="text-[10px] leading-snug text-amber-200">
+        More than one thing on screen is that shape. Cursor effects will be placed in:
+      </p>
+      <select
+        value={lock.surface.id}
+        onChange={(e) => {
+          const s = lock.candidates.find((c) => c.id === e.target.value);
+          if (s) void onPick(s);
+        }}
+        className="h-7 w-full rounded border hairline bg-panel px-1 text-[11px] outline-none"
+      >
+        {lock.candidates.map((c) => (
+          <option key={c.id} value={c.id}>
+            {surfaceLabel(c)} — {c.rect.w}×{c.rect.h}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
 
 /**
  * Drag the rectangle to record out of a live view of the share.

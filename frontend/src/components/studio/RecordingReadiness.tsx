@@ -58,11 +58,27 @@ export function buildRecordingReadiness(
           : "cursord running — motion only (no click detection on this OS)",
         status: "ok",
       });
-      items.push({
-        label: "Whole-screen share",
-        detail: "Pick your full display (not a window) so pointer maps correctly",
-        status: "warn",
-      });
+      // Which surface you record used to be a warning on every take: pointer
+      // coordinates were whole-screen, so anything else was refused. cursord
+      // now reports the rectangle of whatever is being captured, and all three
+      // map — so this says what will happen rather than what to avoid.
+      const source = opts.source ?? "screen";
+      if (cursord.surfaces) {
+        items.push({
+          label: source === "screen" ? "Whole-screen share" : source === "window" ? "Window share" : "Tab share",
+          detail:
+            source === "tab"
+              ? "Placed from the browser window — check the first zoom lands right"
+              : "Pointer placed through the surface you pick, even if you move it",
+          status: source === "tab" ? "warn" : "ok",
+        });
+      } else {
+        items.push({
+          label: "Window & tab tracking",
+          detail: "This cursord predates window geometry — rebuild it, or share a whole screen",
+          status: source === "screen" ? "ok" : "warn",
+        });
+      }
     } else {
       items.push({
         label: "Cursor helper",

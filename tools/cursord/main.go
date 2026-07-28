@@ -43,6 +43,8 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
+	mux.HandleFunc("GET /surfaces", handleSurfaces)
+	mux.HandleFunc("POST /surface", handleAttach)
 	mux.HandleFunc("POST /start", handleStart)
 	mux.HandleFunc("POST /stop", handleStop)
 	mux.HandleFunc("OPTIONS /", handlePreflight)
@@ -122,13 +124,54 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"ok":        true,
 		"service":   "cursord",
-		"version":   1,
+		"version":   2,
 		"platform":  platform,
 		"supported": supported(),
 		"clicks":    buttonsSupported(),
-		"running":   tracker.Running(),
-		"screen":    Screen{Width: sw, Height: sh},
+		// Whether window and display geometry can be read here. Studio gates the
+		// whole "record a window or a tab and still get cursor effects" path on
+		// this, and falls back to whole-screen-only where it is false — so an old
+		// binary (which omits the field entirely) keeps working unchanged.
+		"surfaces": supportsSurfaces(),
+		"running":  tracker.Running(),
+		"screen":   Screen{Width: sw, Height: sh},
 	})
+}
+
+// handleSurfaces enumerates what could be being captured, so Studio can match
+// the share it was just granted against something with a known rectangle.
+func handleSurfaces(w http.ResponseWriter, r *http.Request) {
+	if !supportsSurfaces() {
+		writeJSON(w, 501, map[string]any{"ok": false, "error": "window geometry is not implemented on " + platform})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "surfaces": listSurfaces()})
+}
+
+// handleAttach names the surface the live session is capturing.
+//
+// Refusing an unknown id matters: silently accepting one would record a session
+// with a surface set and no bounds, which reads downstream as "mapped" and
+// places every effect at the top-left of the screen.
+func handleAttach(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&body); err != nil {
+		writeJSON(w, 400, map[string]any{"ok": false, "error": "expected {\"id\":\"window:123\"}"})
+		return
+	}
+	if !tracker.Running() {
+		writeJSON(w, 409, map[string]any{"ok": false, "error": "no tracking session is running"})
+		return
+	}
+	s, ok := tracker.Attach(body.ID)
+	if !ok {
+		writeJSON(w, 404, map[string]any{"ok": false, "error": "no such surface: " + body.ID})
+		return
+	}
+	log.Printf("tracking surface %s", s)
+	writeJSON(w, 200, map[string]any{"ok": true, "surface": s})
 }
 
 func handleStart(w http.ResponseWriter, r *http.Request) {
