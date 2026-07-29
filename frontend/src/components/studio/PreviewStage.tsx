@@ -7,6 +7,7 @@ import {
   Captions,
   BarChart2,
   RotateCw,
+  Crop,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -30,6 +31,9 @@ import { getCursorTrack, cursorTrackNow } from "../../cursorTracks";
 import { clickTimes, drawCursorFX } from "./cursor-draw";
 import { playClicksBetween } from "../../clickAudio";
 import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel } from "./preview-engine";
+import { cropLayout, fillsFrame, fitMode, sourceSize } from "../../crop";
+import { CropOverlay } from "./CropOverlay";
+import { CroppedMedia } from "./CroppedMedia";
 import { isZoomActive } from "../../zoomPan";
 import { isCameraClip } from "../../virtualCamera";
 import type { Selection } from "./selection";
@@ -45,6 +49,8 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
   const updateClip = useStudio((s) => s.updateClip);
   const beginTransient = useStudio((s) => s.beginTransient);
   const commitTransient = useStudio((s) => s.commitTransient);
+  const croppingClip = useStudio((s) => s.croppingClip);
+  const setCroppingClip = useStudio((s) => s.setCroppingClip);
 
   const W = doc.canvas.width;
   const H = doc.canvas.height;
@@ -343,6 +349,18 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
     window.addEventListener("pointerup", up);
   };
 
+  // Crop mode owns the stage while it is on, so the ordinary selection box and
+  // its move/scale handles step aside — two sets of drag targets over one
+  // picture would be a coin toss about which one you grabbed.
+  const selAsset = selClip ? doc.assets.find((a) => a.id === selClip.assetId) : undefined;
+  const cropping =
+    !!selClip && croppingClip === selClip.id && !!selAsset && selAsset.kind !== "audio" ? selClip : null;
+  // Leaving crop mode when the selection moves on, rather than leaving it armed
+  // for whatever gets clicked next.
+  useEffect(() => {
+    if (croppingClip && (!selClip || selClip.id !== croppingClip)) setCroppingClip(null);
+  }, [croppingClip, selClip, setCroppingClip]);
+
   // Follows keyframed rotation so the selection box stays glued to the clip.
   const selRot = selBox?.rotation || 0;
   const handle = "absolute h-2.5 w-2.5 rounded-[2px] bg-background border border-brand shadow-[0_0_0_1px_rgba(0,0,0,0.5)]";
@@ -380,10 +398,18 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
             {visuals.map(({ track, clip }) => {
               const asset = doc.assets.find((a) => a.id === clip.assetId);
               const camera = isCameraClip(clip, asset);
-              const videoSize = asset ? { width: asset.width || W, height: asset.height || H } : undefined;
+              // The clip's picture size is its source's, minus any crop — the
+              // single answer every framing decision below depends on.
+              const videoSize = sourceSize(asset, clip) ?? (asset ? { width: W, height: H } : undefined);
               const zoomed = isZoomActive(clip, playhead);
-              const box = clipBox(clip, playhead, stage.w, stage.h, W, H, videoSize, camera);
-              const fit = camera ? "cover" : zoomed ? "cover" : "contain";
+              // A picture that fills the canvas has no letterbox bar to keep a
+              // pan away from, so it clamps against the canvas like a camera
+              // clip does. Mirrors the `filled` term in kfvalue.go — and, like
+              // it, is a property of the clip rather than of the moment, so the
+              // clamp cannot change under a zoom that is already running.
+              const covering = camera || fillsFrame(clip.fit, camera);
+              const box = clipBox(clip, playhead, stage.w, stage.h, W, H, videoSize, covering);
+              const mode = fitMode(clip.fit, camera || zoomed);
               if (clip.annotation) {
                 return (
                   <div
@@ -456,36 +482,44 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                 transform: rot ? `rotate(${rot}deg)` : undefined,
               };
               const muted = !!track.muted || (soloActive && !track.solo) || !!clip.mute;
-              const media =
-                asset.kind === "image" ? (
-                  <img key={clip.id} src={mediaUrl(asset.path, asset.createdAt)} style={{ position: "absolute", ...style, objectFit: fit }} />
-                ) : clip.chroma ? (
-                  // CSS cannot make a colour transparent, so a keyed clip is
-                  // drawn through a shader rather than approximated. The <video>
-                  // still exists and is still driven by the preview engine.
-                  <ChromaVideo
-                    key={clip.id}
-                    src={mediaUrl(asset.path, asset.createdAt)}
+              const media = clip.chroma ? (
+                // CSS cannot make a colour transparent, so a keyed clip is
+                // drawn through a shader rather than approximated. The <video>
+                // still exists and is still driven by the preview engine.
+                // Wrapped rather than cropped internally: the shader draws the
+                // whole source, and the crop is the box clipping it.
+                <div key={clip.id} style={{ position: "absolute", ...style, overflow: "hidden" }}>
+                  {(() => {
+                    // Same two-level clip as CroppedMedia: the inner window IS
+                    // the crop, and the shader draws the whole source inside it.
+                    const src = asset.width > 0 ? { width: asset.width, height: asset.height } : { width: W, height: H };
+                    const { window: win, media } = cropLayout(clip.crop, src, box.vw, box.vh, mode);
+                    return (
+                      <div style={{ position: "absolute", ...win, overflow: "hidden" }}>
+                        <ChromaVideo
+                          src={mediaUrl(asset.path, asset.createdAt)}
+                          muted={muted}
+                          style={media}
+                          chroma={clip.chroma}
+                          onVideo={(el) => (videoRefs.current[clip.id] = el)}
+                        />
+                      </div>
+                    );
+                  })()}
+                </div>
+              ) : (
+                <div key={clip.id} style={{ position: "absolute", ...style }}>
+                  <CroppedMedia
+                    asset={asset}
+                    crop={clip.crop}
+                    width={box.vw}
+                    height={box.vh}
+                    mode={mode}
                     muted={muted}
-                    style={style}
-                    chroma={clip.chroma}
                     onVideo={(el) => (videoRefs.current[clip.id] = el)}
                   />
-                ) : (
-                  <video
-                    key={clip.id}
-                    ref={(el) => (videoRefs.current[clip.id] = el)}
-                    src={mediaUrl(asset.path, asset.createdAt)}
-                    // The thumbnail stands in until the first frame decodes.
-                    // Without it a freshly-opened project is a black rectangle
-                    // for as long as the media takes to load, which reads as a
-                    // broken recording rather than as one still arriving.
-                    poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
-                    muted={muted}
-                    playsInline
-                    style={{ position: "absolute", ...style, objectFit: fit }}
-                  />
-                );
+                </div>
+              );
               if (clip.bubble && !clip.device) {
                 /*
                  * Webcam bubble: centre-cropped square (object-fit: cover on a
@@ -526,32 +560,33 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                         background: "#000",
                       }}
                     >
-                      <video
-                        ref={(el) => (videoRefs.current[clip.id] = el)}
-                        src={mediaUrl(asset.path, asset.createdAt)}
-                        poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
+                      {/* A bubble is a centre-crop into a square, which is the
+                          "fill" rule applied to a square box. */}
+                      <CroppedMedia
+                        asset={asset}
+                        crop={clip.crop}
+                        width={(g.d / W) * box.vw}
+                        height={(g.d / H) * box.vh}
+                        mode="fill"
                         muted={muted}
-                        playsInline
-                        style={{ width: "100%", height: "100%", objectFit: "cover" }}
+                        onVideo={(el) => (videoRefs.current[clip.id] = el)}
                       />
                     </div>
                   </div>
                 );
               }
               if (camera) {
-                const inner =
-                  asset.kind === "image" ? (
-                    <img src={mediaUrl(asset.path, asset.createdAt)} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-                  ) : (
-                    <video
-                      ref={(el) => (videoRefs.current[clip.id] = el)}
-                      src={mediaUrl(asset.path, asset.createdAt)}
-                      poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
-                      muted={muted}
-                      playsInline
-                      style={{ width: "100%", height: "100%", objectFit: "cover" }}
-                    />
-                  );
+                const inner = (
+                  <CroppedMedia
+                    asset={asset}
+                    crop={clip.crop}
+                    width={box.vw}
+                    height={box.vh}
+                    mode={mode}
+                    muted={muted}
+                    onVideo={(el) => (videoRefs.current[clip.id] = el)}
+                  />
+                );
                 return (
                   <div
                     key={clip.id}
@@ -620,21 +655,15 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                         boxShadow: `0 ${H * 0.012 * k}px ${H * 0.03 * k}px rgba(0,0,0,${(0.42 * shadow).toFixed(3)})`,
                       }}
                     >
-                      {asset.kind === "image" ? (
-                        <img
-                          src={mediaUrl(asset.path, asset.createdAt)}
-                          style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                        />
-                      ) : (
-                        <video
-                          ref={(el) => (videoRefs.current[clip.id] = el)}
-                          src={mediaUrl(asset.path, asset.createdAt)}
-                          poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
-                          muted={muted}
-                          playsInline
-                          style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                        />
-                      )}
+                      <CroppedMedia
+                        asset={asset}
+                        crop={clip.crop}
+                        width={(g.w / W) * box.vw}
+                        height={(g.h / H) * box.vh}
+                        mode="fit"
+                        muted={muted}
+                        onVideo={(el) => (videoRefs.current[clip.id] = el)}
+                      />
                     </div>
                   </div>
                 );
@@ -673,21 +702,15 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                         background: "#000",
                       }}
                     >
-                      {asset.kind === "image" ? (
-                        <img
-                          src={mediaUrl(asset.path, asset.createdAt)}
-                          style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                        />
-                      ) : (
-                        <video
-                          ref={(el) => (videoRefs.current[clip.id] = el)}
-                          src={mediaUrl(asset.path, asset.createdAt)}
-                          poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
-                          muted={muted}
-                          playsInline
-                          style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                        />
-                      )}
+                      <CroppedMedia
+                        asset={asset}
+                        crop={clip.crop}
+                        width={(scr.w / W) * box.vw}
+                        height={(scr.h / H) * box.vh}
+                        mode="fit"
+                        muted={muted}
+                        onVideo={(el) => (videoRefs.current[clip.id] = el)}
+                      />
                     </div>
                     <DeviceLayer device={clip.device} canvasW={W} canvasH={H} />
                   </div>
@@ -757,7 +780,21 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
 
             <div className="pointer-events-none absolute inset-[4%] rounded border border-dashed border-white/12" />
 
-            {selBox && (
+            {cropping && selAsset && (
+              <CropOverlay
+                asset={selAsset}
+                crop={cropping.crop}
+                localTime={cropping.in + Math.max(0, playhead - cropping.start)}
+                stageW={stage.w}
+                stageH={stage.h}
+                onBegin={beginTransient}
+                onChange={(crop) => updateClip(selTrackId, cropping.id, { crop })}
+                onCommit={commitTransient}
+                onDone={() => setCroppingClip(null)}
+              />
+            )}
+
+            {selBox && !cropping && (
               <div
                 onPointerDown={dragBox("move")}
                 className={cn("absolute ring-1 ring-brand", keyframed ? "cursor-not-allowed" : "cursor-move")}
@@ -778,6 +815,23 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                     >
                       <RotateCw className="h-3 w-3" />
                     </span>
+                    {/* Crop is reachable from the picture as well as from the
+                        Inspector: "cut the top off this" is something you decide
+                        while looking at the frame, not while reading a panel. */}
+                    {selAsset && selAsset.kind !== "audio" && (
+                      <button
+                        type="button"
+                        title="Crop this clip (C)"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCroppingClip(selClip!.id);
+                        }}
+                        className="absolute -top-9 left-[calc(50%+18px)] grid h-5 w-5 place-items-center rounded-full border border-brand bg-background text-brand hover:bg-brand hover:text-brand-foreground"
+                      >
+                        <Crop className="h-3 w-3" />
+                      </button>
+                    )}
                   </>
                 )}
               </div>

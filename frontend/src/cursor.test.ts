@@ -181,3 +181,159 @@ describe("toSidecar with a region recording", () => {
     expect(s.samples[0]!.down).toBe(1);
   });
 });
+
+/*
+ * Mapping through a recorded surface — the change that lets a window or a tab
+ * share carry cursor effects at all.
+ *
+ * Before this, pointer samples were assumed to be whole-screen coordinates on
+ * the main display, so Studio simply refused to attach them to anything but a
+ * whole-screen capture. A window recording arrived with no auto-zoom, no click
+ * rings and, when Studio had been asked to draw the cursor, no cursor.
+ */
+describe("toSidecar with a captured surface", () => {
+  const withBounds = (
+    samples: CursorRecording["samples"],
+    bounds: NonNullable<CursorRecording["bounds"]>
+  ): CursorRecording => ({
+    version: 1,
+    startedAt: 0,
+    stoppedAt: 10_000,
+    screen: { width: 1728, height: 1117 },
+    clicks: true,
+    surface: { id: "window:7", kind: "window", rect: bounds[0], front: 0 } as never,
+    bounds,
+    samples,
+  });
+
+  it("places a pointer relative to the window, not the screen", () => {
+    // A 800x600pt window at (100,200), captured at 2x → 1600x1200 pixels.
+    const r = withBounds(
+      [{ t: 0, x: 500, y: 500 }], // 400pt into the window, 300pt down: dead centre
+      [{ t: 0, x: 100, y: 200, w: 800, h: 600 }]
+    );
+    const out = toSidecar(r, 0, { width: 1600, height: 1200 });
+    expect(out.samples[0]).toMatchObject({ x: 800, y: 600 });
+  });
+
+  // The pointer leaves the window to do something else. It has no position in
+  // this recording while it is gone, and inventing one would drag the highlight
+  // across footage it was never over.
+  it("drops samples taken outside the window", () => {
+    const r = withBounds(
+      [
+        { t: 0, x: 500, y: 500 },
+        { t: 100, x: 50, y: 500 }, // left of the window
+        { t: 200, x: 500, y: 1000 }, // below it
+      ],
+      [{ t: 0, x: 100, y: 200, w: 800, h: 600 }]
+    );
+    expect(toSidecar(r, 0, { width: 1600, height: 1200 }).samples).toHaveLength(1);
+  });
+
+  /*
+   * The window is dragged mid-take. This is the reason bounds are a series
+   * rather than one measurement: with a fixed rectangle, every effect after the
+   * drag would be offset by exactly how far the window moved, and the recording
+   * itself gives no hint that anything moved at all.
+   */
+  it("follows a window that moves during the recording", () => {
+    const r = withBounds(
+      [
+        { t: 0, x: 500, y: 500 },
+        { t: 5000, x: 900, y: 700 }, // same spot in the window, after the move
+      ],
+      [
+        { t: 0, x: 100, y: 200, w: 800, h: 600 },
+        { t: 4000, x: 500, y: 400, w: 800, h: 600 },
+      ]
+    );
+    const out = toSidecar(r, 0, { width: 1600, height: 1200 });
+    expect(out.samples[0]).toMatchObject({ x: 800, y: 600 });
+    expect(out.samples[1]).toMatchObject({ x: 800, y: 600 });
+  });
+
+  // A sample taken before the first bound was written has only one rectangle it
+  // could belong to. Holding the first is right; dropping it would lose the
+  // pointer's position at frame zero, which is what tracking early exists for.
+  it("holds the first bound for samples that precede it", () => {
+    const r = withBounds(
+      [{ t: 0, x: 500, y: 500 }],
+      [{ t: 900, x: 100, y: 200, w: 800, h: 600 }]
+    );
+    expect(toSidecar(r, 0, { width: 1600, height: 1200 }).samples[0]).toMatchObject({ x: 800, y: 600 });
+  });
+
+  it("applies a tab's inset so the toolbar isn't counted as content", () => {
+    // A 1400x900pt browser window whose viewport is the bottom 800pt.
+    const r = withBounds(
+      [{ t: 0, x: 700, y: 500 }], // 700pt across, 400pt into the viewport: centre
+      [{ t: 0, x: 0, y: 0, w: 1400, h: 900 }]
+    );
+    const out = toSidecar(r, 0, { width: 2800, height: 1600 }, false, undefined, {
+      left: 0,
+      top: 100,
+      right: 0,
+      bottom: 0,
+    });
+    expect(out.samples[0]).toMatchObject({ x: 1400, y: 800 });
+  });
+
+  // Region recording still crops on top of the surface mapping: one converts
+  // screen space to the captured frame, the other the frame to the region.
+  it("composes with a region crop", () => {
+    const r = withBounds(
+      [{ t: 0, x: 500, y: 500 }],
+      [{ t: 0, x: 100, y: 200, w: 800, h: 600 }]
+    );
+    const out = toSidecar(r, 0, { width: 400, height: 300 }, false, {
+      frame: { width: 1600, height: 1200 },
+      x: 700,
+      y: 500,
+    });
+    // Centre of the window is (800,600) in the full frame; the region starts at
+    // (700,500), so 100,100 inside it.
+    expect(out.samples[0]).toMatchObject({ x: 100, y: 100 });
+  });
+
+  it("falls back to whole-screen scaling when no surface was attached", () => {
+    const r: CursorRecording = {
+      version: 1,
+      startedAt: 0,
+      stoppedAt: 1000,
+      screen: { width: 1728, height: 1080 },
+      clicks: true,
+      samples: [{ t: 0, x: 864, y: 540 }],
+    };
+    expect(toSidecar(r, 0, { width: 3456, height: 2160 }).samples[0]).toMatchObject({ x: 1728, y: 1080 });
+  });
+});
+
+describe("canMapToVideo with a recorded surface", () => {
+  const mapped = (over: Partial<CursorRecording> = {}): CursorRecording => ({
+    version: 1,
+    startedAt: 0,
+    stoppedAt: 1,
+    screen: { width: 1728, height: 1117 },
+    clicks: true,
+    samples: [],
+    surface: { id: "window:7", kind: "window", rect: { x: 0, y: 0, w: 800, h: 600 }, front: 0 },
+    bounds: [{ t: 0, x: 0, y: 0, w: 800, h: 600 }],
+    ...over,
+  });
+
+  it("accepts a window or tab share once its rectangle was recorded", () => {
+    expect(canMapToVideo("window", mapped())).toBe(true);
+    expect(canMapToVideo("browser", mapped())).toBe(true);
+  });
+
+  // A session that recorded no rectangle has nothing to map through, whatever
+  // it claims. Falling back to the old rule keeps whole-screen working and
+  // refuses the rest, which is the behaviour that was at least correct.
+  it("still refuses a window share with no recorded bounds", () => {
+    expect(canMapToVideo("window", mapped({ bounds: [] }))).toBe(false);
+    expect(canMapToVideo("window", mapped({ surface: undefined }))).toBe(false);
+    expect(canMapToVideo("window", null)).toBe(false);
+    expect(canMapToVideo("monitor", null)).toBe(true);
+  });
+});

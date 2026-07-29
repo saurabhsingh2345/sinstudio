@@ -17,7 +17,9 @@ Open a project → **Media → Record**.
 
 | Source | What it does |
 | --- | --- |
-| **Screen** | The browser asks which display, window or tab to share. |
+| **Whole screen** | One display, all of it. The most certain pointer tracking, because a display cannot be dragged somewhere else. |
+| **Window** | One app's window. Studio follows it: move or resize it mid-take and the effects stay on it. |
+| **Browser tab** | One tab's page. Studio's own tab is excluded from the picker, so you cannot record the editor by accident. |
 | **Just a region** | Records a rectangle of the share instead of all of it. |
 | **Camera** | Lands on the overlay track, ready to be framed as picture-in-picture. |
 | **Microphone** | Its own audio track, so narration stays adjustable against everything else. |
@@ -46,9 +48,10 @@ Choose **Just a region**, pick your share, then drag a rectangle over the live
 preview of it. The size you will actually get is shown as you drag.
 
 The crop happens **before the first frame is encoded**, so the file, the upload
-and every later decode all shrink with it. This is the one thing that cannot be
-done afterwards — cropping at export time is arithmetically identical to a
-static zoom, which the Zoom & Pan panel already does.
+and every later decode all shrink with it. That is the one thing that cannot be
+done afterwards, and the only reason to choose a region up front: if you just
+want the menu bar gone from the finished video, **Crop & fit** on the clip does
+that later, reversibly, and with the pixels still there if you change your mind.
 
 Needs Insertable Streams (Chrome/Edge). There is deliberately **no fallback**:
 the obvious alternative, drawing frames to a canvas, is driven by
@@ -57,6 +60,45 @@ recorder's tab is backgrounded by definition, because you are looking at the
 thing being recorded. That version records a few seconds and then a
 freeze-frame. A feature that fails exactly when it is used is worse than one
 that is honestly absent.
+
+---
+
+## Cropping a clip afterwards
+
+Select a clip and press **C**, or use **Crop & fit** in the inspector. The whole
+picture is shown with the part you are cutting dimmed rather than hidden —
+you are choosing what to remove, so it has to stay visible while you choose.
+Drag any edge or corner; drag inside to slide the window; Escape or **Done**
+ends it.
+
+Then the half people are surprised by. Trimming the top off a 16:9 recording
+leaves a picture that is *wider* than 16:9, so it letterboxes — the clip that
+was flush with the frame a moment ago now sits in bars, which reads as the crop
+having broken something. It hasn't; it changed the shape. **Fill** covers the
+frame with what is left, and the panel offers it as one button ("Fill the frame
+— no bars") exactly when the clip is actually barred.
+
+| Fit | What it does |
+| --- | --- |
+| **Auto** | Letterbox, or fill when the camera is working this clip. The behaviour every clip had before fits were settable. |
+| **Fit** | Show all of it, transparent bars where the shapes differ. |
+| **Fill** | Cover the frame; anything past the edge is not shown. |
+| **Stretch** | Distort to fill. Rarely right, occasionally exactly right. |
+
+A crop changes what the clip's picture *is*, so everything downstream is told
+the new shape: the letterbox, the pan clamp that keeps a zoom inside the
+content, the backdrop card's geometry, and the pointer track's coordinate space.
+That last one matters — cutting the top off without moving the recorded pointer
+would leave every highlight and click ring exactly as far down as the crop was
+deep, which looks like the cursor effects being miscalibrated rather than like a
+crop that forgot something.
+
+**Crop to canvas shape** is the shortcut for "make this match the others": it
+takes equal bites out of the long axis until the picture is the canvas's shape,
+so it fills with nothing cut off-centre.
+
+Redactions are fractions of the **uncropped** source and are applied before the
+crop, so trimming an edge can never slide a blur off the thing it was hiding.
 
 ---
 
@@ -83,11 +125,44 @@ megabytes.
 Studio probes for it and works without it. You get the recording; you do not get
 the cursor effects or the automatic camera work.
 
-**Share a whole screen.** `cursord` reports the pointer in screen coordinates,
-which map onto the video only when the video *is* the screen. A window or tab
-share has an origin no browser tab can learn, so Studio declines to attach the
-data rather than misplacing every effect by an unknown offset. It says so when
-this happens.
+### How a window or a tab gets mapped
+
+`cursord` reports the pointer in screen coordinates. Those land on the video
+only if something knows where the video *is* on the screen — and the browser
+will not say. A share arrives as a size and one of three words: `monitor`,
+`window`, `browser`. Which monitor, which window, and where, are all withheld.
+
+So the two halves are joined by **shape**. `cursord` enumerates every display
+and window with its rectangle; Studio matches the granted share against them on
+aspect ratio, which is the one property that survives the trip (a capture is in
+pixels, the operating system reports points, and a large share may be
+downscaled — a ratio is immune to all three). It then tells `cursord` which
+surface to follow, and that rectangle is sampled for the rest of the take, so a
+window you drag halfway through keeps its effects.
+
+Everything then maps the same way — pointer minus the surface's origin, over the
+surface's size — and a whole display is simply the case where that rectangle is
+the display. Multi-monitor falls out of the same change: the old code scaled
+against the *main* display's size, so recording a second monitor placed every
+effect somewhere the pointer had never been.
+
+Two honest limits remain:
+
+- **Two windows the same shape** cannot be told apart by shape. Studio picks the
+  likelier one and says so, with the alternatives one click away in the record
+  panel. It does not pretend to be certain.
+- **A tab's rectangle is inferred**, not observed: the operating system can see
+  the browser window, and the recording is that window's page. Studio finds the
+  window by width and anchors the viewport to its bottom edge, which is where
+  web contents sit. Developer tools docked along the *bottom* break that
+  assumption — record the window instead if the effects land low.
+
+When nothing matches, Studio attaches no pointer data and says so **while the
+share is still live**, rather than after the take.
+
+Window geometry is macOS-only for now. Elsewhere `cursord` reports
+`surfaces: false` and Studio keeps the old rule: whole-screen shares get cursor
+effects, window and tab shares record fine without them.
 
 ### Studio draws the cursor
 
@@ -214,8 +289,9 @@ three seconds will not get one at all.
 
 ## Limits worth knowing
 
-- **Whole-screen shares only**, for cursor data. Window and tab shares record
-  fine; they just cannot place the pointer.
+- **Window geometry is macOS-only.** Elsewhere, cursor data still needs a
+  whole-screen share; window and tab shares record fine without the effects.
+- **A tab's position is estimated** from its browser window — see above.
 - **System audio is Chrome-only**, and only with a tab or window share.
 - **Region recording needs Chrome or Edge** (Insertable Streams).
 - **The preview approximates; the export is authoritative.** Positions and
@@ -224,8 +300,18 @@ three seconds will not get one at all.
 
 ## When something looks wrong
 
-**No zooms appeared.** Check `cursord` is running (`curl 127.0.0.1:8791/health`)
-and that you shared a whole screen. A clip under ~3s cannot fit a zoom.
+**No zooms appeared.** Check `cursord` is running and new enough to report
+window geometry: `curl 127.0.0.1:8791/health` should say `"surfaces": true`. If
+it says `false`, rebuild it (`cd tools/cursord && go build`). A clip under ~3s
+cannot fit a zoom whatever the pointer data says.
+
+**The effects are on the wrong window.** Two windows the same shape are
+indistinguishable by shape. The record panel offers the alternatives while the
+share is live; pick the right one there.
+
+**A tab's effects sit too low or too high.** Its rectangle is inferred from the
+browser window, and something is between the toolbar and the page — developer
+tools docked at the bottom, most likely. Record the window instead.
 
 **The zooms are in the wrong places.** They are ordinary keyframes: drag the
 diamonds, or clear them in Auto Zoom and re-run with different settings.

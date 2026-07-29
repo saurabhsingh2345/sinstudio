@@ -13,6 +13,7 @@
 // into one MediaRecorder anyway without routing through canvas + WebAudio,
 // which costs quality and CPU to produce a *less* useful result.
 
+import { canMapToVideo } from "./cursor";
 import {
   cropStream,
   isRegionRecordingSupported,
@@ -23,8 +24,28 @@ import {
 
 export type RecordKind = "screen" | "camera" | "mic";
 
+/**
+ * What the user means to record, chosen before the picker opens.
+ *
+ * The browser's picker offers all three under one button, and which tab of it
+ * opens first is a hint we can give. Naming the intent up front is not only
+ * politeness: it decides `monitorTypeSurfaces` and `selfBrowserSurface`, which
+ * are the difference between "pick a tab" showing you every monitor and
+ * offering you Studio's own tab as a thing to record.
+ */
+export type SourceKind = "screen" | "window" | "tab";
+
+/** The displaySurface value a source kind produces, for verification. */
+export const SURFACE_FOR_SOURCE: Record<SourceKind, string> = {
+  screen: "monitor",
+  window: "window",
+  tab: "browser",
+};
+
 export interface RecordOptions {
   screen: boolean;
+  /** Which kind of surface to steer the picker towards. Defaults to "screen". */
+  source?: SourceKind;
   camera: boolean;
   mic: boolean;
   /** Tab/window audio. Chrome-only, and only offered alongside a screen share. */
@@ -195,6 +216,108 @@ export function trackFrameSize(track: MediaStreamTrack | undefined): { width: nu
   return s?.width && s?.height ? { width: s.width, height: s.height } : undefined;
 }
 
+export function displaySurfaceOf(track: MediaStreamTrack | undefined): string | undefined {
+  return (track?.getSettings?.() as (MediaTrackSettings & { displaySurface?: string }) | undefined)?.displaySurface;
+}
+
+/**
+ * Constraints that steer the picker towards one kind of surface.
+ *
+ * `displaySurface` is a preference, not a filter — Chrome opens that tab of the
+ * picker first and the user may still choose anything. The other two are real
+ * exclusions, and both matter:
+ *
+ * - `selfBrowserSurface: "exclude"` keeps Studio's own tab out of the tab list.
+ *   Recording the editor you are recording from is never the intent, and it is
+ *   the first thing in the list.
+ * - `surfaceSwitching: "exclude"` removes Chrome's mid-recording "share this
+ *   instead" button. Switching surfaces halfway would leave the pointer data
+ *   mapped through a rectangle that stopped being the thing on screen, and
+ *   nothing in the resulting file would say so.
+ */
+export function displayConstraints(opts: Pick<RecordOptions, "fps" | "source">, hideCursor: boolean) {
+  const source = opts.source ?? "screen";
+  return {
+    video: {
+      frameRate: { ideal: opts.fps },
+      displaySurface: SURFACE_FOR_SOURCE[source],
+      // Not universally supported, and browsers may quietly ignore it — which
+      // is why what actually happened is read back rather than inferred from
+      // having asked.
+      ...(hideCursor ? { cursor: "never" } : {}),
+    } as MediaTrackConstraints,
+    selfBrowserSurface: "exclude",
+    surfaceSwitching: "exclude",
+    // Offering every monitor under "record a window" is how you end up with a
+    // window recording that is a whole screen.
+    monitorTypeSurfaces: source === "screen" ? "include" : "exclude",
+  } as DisplayMediaStreamOptions;
+}
+
+/**
+ * Acquire the screen share, and never come back with a capture that has no
+ * cursor in it at all.
+ *
+ * `cursor: "never"` is a getDisplayMedia constraint, so the decision to keep the
+ * OS cursor out has to be made BEFORE the picker opens — which is before anyone
+ * knows what the user is going to pick, and before we know whether the pointer
+ * data can be placed in whatever they picked. If it cannot, the pointer track is
+ * discarded — and a discarded pointer track plus a capture with the real cursor
+ * removed is a recording with NO cursor whatsoever. Silently. For the whole take.
+ *
+ * So `ensureMappable` is asked, with the granted share in hand, whether the
+ * pointer will actually land in it — which is where the surface is matched
+ * against what cursord can see. An unmappable share gets the cursor put back:
+ * first by asking the live track, and if the browser won't reconsider, by taking
+ * a fresh share without the constraint. The second picker is the cost of not
+ * handing back a cursorless recording, and it is only ever paid on the exact
+ * combination that would have produced one.
+ *
+ * `onNotice` explains that second picker. Nothing else here talks to the user.
+ */
+export async function acquireDisplay(
+  opts: Pick<RecordOptions, "fps" | "systemAudio" | "hideCursor" | "source">,
+  onNotice?: (message: string) => void,
+  ensureMappable?: (stream: MediaStream) => Promise<boolean>
+): Promise<MediaStream> {
+  const ask = (hideCursor: boolean) => {
+    const c = displayConstraints(opts, hideCursor);
+    return navigator.mediaDevices.getDisplayMedia({ ...c, audio: opts.systemAudio });
+  };
+
+  const stream = await ask(!!opts.hideCursor);
+  if (!opts.hideCursor) {
+    await ensureMappable?.(stream);
+    return stream;
+  }
+
+  const mappable = ensureMappable
+    ? await ensureMappable(stream)
+    : canMapToVideo(displaySurfaceOf(stream.getVideoTracks()[0]));
+  if (mappable) return stream;
+
+  const track = stream.getVideoTracks()[0];
+  // Cheapest repair first: some browsers will reconsider a cursor constraint on
+  // a live display track, which costs the user nothing.
+  try {
+    await track?.applyConstraints({ cursor: "always" } as MediaTrackConstraints);
+  } catch {
+    /* not settable here; fall through to the reshare */
+  }
+  // Same policy as cursorIsHidden: only a positive "never" counts as hidden. A
+  // browser that won't say is treated as not hidden, so it keeps the share it
+  // already granted rather than being sent through the picker on a suspicion.
+  if (!cursorIsHidden(track)) return stream;
+
+  stream.getTracks().forEach((t) => t.stop());
+  onNotice?.(
+    "Studio couldn't work out where on screen this share is, and the real cursor was being left out of it. Pick the same one again — Studio will keep the cursor this time."
+  );
+  const retry = await ask(false);
+  await ensureMappable?.(retry);
+  return retry;
+}
+
 function record(
   stream: MediaStream,
   kind: RecordKind,
@@ -255,7 +378,13 @@ function record(
   return { rec, started, finished, stream };
 }
 
-export async function startRecording(opts: RecordOptions): Promise<RecordingHandle> {
+export async function startRecording(
+  opts: RecordOptions,
+  onNotice?: (message: string) => void,
+  /** Asked with the granted share in hand — see acquireDisplay. Unused when the
+   *  caller supplies a stream it has already checked. */
+  ensureMappable?: (stream: MediaStream) => Promise<boolean>
+): Promise<RecordingHandle> {
   if (!isRecordingSupported()) throw new Error("This browser can't capture the screen.");
   if (!opts.screen && !opts.camera && !opts.mic) throw new Error("Pick at least one source to record.");
 
@@ -267,20 +396,9 @@ export async function startRecording(opts: RecordOptions): Promise<RecordingHand
     if (opts.screen) {
       // Reuse a share the caller already has — region picking needs the stream
       // to exist before the region can be drawn on it.
-      screenStream =
-        opts.screenStream ??
-        // The browser shows its own picker here; there is no way to preselect a
-        // display, and the call rejects if the user cancels it.
-        (await navigator.mediaDevices.getDisplayMedia({
-          video: {
-            frameRate: { ideal: opts.fps },
-            // Not universally supported, and browsers may quietly ignore it —
-            // which is why what actually happened is read back below rather than
-            // inferred from having asked.
-            ...(opts.hideCursor ? { cursor: "never" } : {}),
-          } as MediaTrackConstraints,
-          audio: opts.systemAudio,
-        }));
+      // The browser shows its own picker here; there is no way to preselect a
+      // display, and the call rejects if the user cancels it.
+      screenStream = opts.screenStream ?? (await acquireDisplay(opts, onNotice, ensureMappable));
     }
     if (opts.camera) {
       cameraStream = await navigator.mediaDevices.getUserMedia({

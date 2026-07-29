@@ -30,4 +30,14 @@ describe("buildRecordingReadiness", () => {
     const items = buildRecordingReadiness(baseOpts, null, false, true, true);
     expect(items.find((i) => i.label === "Cursor helper")?.status).toBe("warn");
   });
+
+  // The note has to say what the take LOSES. Phrased as an instruction to run
+  // something, it reads as an optional extra and gets skipped — and the way you
+  // then discover it mattered is by finishing a recording that never zooms.
+  it("says what a missing helper costs, not just what to run", () => {
+    const items = buildRecordingReadiness(baseOpts, null, false, true, true);
+    const detail = items.find((i) => i.label === "Cursor helper")!.detail;
+    expect(detail).toMatch(/auto-zoom/i);
+    expect(detail).toMatch(/click rings|cursor effects/i);
+  });
 });

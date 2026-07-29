@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -130,6 +131,9 @@ func (s *Store) listProjectsLocal(_ context.Context) ([]ProjectMeta, error) {
 		}
 		out = append(out, ProjectMeta{ID: doc.ID, Name: doc.Name, Updated: updated})
 	}
+	// Newest first, matching what the Postgres query returns — directory order is
+	// whatever the filesystem feels like, and the UI's "Recent" list is not.
+	sort.Slice(out, func(i, j int) bool { return out[i].Updated > out[j].Updated })
 	return out, nil
 }
 

@@ -36,9 +36,13 @@ type Event struct {
 
 // Job is a tracked unit of work.
 type Job struct {
-	ID      string  `json:"id"`
-	Kind    string  `json:"kind"`
-	Status  string  `json:"status"` // running|done|error|canceled
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Status string `json:"status"` // running|done|error|canceled
+	// Project this work belongs to, when it belongs to one. Set so a project's
+	// work can be stopped as a group — deleting a project has to take its
+	// in-flight export with it, not leave it writing into a deleted directory.
+	Project string  `json:"project,omitempty"`
 	Pct     float64 `json:"progress"`
 	Message string  `json:"message"`
 	m       *Manager
@@ -206,6 +210,35 @@ func (m *Manager) Cancel(id string) bool {
 	}
 	j.cancel()
 	return true
+}
+
+// SetProject records which project a job is working on. Separate from New so
+// the constructors stay about scheduling; the caller knows the project only
+// after the payload has been validated.
+func (j *Job) SetProject(projID string) {
+	j.m.mu.Lock()
+	j.Project = projID
+	j.m.mu.Unlock()
+}
+
+// CancelProject cancels every live job belonging to a project and returns how
+// many it stopped. Called when the project is deleted: work that outlives its
+// project can only fail, and does so after recreating the directory it was
+// writing into.
+func (m *Manager) CancelProject(projID string) int {
+	if projID == "" {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, j := range m.jobs {
+		if j.Project == projID && !isTerminal(j.Status) {
+			j.cancel()
+			n++
+		}
+	}
+	return n
 }
 
 // CancelAll cancels every job — used on graceful shutdown so no subprocess is

@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import { ColorSwatch, Field, NumInput, Section, SliderRow, ToggleRow } from "./inspector-bits";
 import { ZoomPanSection } from "./ZoomPanSection";
 import { AnnotationInspector } from "./AnnotationInspector";
+import { CropSection } from "./CropSection";
 import { RedactSection } from "./RedactSection";
 import { ChromaSection } from "./ChromaSection";
 import { DeviceSection } from "./DeviceSection";
@@ -459,6 +460,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
 
       {asset && asset.kind !== "audio" && <StylePresetsSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <ZoomPanSection trackId={trackId} clip={clip} asset={asset} />}
+      {asset && asset.kind !== "audio" && <CropSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <RedactSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <ChromaSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "image" && <SilenceSection trackId={trackId} clip={clip} asset={asset} />}

@@ -83,6 +83,14 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
       if (meta) return;
       if (e.code === "Space") { e.preventDefault(); st.setPlaying(!st.playing); return; }
       if (k === "s") { e.preventDefault(); st.splitAtPlayhead(); return; }
+      // Crop the selected clip on the canvas. A toggle rather than a mode you
+      // have to leave by finding a button, since Escape also ends it.
+      if (k === "c") {
+        if (sel.kind !== "clip") return;
+        e.preventDefault();
+        st.setCroppingClip(st.croppingClip === sel.clipId ? null : sel.clipId);
+        return;
+      }
       if (k === "m") {
         e.preventDefault();
         const id = st.addMarker();

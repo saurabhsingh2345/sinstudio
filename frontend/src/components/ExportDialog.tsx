@@ -32,6 +32,27 @@ const FORMATS: { value: ExportOptions["format"]; label: string }[] = [
   { value: "mov", label: "MOV (ProRes)" },
 ];
 
+// Whole-render playback rate. Applied to the finished composite server-side, so
+// it retimes everything (clips, captions, cursor effects) at once; audio keeps
+// its pitch. 1 stays out of the payload so an untouched export is byte-identical.
+const SPEEDS: { value: number; label: string }[] = [
+  { value: 0.7, label: "0.7× — slower" },
+  { value: 0.8, label: "0.8×" },
+  { value: 0.9, label: "0.9×" },
+  { value: 1, label: "1× — as edited" },
+  { value: 1.25, label: "1.25×" },
+  { value: 1.5, label: "1.5×" },
+  { value: 2, label: "2×" },
+  { value: 4, label: "4×" },
+  { value: 8, label: "8× — fastest" },
+];
+
+// mm:ss for the "how long will this render be" hint next to the speed picker.
+const clock = (s: number) => {
+  const t = Math.max(0, s);
+  return `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+};
+
 const SOCIAL_EXPORTS: {
   id: string;
   label: string;
@@ -54,11 +75,14 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
   const [from, setFrom] = useState(0);
   const [to, setTo] = useState(+total.toFixed(2));
   const [loudnorm, setLoudnorm] = useState(true);
+  const [speed, setSpeed] = useState(1);
   const [busy, setBusy] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const [frameUrl, setFrameUrl] = useState<string>("");
   const [framing, setFraming] = useState(false);
   const progress = useJobs((s) => (jobId ? s.jobs[jobId]?.progress ?? 0 : 0));
+  // What the speed picker is retiming: the chosen range, else the whole timeline.
+  const srcDur = useRange ? Math.max(0, to - from) : total;
 
   const previewFrame = async () => {
     setFraming(true);
@@ -83,6 +107,8 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
         opts.from = from;
         opts.to = to;
       }
+      const sp = overrides?.speed ?? speed;
+      if (sp !== 1) opts.speed = sp;
       const { jobId: id } = await api.exportVideo(projectId, opts);
       setJobId(id);
       toast.info("Export started…");
@@ -171,6 +197,25 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
               ))}
             </SelectContent>
           </Select>
+        </ModalField>
+
+        <ModalField label="Speed">
+          <Select value={String(speed)} onValueChange={(v) => setSpeed(+v)}>
+            <SelectTrigger className="h-9 bg-panel-2 text-[13px]">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {SPEEDS.map((s) => (
+                <SelectItem key={s.value} value={String(s.value)}>
+                  {s.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="mt-1 text-[10px] text-muted-foreground">
+            Retimes the whole render — clips, captions and cursor effects together. Voices keep their pitch.
+            {speed !== 1 && ` Length: ${clock(srcDur)} → ${clock(srcDur / speed)}.`}
+          </p>
         </ModalField>
 
         <div className="space-y-3 rounded-lg bg-panel-2 p-3">

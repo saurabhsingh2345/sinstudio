@@ -3,7 +3,6 @@ import type { Keyframe } from "./types";
 import {
   centerOffset,
   centerOffsetIn,
-  clampPanOffset,
   contentBox,
   coverBox,
   videoToCanvas,
@@ -325,14 +324,25 @@ export function focusKeyframes(
   const cb = opts.cameraViewport ? coverBox(video, canvas) : contentBox(video, canvas);
   const px = (v: number) => (opts.cameraViewport ? videoToCanvas(v, cb.x0, cb.k) : cb.x0 + v * cb.k);
   const py = (v: number) => (opts.cameraViewport ? videoToCanvas(v, cb.y0, cb.k) : cb.y0 + v * cb.k);
-  const panX = (ox: number, scale: number) =>
-    opts.cameraViewport
-      ? clampPanOffset(ox, canvas.width, scale, cb.x0, cb.x1)
-      : centerOffsetIn(ox, canvas.width, scale, cb.x0, cb.x1);
-  const panY = (oy: number, scale: number) =>
-    opts.cameraViewport
-      ? clampPanOffset(oy, canvas.height, scale, cb.y0, cb.y1)
-      : centerOffsetIn(oy, canvas.height, scale, cb.y0, cb.y1);
+  /*
+   * Point → pan offset. ONE conversion for both viewports.
+   *
+   * centerOffsetIn answers "what offset brings this point to the middle of the
+   * frame", clamped so the frame never runs off the picture. Its bounds are
+   * derived from c0/c1, so cover-fit needs nothing special: coverBox's content
+   * hangs off the canvas (x0 < 0, x1 > width), which widens the bounds by
+   * exactly the overhang the camera is allowed to pan into.
+   *
+   * It briefly called clampPanOffset here instead, which computes the same
+   * bounds but takes an offset rather than a point — so a focus point was
+   * clamped as if it were already an offset. At 1.26x on a 1728 canvas the
+   * bound is ±224.6, so every focus point past x=225 (which is almost all of
+   * them) came out as the SAME number: the camera slammed to one corner on the
+   * first zoom and stayed welded there for the rest of the clip, no matter
+   * where the pointer went.
+   */
+  const panX = (ox: number, scale: number) => centerOffsetIn(ox, canvas.width, scale, cb.x0, cb.x1);
+  const panY = (oy: number, scale: number) => centerOffsetIn(oy, canvas.height, scale, cb.y0, cb.y1);
 
   // Each focus point becomes a held zoom; the shared compiler decides when to
   // pull back to full frame and when to pan straight across (see zoomPan.ts).

@@ -8,6 +8,8 @@
 // Everything here degrades. If the helper is not running you still get the
 // recording, just without the data cursor effects need.
 
+import type { SurfaceInset } from "./surfaceMatch";
+
 export const CURSORD_ORIGIN = "http://127.0.0.1:8791";
 
 export interface CursorHealth {
@@ -15,6 +17,13 @@ export interface CursorHealth {
   platform: string;
   supported: boolean;
   clicks: boolean;
+  /**
+   * Whether this helper can report window and display geometry. Absent on
+   * helpers built before that existed, which is why every use of it is a
+   * truthiness test: an old binary means whole-screen recordings only, exactly
+   * as before.
+   */
+  surfaces?: boolean;
   screen: { width: number; height: number };
 }
 
@@ -25,6 +34,25 @@ export interface CursorSample {
   down?: number; // 1 = left, 2 = right (bitmask)
 }
 
+/** A display or a window cursord can see, with its rectangle on the screen. */
+export interface CursorSurface {
+  id: string; // "display:1" | "window:11800"
+  kind: "display" | "window";
+  app?: string;
+  title?: string;
+  rect: { x: number; y: number; w: number; h: number };
+  front: number; // 0 = frontmost
+}
+
+/** Where the captured surface was at a moment. */
+export interface CursorBounds {
+  t: number; // epoch ms
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface CursorRecording {
   version: number;
   startedAt: number;
@@ -32,6 +60,10 @@ export interface CursorRecording {
   screen: { width: number; height: number };
   samples: CursorSample[];
   clicks: boolean;
+  /** Set when Studio told the helper what was being captured. */
+  surface?: CursorSurface;
+  /** That surface's rectangle over time. Empty when none was attached. */
+  bounds?: CursorBounds[];
 }
 
 // The sidecar Studio stores next to a recording. Times are milliseconds from
@@ -84,18 +116,63 @@ export async function stopCursorTracking(): Promise<CursorRecording | null> {
   }
 }
 
+/** Everything the helper can see being captured right now. */
+export async function listSurfaces(): Promise<CursorSurface[]> {
+  try {
+    const r = await fetch(`${CURSORD_ORIGIN}/surfaces`, { signal: timeout(2000) });
+    if (!r.ok) return [];
+    const body = (await r.json()) as { ok: boolean; surfaces: CursorSurface[] };
+    return body.ok ? body.surfaces ?? [] : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Tell the helper which surface the live session is capturing.
+ *
+ * From here it samples that rectangle alongside the pointer, so a window that
+ * is dragged mid-take keeps its effects.
+ */
+export async function attachSurface(id: string): Promise<CursorSurface | null> {
+  try {
+    const r = await fetch(`${CURSORD_ORIGIN}/surface`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id }),
+      signal: timeout(2000) as AbortSignal,
+    });
+    if (!r.ok) return null;
+    const body = (await r.json()) as { ok: boolean; surface: CursorSurface };
+    return body.ok ? body.surface : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Whether pointer coordinates can be placed in this recording's frame.
  *
- * cursord reports the pointer in whole-screen coordinates. That maps onto the
- * video only when the video *is* the whole screen. Sharing a window or a tab
- * gives a video whose origin is that surface's top-left, at an offset we have
- * no way to learn from inside the tab — so the honest answer there is no, and
- * the alternative (assuming an offset) would misplace every highlight by a
- * variable amount rather than failing visibly.
+ * The question used to be about the KIND of share: cursord reported the pointer
+ * in whole-screen coordinates, so only a whole-screen video was in the same
+ * space, and window or tab shares were refused. That refusal is why a window
+ * recording arrived with no auto-zoom, no click rings and no cursor at all.
+ *
+ * Now the question is about EVIDENCE. A session that was told what it was
+ * capturing carries that surface's rectangle over time, and every share maps
+ * the same way through it — a whole display being the case where the rectangle
+ * happens to be the display. A session with no surface falls back to the old
+ * rule, because whole-screen coordinates against a whole-screen video is the
+ * one case that needs no rectangle to be correct.
  */
-export function canMapToVideo(surface: string | undefined): boolean {
+export function canMapToVideo(surface: string | undefined, rec?: CursorRecording | null): boolean {
+  if (rec && hasSurfaceBounds(rec)) return true;
   return surface === "monitor";
+}
+
+/** Did this session actually record a rectangle to map through? */
+export function hasSurfaceBounds(rec: CursorRecording | null | undefined): boolean {
+  return !!rec?.bounds?.length && !!rec.surface;
 }
 
 /**
@@ -136,23 +213,49 @@ export function toSidecar(
   videoStartedAt: number,
   video: { width: number; height: number },
   cursorHidden = false,
-  crop?: CaptureCrop
+  crop?: CaptureCrop,
+  inset?: SurfaceInset
 ): CursorSidecar {
   // Scale against the WHOLE captured frame; a region is a window onto it, not a
   // smaller capture of the same screen.
   const frame = crop?.frame ?? video;
-  const sx = rec.screen.width > 0 ? frame.width / rec.screen.width : 1;
-  const sy = rec.screen.height > 0 ? frame.height / rec.screen.height : 1;
   const ox = crop?.x ?? 0;
   const oy = crop?.y ?? 0;
 
+  // The rectangle the pointer's coordinates are measured against. With a
+  // recorded surface it is that surface, moment by moment — which is what makes
+  // a window share, a second monitor and a window someone dragged mid-take all
+  // work. Without one it is the whole main screen, which is what every
+  // recording assumed before surfaces existed.
+  const bounds = insetBounds(rec.bounds, inset);
+  const fallback: CursorBounds =
+    rec.screen.width > 0 && rec.screen.height > 0
+      ? { t: 0, x: 0, y: 0, w: rec.screen.width, h: rec.screen.height }
+      : // A helper that could not read the screen at all. Passing the
+        // coordinates through unscaled is the only guess available, and it is
+        // right whenever the capture is at the display's own resolution.
+        { t: 0, x: 0, y: 0, w: frame.width, h: frame.height };
+
   const samples: CursorSample[] = [];
+  // Bounds are in ascending time and there are a handful of them, so walking a
+  // cursor forward alongside the samples costs nothing — a lookup per sample
+  // would be quadratic on a long take with a restless window.
+  let bi = 0;
   for (const s of rec.samples) {
     const t = s.t - videoStartedAt;
     if (t < 0) continue;
-    const x = Math.round(s.x * sx) - ox;
-    const y = Math.round(s.y * sy) - oy;
-    // A pointer outside the recorded region has no position in this video.
+    while (bi + 1 < bounds.length && bounds[bi + 1].t <= s.t) bi++;
+    const b = bounds.length ? bounds[bi] : fallback;
+    if (!(b.w > 0 && b.h > 0)) continue;
+    // Fraction of the surface, then pixels of the captured frame. Going through
+    // fractions is what makes this indifferent to the pixels-per-point gap: the
+    // surface is measured in points, the video in pixels, and neither number
+    // appears in the result.
+    const x = Math.round(((s.x - b.x) / b.w) * frame.width) - ox;
+    const y = Math.round(((s.y - b.y) / b.h) * frame.height) - oy;
+    // A pointer outside the recorded region has no position in this video —
+    // which now includes the pointer being outside the WINDOW being recorded,
+    // the common and correct case of reaching for something else mid-take.
     // Keeping it would place the highlight outside the clip's box, drawing it
     // over whatever else is on the canvas; dropping it holds the last position
     // inside the region instead, which is where the pointer was last seen.
@@ -162,4 +265,23 @@ export function toSidecar(
     samples.push(out);
   }
   return { version: 1, video, clicks: rec.clicks, hidden: cursorHidden, samples };
+}
+
+/**
+ * Shrink each recorded rectangle to the part actually captured.
+ *
+ * Only a tab share needs this: cursord tracks the browser *window* and the
+ * recording is its web contents. Applied per sample rather than once, so the
+ * viewport travels with a window that is moved.
+ */
+function insetBounds(bounds: CursorBounds[] | undefined, inset?: SurfaceInset): CursorBounds[] {
+  if (!bounds?.length) return [];
+  if (!inset || (!inset.left && !inset.top && !inset.right && !inset.bottom)) return bounds;
+  return bounds.map((b) => ({
+    t: b.t,
+    x: b.x + inset.left,
+    y: b.y + inset.top,
+    w: Math.max(1, b.w - inset.left - inset.right),
+    h: Math.max(1, b.h - inset.top - inset.bottom),
+  }));
 }

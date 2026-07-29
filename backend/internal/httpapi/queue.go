@@ -162,30 +162,31 @@ func (q *workQueue) worker(ch chan *task) {
 func (q *workQueue) Enqueue(ctx context.Context, payload any) (string, error) {
 	t := &task{Payload: payload}
 	var timeout time.Duration
+	var projID string
 
 	switch p := payload.(type) {
 	case exportPayload:
 		if err := q.prepExport(ctx, t, p); err != nil {
 			return "", err
 		}
-		t.Kind, t.Lane, timeout = kindExport, laneRender, exportTimeout
+		t.Kind, t.Lane, timeout, projID = kindExport, laneRender, exportTimeout, p.ProjID
 	case generatePayload:
 		if err := q.prepGenerate(ctx, t, p); err != nil {
 			return "", err
 		}
-		t.Kind, t.Lane, timeout = kindGenerate, lanePlugin, generateTimeout
+		t.Kind, t.Lane, timeout, projID = kindGenerate, lanePlugin, generateTimeout, p.ProjID
 	case rerenderPayload:
 		if err := q.prepRerender(ctx, t, p); err != nil {
 			return "", err
 		}
-		t.Kind, t.Lane, timeout = kindRerender, lanePlugin, generateTimeout
+		t.Kind, t.Lane, timeout, projID = kindRerender, lanePlugin, generateTimeout, p.ProjID
 	case transcribePayload:
-		t.Kind, t.Lane, timeout = kindTranscribe, laneTranscribe, transcribeTimeout
+		t.Kind, t.Lane, timeout, projID = kindTranscribe, laneTranscribe, transcribeTimeout, p.ProjID
 	case previewPayload:
 		if err := q.prepPreview(t, p); err != nil {
 			return "", err
 		}
-		t.Kind, t.Lane, timeout = kindPreview, lanePreview, previewTimeout
+		t.Kind, t.Lane, timeout, projID = kindPreview, lanePreview, previewTimeout, p.ProjID
 	default:
 		return "", fmt.Errorf("unknown task payload %T", payload)
 	}
@@ -195,6 +196,7 @@ func (q *workQueue) Enqueue(ctx context.Context, payload any) (string, error) {
 		return "", fmt.Errorf("no workers for lane %q", t.Lane)
 	}
 	t.job = q.srv.Jobs.NewQueued(t.Kind, timeout)
+	t.job.SetProject(projID)
 	q.remember(t)
 	ch <- t
 	return t.job.ID, nil
