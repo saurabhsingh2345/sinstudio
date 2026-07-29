@@ -278,6 +278,12 @@ export interface ExportOptions {
   to?: number;
   fps?: number;
   loudnorm?: boolean; // EBU R128 loudness normalization on the final mix
+  /**
+   * Playback rate of the WHOLE render: 2 = twice as fast (half as long), 0.5 =
+   * half speed. Absent/1 = as edited. Rides on top of the finished composite,
+   * so captions and cursor effects retime with it; audio keeps its pitch.
+   */
+  speed?: number;
 }
 
 export interface LibrarySource {

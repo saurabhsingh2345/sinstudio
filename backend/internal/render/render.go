@@ -32,6 +32,11 @@ type Options struct {
 	FPS      int     `json:"fps"`      // override output fps (0 = doc fps)
 	FrameAt  float64 `json:"frameAt"`  // >0: render a single PNG frame at this time
 	Loudnorm bool    `json:"loudnorm"` // apply EBU R128 loudness normalization to the mix
+	// Speed retimes the WHOLE finished video: 2 = twice as fast (half as long),
+	// 0.5 = half speed. 0 or 1 = as edited. Independent of per-clip Clip.Speed —
+	// this rides on top of the finished composite, so captions, cursor effects
+	// and camera moves all scale with it.
+	Speed float64 `json:"speed"`
 	// LUTDir is the directory holding a project's .cube LUT files (set server-side,
 	// never from the client). A clip's LUT name is resolved under it.
 	LUTDir string `json:"-"`
@@ -766,6 +771,10 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	outW, outH := presetDims(opts.Preset, w, h)
 	rangeActive := opts.From > 0 || (opts.To > 0 && opts.To < dur)
 	presetActive := outW != w || outH != h
+	// Whole-video retime. Frame grabs ignore it: a still has no tempo, and -ss
+	// below must keep addressing timeline seconds so the preview still matches.
+	speed := normalizeSpeed(opts.Speed)
+	speedActive := speed != 1 && opts.FrameAt <= 0
 	vlab := base // current video label
 	alab := "[amix]"
 
@@ -773,7 +782,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	// An audio-only project (music over a bare background) still builds a
 	// filtergraph, so the background must be routed through a passthrough too —
 	// otherwise the bare "[0:v]" input pad gets mapped as a filter label.
-	hasVideoGraph := len(visuals) > 0 || strings.Contains(fc.String(), "[c") || rangeActive || presetActive || gif || haveAudio || doc.Watermark != nil
+	hasVideoGraph := len(visuals) > 0 || strings.Contains(fc.String(), "[c") || rangeActive || presetActive || speedActive || gif || haveAudio || doc.Watermark != nil
 	if vlab == "[0:v]" && hasVideoGraph {
 		// route the bare bg through a passthrough so we can attach finalize filters
 		fmt.Fprintf(&fc, "[0:v]null[vpass];")
@@ -801,6 +810,29 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		if haveAudio {
 			fmt.Fprintf(&fc, "%satrim=start=%.3f:end=%.3f,asetpts=PTS-STARTPTS[ar];", alab, opts.From, rangeEnd(opts.To, dur))
 			alab = "[ar]"
+		}
+	}
+	// Retime the finished composite. This sits after the range trim (so From/To
+	// stay in timeline seconds) and before loudnorm, so the normalizer measures
+	// exactly what ships. Every earlier filter — captions, cursor sendcmd,
+	// keyframed camera moves — has already run in timeline time, so all of it
+	// simply rides along at the new rate.
+	if speedActive {
+		fmt.Fprintf(&fc, "%ssetpts=PTS/%.6f[vsp];", vlab, speed)
+		vlab = "[vsp]"
+		if haveAudio && !gif {
+			// atempo tops out at 2x per instance, so 8x is three of them chained —
+			// and chaining is what keeps the pitch put: atempo stretches time, not
+			// frequency, so a 2x export doesn't sound like chipmunks.
+			fc.WriteString(alab)
+			for i, t := range atempoChain(speed) {
+				if i > 0 {
+					fc.WriteString(",")
+				}
+				fmt.Fprintf(&fc, "atempo=%.4f", t)
+			}
+			fc.WriteString("[asp];")
+			alab = "[asp]"
 		}
 	}
 	// EBU R128 loudness normalization on the final mix (streaming target −16 LUFS).
@@ -846,6 +878,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	if rangeActive {
 		outDur = rangeEnd(opts.To, dur) - opts.From
 	}
+	outDur /= speed
 
 	args = append(args, codecArgs(opts.Format, haveAudio && !gif)...)
 	args = append(args, "-t", fmt.Sprintf("%.3f", outDur), "-r", fmt.Sprintf("%d", fps), outPath)
@@ -1499,6 +1532,15 @@ func Run(ctx context.Context, j *jobs.Job, plan *Plan) error {
 		return fmt.Errorf("no output produced")
 	}
 	return nil
+}
+
+// normalizeSpeed clamps a client-supplied whole-video rate to something ffmpeg
+// can actually render. 0 (field absent) means "as edited".
+func normalizeSpeed(s float64) float64 {
+	if s <= 0 {
+		return 1
+	}
+	return math.Min(10, math.Max(0.1, s))
 }
 
 // ffColor converts "#rrggbb" to ffmpeg's "0xRRGGBB"; passes names through.
