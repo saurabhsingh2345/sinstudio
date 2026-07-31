@@ -22,6 +22,21 @@ export function ProjectList({ onOpen }: { onOpen: (id: string) => void }) {
 
   const cls = `arc${theme === "dark" ? " arc-dark" : ""}`;
 
+  // Filter then sort, so the sort order applies to what's on screen rather than
+  // to a list the search has already hidden most of. This stays above the
+  // wizard's early return: a hook skipped on a later render is a hook-count
+  // mismatch, and React tears the whole list down rather than just this memo.
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = q ? projects.filter((p) => p.name.toLowerCase().includes(q)) : projects.slice();
+    if (sort === "name") {
+      list.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+    } else {
+      list.sort((a, b) => (b.updated || "").localeCompare(a.updated || ""));
+    }
+    return list;
+  }, [projects, query, sort]);
+
   if (creating) {
     return (
       <div className={cls}>
@@ -37,19 +52,6 @@ export function ProjectList({ onOpen }: { onOpen: (id: string) => void }) {
 
   const browse = () =>
     recentRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-
-  // Filter then sort, so the sort order applies to what's on screen rather than
-  // to a list the search has already hidden most of.
-  const shown = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const list = q ? projects.filter((p) => p.name.toLowerCase().includes(q)) : projects.slice();
-    if (sort === "name") {
-      list.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
-    } else {
-      list.sort((a, b) => (b.updated || "").localeCompare(a.updated || ""));
-    }
-    return list;
-  }, [projects, query, sort]);
 
   return (
     <div className={cls}>
