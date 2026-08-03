@@ -102,6 +102,64 @@ func TestRenameProject(t *testing.T) {
 	}
 }
 
+/*
+TestRenameAsset runs the same assertions against both backends, because
+RenameAsset is two separate implementations — a JSONB update and a read-modify-
+write of timeline.json — and a divergence between them is invisible until
+someone switches STUDIO_DATABASE_URL.
+*/
+func TestRenameAsset(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		open func(*testing.T) *Store
+	}{
+		{"local", localStore},
+		{"postgres", NewTest},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := tc.open(t)
+			ctx := context.Background()
+			doc := seedProject(t, s, "Proj")
+			before := doc.Version
+
+			got, err := s.RenameAsset(ctx, doc.ID, "asset_seed", "  Checkout flow  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Label != "Checkout flow" {
+				t.Fatalf("label=%q, want trimmed", got.Label)
+			}
+			// Everything else on the row belongs to whatever probed or generated
+			// it; a rename that dropped the path would orphan the media, and one
+			// that overwrote the name would lose what the file is really called.
+			if got.Name != "clip.mp4" || got.Path != doc.Assets[0].Path || got.Kind != "video" {
+				t.Fatalf("rename disturbed the rest of the asset: %+v", got)
+			}
+
+			fresh, err := s.GetProject(ctx, doc.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(fresh.Assets) != 1 || fresh.Assets[0].Label != "Checkout flow" {
+				t.Fatalf("persisted assets=%+v", fresh.Assets)
+			}
+			// Unlike a project rename this must NOT bump the revision: an asset
+			// write is not a timeline edit, and conflicting with the editor's own
+			// autosave on every keystroke is the bug that split the tables.
+			if fresh.Version != before {
+				t.Fatalf("revision moved %d → %d; an asset rename is not a timeline edit", before, fresh.Version)
+			}
+
+			if _, err := s.RenameAsset(ctx, doc.ID, "asset_seed", "   "); err == nil {
+				t.Fatal("empty name accepted")
+			}
+			if _, err := s.RenameAsset(ctx, doc.ID, "nope", "x"); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("unknown asset err=%v, want ErrNotFound", err)
+			}
+		})
+	}
+}
+
 func TestDuplicateProject(t *testing.T) {
 	s := localStore(t)
 	ctx := context.Background()

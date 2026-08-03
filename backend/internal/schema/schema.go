@@ -583,8 +583,15 @@ type Track struct {
 
 // Asset is an imported or generated media file registered to a project.
 type Asset struct {
-	ID        string  `json:"id"`
-	Name      string  `json:"name"`
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	// Label is the name a person typed for this asset, and it wins over every
+	// name derived from the file. Separate from Name on purpose: Name is
+	// provenance — the filename the ingest path built, which the media on disk
+	// is still called — and overwriting it to rename a clip in the editor would
+	// throw that away to change a caption. Empty means nobody has renamed this,
+	// so the derived label stands.
+	Label     string  `json:"label,omitempty"`
 	Kind      string  `json:"kind"` // video|audio|image
 	Path      string  `json:"path"` // relative to the media root
 	Duration  float64 `json:"duration"`

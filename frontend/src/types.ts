@@ -340,6 +340,10 @@ export interface Track {
 export interface Asset {
   id: string;
   name: string;
+  // The name a person typed for this asset; it wins over every derived one.
+  // Kept apart from `name` so renaming a clip in the editor doesn't destroy the
+  // record of what the file on disk is actually called. Absent = not renamed.
+  label?: string;
   kind: "video" | "audio" | "image";
   path: string;
   duration: number;
@@ -491,7 +495,11 @@ through, and it is the disambiguation that stops two files colliding on disk.
 What was wrong was showing it. `source` already records what a recording is, and
 is what the media panel's badge reads, so the label comes from there.
 */
-export function assetLabel(a: Pick<Asset, "name" | "source">): string {
+export function assetLabel(a: Pick<Asset, "name" | "source" | "label">): string {
+  // A name someone typed beats every name derived from a file, including the
+  // generic ones below — otherwise renaming a recording would appear to do
+  // nothing at all.
+  if (a.label?.trim()) return a.label.trim();
   const kind = /^recording-(screen|camera|mic)$/.exec(a.source ?? "")?.[1];
   if (kind) {
     return { screen: "Screen recording", camera: "Camera", mic: "Microphone" }[kind]!;

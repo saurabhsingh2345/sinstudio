@@ -68,6 +68,14 @@ export const api = {
     }
     return j<{ ok: boolean; version: number }>(res);
   },
+  // renameAsset changes an asset's display label only. Assets are not part of a
+  // document save (the server owns that set), so this is the only way the new
+  // name persists.
+  renameAsset: (projId: string, assetId: string, name: string) =>
+    fetch(`/api/projects/${projId}/assets/${encodeURIComponent(assetId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name }),
+    }).then((r) => j<{ asset: Asset }>(r)),
   deleteAsset: (projId: string, assetId: string) =>
     fetch(`/api/projects/${projId}/assets/${encodeURIComponent(assetId)}`, { method: "DELETE" }).then(
       (r) => j<{ ok: boolean }>(r)
