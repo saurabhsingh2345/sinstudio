@@ -58,8 +58,13 @@ func redactFilter(kind string, amount float64) string {
 writeRedaction emits one region's split/crop/resample/overlay and returns the
 label carrying the result, so regions chain: each one redacts the output of the
 last, and a clip may hide several things at once.
+
+clipStart and playDur are the clip's span on the timeline, used to turn the
+region's clip-local time bounds into the absolute seconds `enable` compares
+against — by this point the stream has been trimmed and setpts-shifted, so `t`
+is timeline time.
 */
-func writeRedaction(fc *strings.Builder, in string, vi, ri int, r schema.Redaction) string {
+func writeRedaction(fc *strings.Builder, in string, vi, ri int, r schema.Redaction, clipStart, playDur float64) string {
 	bg := fmt.Sprintf("[rb%d_%d]", vi, ri)
 	fg := fmt.Sprintf("[rf%d_%d]", vi, ri)
 	patch := fmt.Sprintf("[rp%d_%d]", vi, ri)
@@ -71,9 +76,19 @@ func writeRedaction(fc *strings.Builder, in string, vi, ri int, r schema.Redacti
 	// which ffmpeg rejects outright and would fail the whole export.
 	fmt.Fprintf(fc, "%scrop=w='max(2,iw*%.6f)':h='max(2,ih*%.6f)':x='iw*%.6f':y='ih*%.6f'%s%s;",
 		fg, r.W, r.H, r.X, r.Y, redactFilter(r.Kind, r.Amount), patch)
+	// A region bounded in time draws only inside its window; one that isn't
+	// emits the filtergraph unchanged, so nothing about the untimed case moves.
+	// enable gates the OVERLAY rather than the crop: the patch is cheap to make
+	// and always the same, and gating its production would leave overlay with
+	// nothing to composite outside the window.
+	enable := ""
+	if r.Timed(playDur) {
+		from, to := r.Window(clipStart, playDur)
+		enable = fmt.Sprintf(":enable='between(t,%.3f,%.3f)'", from, to)
+	}
 	// overlay's W/H are the *main* frame's, so the same fractions place the patch
 	// back exactly where it was cropped from.
-	fmt.Fprintf(fc, "%s%soverlay=x='W*%.6f':y='H*%.6f'%s;", bg, patch, r.X, r.Y, out)
+	fmt.Fprintf(fc, "%s%soverlay=x='W*%.6f':y='H*%.6f'%s%s;", bg, patch, r.X, r.Y, enable, out)
 	return out
 }
 

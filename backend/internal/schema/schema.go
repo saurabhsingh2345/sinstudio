@@ -244,6 +244,46 @@ type Redaction struct {
 
 	// Amount is 0..1 strength (0 = unset → a sensible default).
 	Amount float64 `json:"amount,omitempty"`
+
+	/*
+		Start/End bound the region to part of the clip, in CLIP-LOCAL seconds —
+		measured from the clip's Start, after speed, the same as Keyframe.T. That
+		is what lets a blur survive the clip being moved or split.
+
+		The thing being hidden usually appears and leaves: a password is typed and
+		the field is closed, a name shows until the page navigates. Covering the
+		whole clip for it means blurring a stretch of video that has nothing to
+		hide, which is the difference between a redaction and a smear.
+
+		Zero is "unset" at both ends, so the zero value is the whole clip and every
+		document written before this decodes to exactly what it did before. End is
+		therefore not usable as "stop at 0s", which is not a thing anyone wants.
+	*/
+	Start float64 `json:"start,omitempty"`
+	End   float64 `json:"end,omitempty"`
+}
+
+// Window resolves a region's time bounds against the clip's on-timeline span,
+// returning absolute seconds. Both zero values open out to the whole clip.
+func (r Redaction) Window(clipStart, playDur float64) (from, to float64) {
+	from = clipStart
+	if r.Start > 0 {
+		from = clipStart + r.Start
+	}
+	to = clipStart + playDur
+	if r.End > 0 && r.End < playDur {
+		to = clipStart + r.End
+	}
+	if to < from {
+		to = from
+	}
+	return from, to
+}
+
+// Timed reports whether a region covers less than the whole clip, so the
+// renderer can leave the filtergraph exactly as it was when it doesn't.
+func (r Redaction) Timed(playDur float64) bool {
+	return r.Start > 0 || (r.End > 0 && r.End < playDur)
 }
 
 // Fit modes: how a clip's picture is fitted to the canvas before its own
