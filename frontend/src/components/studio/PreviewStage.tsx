@@ -8,6 +8,7 @@ import {
   BarChart2,
   RotateCw,
   Crop,
+  Droplet,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -23,7 +24,7 @@ import { bubbleLayout } from "../../bubble";
 import { watermarkLayout, watermarkOpacity } from "../../watermark";
 import { trackBackgroundCSS } from "../../trackBackground";
 import { useStudio } from "../../state";
-import type { EditDoc } from "../../types";
+import type { EditDoc, Redaction } from "../../types";
 import { clipPlayDur, clipSrcDur, clickTimelineAt, mediaUrl } from "../../types";
 import { revealedText } from "../../titleAnim";
 import { getPeaks } from "../../peaks";
@@ -31,14 +32,49 @@ import { getCursorTrack, cursorTrackNow } from "../../cursorTracks";
 import { clickTimes, drawCursorFX } from "./cursor-draw";
 import { playClicksBetween } from "../../clickAudio";
 import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel } from "./preview-engine";
-import { cropLayout, fillsFrame, fitMode, sourceSize } from "../../crop";
-import { CropOverlay } from "./CropOverlay";
+import { cropLayout, fillsFrame, fitMode, isEmptyCrop, sourceSize } from "../../crop";
+import { CropOverlay, CropToolbar } from "./CropOverlay";
+import { RedactOverlay, RedactToolbar } from "./RedactOverlay";
+import { clampRedaction } from "../../redaction";
 import { CroppedMedia } from "./CroppedMedia";
 import { isZoomActive } from "../../zoomPan";
 import { isCameraClip } from "../../virtualCamera";
 import type { Selection } from "./selection";
 import { findClip } from "./selection";
 import { captionTrack, clipEnd, fmtTC, type AspectKey } from "./bridge";
+
+// One button on the stage toolbar. Labelled, not icon-only: an unexplained
+// glyph floating over the picture is a thing people never press.
+function StageTool({
+  icon: Icon,
+  label,
+  title,
+  active,
+  onClick,
+}: {
+  icon: typeof Crop;
+  label: string;
+  title: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={cn(
+        "flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium transition-colors",
+        active ? "bg-brand text-brand-foreground" : "text-muted-foreground hover:bg-panel-3 hover:text-foreground"
+      )}
+    >
+      <Icon className="h-3 w-3" /> {label}
+    </button>
+  );
+}
 
 export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; aspect: AspectKey; selection: Selection; total: number }) {
   const playing = useStudio((s) => s.playing);
@@ -51,6 +87,10 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
   const commitTransient = useStudio((s) => s.commitTransient);
   const croppingClip = useStudio((s) => s.croppingClip);
   const setCroppingClip = useStudio((s) => s.setCroppingClip);
+  const redactingClip = useStudio((s) => s.redactingClip);
+  const setRedactingClip = useStudio((s) => s.setRedactingClip);
+  const redactionIndex = useStudio((s) => s.redactionIndex);
+  const setRedactionIndex = useStudio((s) => s.setRedactionIndex);
 
   const W = doc.canvas.width;
   const H = doc.canvas.height;
@@ -353,13 +393,32 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
   // its move/scale handles step aside — two sets of drag targets over one
   // picture would be a coin toss about which one you grabbed.
   const selAsset = selClip ? doc.assets.find((a) => a.id === selClip.assetId) : undefined;
-  const cropping =
-    !!selClip && croppingClip === selClip.id && !!selAsset && selAsset.kind !== "audio" ? selClip : null;
-  // Leaving crop mode when the selection moves on, rather than leaving it armed
-  // for whatever gets clicked next.
+  const onPicture = !!selAsset && selAsset.kind !== "audio";
+  const cropping = !!selClip && croppingClip === selClip.id && onPicture ? selClip : null;
+  const redacting = !!selClip && redactingClip === selClip.id && onPicture ? selClip : null;
+  // Leaving either mode when the selection moves on, rather than leaving it
+  // armed for whatever gets clicked next.
   useEffect(() => {
     if (croppingClip && (!selClip || selClip.id !== croppingClip)) setCroppingClip(null);
-  }, [croppingClip, selClip, setCroppingClip]);
+    if (redactingClip && (!selClip || selClip.id !== redactingClip)) setRedactingClip(null);
+  }, [croppingClip, redactingClip, selClip, setCroppingClip, setRedactingClip]);
+
+  // The layout the selected clip's regions are measured against — the same one
+  // the media itself uses, so what is drawn and what is stored agree.
+  const redactLayout =
+    redacting && selAsset && selBox
+      ? cropLayout(
+          redacting.crop,
+          selAsset.width > 0 ? { width: selAsset.width, height: selAsset.height } : { width: W, height: H },
+          selBox.vw,
+          selBox.vh,
+          fitMode(redacting.fit, isCameraClip(redacting, selAsset) || isZoomActive(redacting, playhead))
+        )
+      : null;
+  const redactions = redacting?.redactions ?? [];
+  const selRegion = Math.min(redactionIndex, Math.max(0, redactions.length - 1));
+  const setRegions = (next: Redaction[]) =>
+    updateClip(selTrackId, redacting!.id, { redactions: next.length ? next : undefined });
 
   // Follows keyframed rotation so the selection box stays glued to the clip.
   const selRot = selBox?.rotation || 0;
@@ -737,8 +796,13 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                   >
                     <RedactionLayer
                       redactions={redactions}
-                      width={box.vw}
-                      height={box.vh}
+                      layout={cropLayout(
+                        clip.crop,
+                        asset.width > 0 ? { width: asset.width, height: asset.height } : { width: W, height: H },
+                        box.vw,
+                        box.vh,
+                        mode
+                      )}
                       sourceWidth={asset.width}
                     />
                   </div>
@@ -788,13 +852,33 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                 stageW={stage.w}
                 stageH={stage.h}
                 onBegin={beginTransient}
-                onChange={(crop) => updateClip(selTrackId, cropping.id, { crop })}
+                // A crop that trims nothing is stored as absent, not as four
+                // zeroes — same normalisation the Inspector does, so Reset there
+                // and Reset here leave the document in the same state.
+                onChange={(crop) =>
+                  updateClip(selTrackId, cropping.id, { crop: isEmptyCrop(crop) ? undefined : crop })
+                }
                 onCommit={commitTransient}
                 onDone={() => setCroppingClip(null)}
               />
             )}
 
-            {selBox && !cropping && (
+            {redacting && selAsset && selBox && redactLayout && (
+              <RedactOverlay
+                regions={redactions}
+                layout={redactLayout}
+                box={{ left: selBox.left, top: selBox.top, vw: selBox.vw, vh: selBox.vh, rotation: selRot }}
+                sourceWidth={selAsset.width}
+                selected={selRegion}
+                onSelect={setRedactionIndex}
+                onBegin={beginTransient}
+                onChange={setRegions}
+                onCommit={commitTransient}
+                onDone={() => setRedactingClip(null)}
+              />
+            )}
+
+            {selBox && !cropping && !redacting && (
               <div
                 onPointerDown={dragBox("move")}
                 className={cn("absolute ring-1 ring-brand", keyframed ? "cursor-not-allowed" : "cursor-move")}
@@ -815,29 +899,75 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                     >
                       <RotateCw className="h-3 w-3" />
                     </span>
-                    {/* Crop is reachable from the picture as well as from the
-                        Inspector: "cut the top off this" is something you decide
-                        while looking at the frame, not while reading a panel. */}
-                    {selAsset && selAsset.kind !== "audio" && (
-                      <button
-                        type="button"
-                        title="Crop this clip (C)"
-                        onPointerDown={(e) => e.stopPropagation()}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setCroppingClip(selClip!.id);
-                        }}
-                        className="absolute -top-9 left-[calc(50%+18px)] grid h-5 w-5 place-items-center rounded-full border border-brand bg-background text-brand hover:bg-brand hover:text-brand-foreground"
-                      >
-                        <Crop className="h-3 w-3" />
-                      </button>
-                    )}
                   </>
                 )}
               </div>
             )}
+
           </div>
         </div>
+
+        {/*
+          Clip tools, below the picture rather than on it.
+
+          Two reasons they are not hung off the selection box, which is where
+          they started. A screen recording fills the canvas, so its box IS the
+          frame and anything above that box lands outside the frame's
+          overflow-hidden — invisible in the commonest case there is. And the
+          edges a crop takes off are the top and bottom, so a bar floating there
+          covers the exact thing being aimed at.
+        */}
+        {selClip && selAsset && selAsset.kind !== "audio" && (
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            className="absolute bottom-1 left-1/2 z-20 max-w-full -translate-x-1/2 px-2"
+          >
+            {cropping ? (
+              <CropToolbar
+                asset={selAsset}
+                crop={cropping.crop}
+                fit={cropping.fit}
+                canvasAspect={ratio}
+                onBegin={beginTransient}
+                onChange={(crop) =>
+                  updateClip(selTrackId, cropping.id, { crop: isEmptyCrop(crop) ? undefined : crop })
+                }
+                onFit={(fit) => updateClip(selTrackId, cropping.id, { fit })}
+                onCommit={commitTransient}
+                onDone={() => setCroppingClip(null)}
+              />
+            ) : redacting ? (
+              <RedactToolbar
+                regions={redactions}
+                selected={selRegion}
+                onSelect={setRedactionIndex}
+                onPatch={(p) =>
+                  setRegions(redactions.map((r, i) => (i === selRegion ? clampRedaction({ ...r, ...p }) : r)))
+                }
+                onRemove={() => {
+                  setRegions(redactions.filter((_, i) => i !== selRegion));
+                  setRedactionIndex(Math.max(0, selRegion - 1));
+                }}
+                onDone={() => setRedactingClip(null)}
+              />
+            ) : (
+              <div className="flex items-center gap-0.5 rounded-full border hairline bg-panel/95 px-1.5 py-1 shadow-lg backdrop-blur">
+                <StageTool
+                  icon={Crop}
+                  label="Crop"
+                  title="Crop & fit this clip (C)"
+                  onClick={() => setCroppingClip(selClip.id)}
+                />
+                <StageTool
+                  icon={Droplet}
+                  label="Blur"
+                  title="Blur or pixelate part of this clip (B)"
+                  onClick={() => setRedactingClip(selClip.id)}
+                />
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex h-11 shrink-0 items-center gap-3 border-y hairline bg-panel/60 px-3">
