@@ -1,3 +1,4 @@
+import type { Rect } from "./crop";
 import type { Redaction, RedactKind } from "./types";
 
 // Region blur / pixelate — hiding a password, a name, a licence key.
@@ -68,4 +69,53 @@ export function normRedaction(r: Redaction): Redaction {
     w: Math.abs(r.w),
     h: Math.abs(r.h),
   });
+}
+
+/*
+ * Source fractions ⇄ stage pixels.
+ *
+ * A redaction's numbers are fractions of the clip's UNCROPPED source, because
+ * the renderer applies them before the crop — that is what stops trimming an
+ * edge from sliding a blur off the thing it was hiding.
+ *
+ * So the rectangle they describe is a rectangle of `cropLayout().media`, which
+ * is the whole source laid out in the clip's box, and NOT of the box itself.
+ * Measuring against the box is right only while there is no crop, and silently
+ * wrong the moment there is one: the preview shows the blur somewhere the export
+ * will not put it.
+ */
+
+/**
+ * Where a region lands, in px relative to the CROP WINDOW — the same space
+ * cropLayout's `media` is expressed in, because that is the element the region
+ * is glued to. Not the clip's box: under `fill` the window starts outside the
+ * box, and treating the two as the same shifts every region by that offset.
+ */
+export function redactionRect(r: Redaction, media: Rect): Rect {
+  return {
+    left: media.left + r.x * media.width,
+    top: media.top + r.y * media.height,
+    width: r.w * media.width,
+    height: r.h * media.height,
+  };
+}
+
+/** The inverse: a point in the clip's box, as a fraction of the source. */
+export function sourceFraction(bx: number, by: number, media: Rect): { x: number; y: number } {
+  return {
+    x: media.width > 0 ? (bx - media.left) / media.width : 0,
+    y: media.height > 0 ? (by - media.top) / media.height : 0,
+  };
+}
+
+/** The region described by dragging from one point to another, in box px. */
+export function redactionFromDrag(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  media: Rect,
+  kind: RedactKind = "blur"
+): Redaction {
+  const a = sourceFraction(from.x, from.y, media);
+  const b = sourceFraction(to.x, to.y, media);
+  return normRedaction({ kind, x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y, amount: 0.6 });
 }

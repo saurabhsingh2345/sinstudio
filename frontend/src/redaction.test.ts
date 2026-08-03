@@ -5,8 +5,12 @@ import {
   newRedaction,
   normRedaction,
   previewBlurPx,
+  redactionFromDrag,
+  redactionRect,
   redactionStrength,
+  sourceFraction,
 } from "./redaction";
+import { cropLayout } from "./crop";
 
 describe("redactionStrength", () => {
   // Mirrors redactionStrength() in redaction.go, including the 0-is-unset rule:
@@ -88,6 +92,119 @@ describe("normRedaction", () => {
     expect(r.y).toBeCloseTo(0.3, 6);
     expect(r.w).toBeCloseTo(0.2, 6);
     expect(r.h).toBeCloseTo(0.3, 6);
+  });
+});
+
+/*
+ * The mapping between a region's numbers and where it is drawn.
+ *
+ * A redaction is a fraction of the UNCROPPED source, because the renderer
+ * applies it before the crop. So it must be measured against cropLayout's
+ * `media` rect — the whole source laid out in the clip's box — and not against
+ * the box, which shows only what survived the crop.
+ */
+describe("redactionRect", () => {
+  const src = { width: 1920, height: 1080 };
+
+  it("places a region against the box when there is no crop", () => {
+    const { media } = cropLayout(undefined, src, 640, 360, "fit");
+    const r = redactionRect({ kind: "blur", x: 0.25, y: 0.5, w: 0.5, h: 0.25 }, media);
+    expect(r.left).toBeCloseTo(160, 4);
+    expect(r.top).toBeCloseTo(180, 4);
+    expect(r.width).toBeCloseTo(320, 4);
+    expect(r.height).toBeCloseTo(90, 4);
+  });
+
+  /*
+   * The case the box-relative version got wrong. Cropping the left 25% away and
+   * filling means the surviving picture is blown up by 4/3 and shifted left; a
+   * region at x=0.25 of the SOURCE is now at the very left edge of what is
+   * shown. Measured against the box it would still be drawn a quarter of the way
+   * in — over the wrong thing, while the export blurs the right one.
+   */
+  it("follows the picture when a crop shifts and scales it", () => {
+    const { media } = cropLayout({ left: 0.25 }, src, 640, 360, "stretch");
+    const r = redactionRect({ kind: "blur", x: 0.25, y: 0, w: 0.25, h: 1 }, media);
+    expect(r.left).toBeCloseTo(0, 3);
+    // The remaining 75% of the source is stretched across 640px, so a quarter of
+    // the source is now a third of the box.
+    expect(r.width).toBeCloseTo(640 / 3, 3);
+  });
+
+  /*
+   * The coordinate space, pinned.
+   *
+   * cropLayout's `media` is positioned relative to the crop WINDOW, not to the
+   * clip's box — the window is the element that hides the overflow, and the
+   * media hangs off its origin. So a region measured against `media` is already
+   * window-relative, and subtracting the window's offset again shifts every
+   * region by exactly that offset. Invisible under `fit` (where the window sits
+   * at the box's origin) and wrong under `fill`, which is the mode a crop most
+   * often ends in.
+   */
+  it("is measured in the same space as the media it sits on", () => {
+    const { window: win, media } = cropLayout({ left: 0.25 }, src, 640, 360, "fill");
+    // Filling a 16:9 box with a 4:3 picture overflows vertically, so the window
+    // starts above the box. This is the case the offset bug hid in.
+    expect(win.top).toBeCloseTo(-60, 3);
+    expect(media.top).toBeCloseTo(0, 3);
+
+    const r = redactionRect({ kind: "blur", x: 0.076, y: 0.179, w: 0.686, h: 0.118 }, media);
+    // Where the media element draws that fraction of the source, in the window.
+    expect(r.top).toBeCloseTo(media.top + 0.179 * media.height, 3);
+    expect(r.left).toBeCloseTo(media.left + 0.076 * media.width, 3);
+    // And emphatically NOT shifted by the window's own offset.
+    expect(r.top).not.toBeCloseTo(media.top + 0.179 * media.height - win.top, 1);
+  });
+
+  it("round-trips with sourceFraction", () => {
+    const { media } = cropLayout({ left: 0.1, top: 0.2 }, src, 800, 450, "fit");
+    const region = { kind: "blur" as const, x: 0.4, y: 0.6, w: 0.2, h: 0.1 };
+    const rect = redactionRect(region, media);
+    const back = sourceFraction(rect.left, rect.top, media);
+    expect(back.x).toBeCloseTo(region.x, 6);
+    expect(back.y).toBeCloseTo(region.y, 6);
+  });
+});
+
+describe("redactionFromDrag", () => {
+  const src = { width: 1920, height: 1080 };
+
+  it("turns a drag on the stage into source fractions", () => {
+    const { media } = cropLayout(undefined, src, 640, 360, "fit");
+    const r = redactionFromDrag({ x: 160, y: 90 }, { x: 480, y: 270 }, media);
+    expect(r.x).toBeCloseTo(0.25, 6);
+    expect(r.y).toBeCloseTo(0.25, 6);
+    expect(r.w).toBeCloseTo(0.5, 6);
+    expect(r.h).toBeCloseTo(0.5, 6);
+  });
+
+  // Dragging up-and-left is how half of people draw a box.
+  it("accepts a drag in any direction", () => {
+    const { media } = cropLayout(undefined, src, 640, 360, "fit");
+    const r = redactionFromDrag({ x: 480, y: 270 }, { x: 160, y: 90 }, media);
+    expect(r.x).toBeCloseTo(0.25, 6);
+    expect(r.w).toBeCloseTo(0.5, 6);
+  });
+
+  /*
+   * Drawn over what is on screen, stored against the source. With a crop in play
+   * these are different numbers, and storing the on-screen ones would move the
+   * blur off its target the moment the export ran.
+   */
+  it("stores source coordinates, not screen ones, under a crop", () => {
+    const { media } = cropLayout({ left: 0.5 }, src, 640, 360, "stretch");
+    // The far left of what is displayed is the middle of the source.
+    const r = redactionFromDrag({ x: 0, y: 0 }, { x: 64, y: 36 }, media);
+    expect(r.x).toBeCloseTo(0.5, 6);
+    expect(r.w).toBeCloseTo(0.05, 6);
+  });
+
+  it("never produces a region the renderer would drop", () => {
+    const { media } = cropLayout(undefined, src, 640, 360, "fit");
+    const r = redactionFromDrag({ x: 100, y: 100 }, { x: 100, y: 100 }, media);
+    expect(r.w).toBeGreaterThan(0);
+    expect(r.h).toBeGreaterThan(0);
   });
 });
 
