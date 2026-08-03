@@ -36,4 +36,31 @@ describe("assetLabel", () => {
   it("does not claim unrelated sources", () => {
     expect(assetLabel({ name: "a.mp4", source: "recording-screenshare" })).toBe("a");
   });
+
+  /*
+   * The derived names above are all fallbacks for a name nobody chose. Once
+   * someone renames an asset, showing "Screen recording" anyway makes the rename
+   * look broken — the field accepted the text and the list ignored it.
+   */
+  it("prefers a typed label over every derived name", () => {
+    expect(
+      assetLabel({
+        name: "recording-screen-20260722-045414.mp4",
+        source: "recording-screen",
+        label: "Chrome — checkout flow",
+      })
+    ).toBe("Chrome — checkout flow");
+    expect(assetLabel({ name: "intro-bumper.mp4", source: "funkycode", label: "Bumper" })).toBe("Bumper");
+  });
+
+  // A label is kept verbatim: it is not a filename, so it keeps its spaces and
+  // anything that merely looks like an extension.
+  it("keeps a label verbatim", () => {
+    expect(assetLabel({ name: "x.mp4", source: "", label: "  v2.final  " })).toBe("v2.final");
+  });
+
+  // A blank label is not a rename — fall through rather than showing nothing.
+  it("ignores an empty label", () => {
+    expect(assetLabel({ name: "x.webm", source: "recording-mic", label: "   " })).toBe("Microphone");
+  });
 });

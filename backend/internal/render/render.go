@@ -527,7 +527,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			// crop, too, so trimming an edge cannot slide a blur off the thing
 			// it was put there to hide.
 			for k, r := range v.redactions {
-				last = writeRedaction(&fc, last, i, k, r)
+				last = writeRedaction(&fc, last, i, k, r, v.start, v.end-v.start)
 			}
 			// Then the crop, so everything that frames the picture — device,
 			// bubble, backdrop, prefit — is framing what is left of it.

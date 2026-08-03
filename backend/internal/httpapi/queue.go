@@ -78,6 +78,7 @@ type (
 		AssetID string            `json:"assetId"`
 		Source  string            `json:"source"` // generator that produced the asset
 		Name    string            `json:"name"`
+		Label   string            `json:"label"` // user's rename, re-applied after the rebuild
 		Input   string            `json:"input"`
 		Params  map[string]string `json:"params"`
 	}
@@ -423,8 +424,12 @@ func (q *workQueue) runRerender(t *task, p rerenderPayload) (any, error) {
 			job.Log("could not remove previous render: " + err.Error())
 		}
 	}
+	// registerAsset builds a fresh asset from the file it just probed, so
+	// anything the editor put on the row has to be put back — otherwise a
+	// re-render silently reverts the clip's name to the generator's.
 	asset.GenInput = p.Input
 	asset.GenParams = p.Params
+	asset.Label = p.Label
 	if err := q.srv.Store.UpdateAsset(ctx, p.ProjID, *asset); err != nil {
 		return nil, err
 	}

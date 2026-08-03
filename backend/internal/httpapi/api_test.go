@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"studio/internal/jobs"
+	"studio/internal/schema"
 	"studio/internal/store"
 )
 
@@ -69,6 +71,56 @@ func TestProjectCRUD(t *testing.T) {
 	json.Unmarshal(w.Body.Bytes(), &list)
 	if len(list) != 1 {
 		t.Fatalf("list len = %d, want 1", len(list))
+	}
+}
+
+// TestRenameAssetRoute covers renaming a media item from the editor's media
+// panel. Assets are excluded from a document save, so this endpoint is the only
+// thing that makes the new label survive a reload.
+func TestRenameAssetRoute(t *testing.T) {
+	s := testServer(t, "")
+	h := s.Routes()
+
+	w := do(h, "POST", "/api/projects", "", map[string]string{"name": "Proj"})
+	var created struct {
+		ID string `json:"id"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &created)
+
+	asset := schema.Asset{ID: "a1", Name: "recording-screen-2026.mp4", Kind: "video", Path: "x.mp4"}
+	if err := s.Store.AddAsset(context.Background(), created.ID, asset); err != nil {
+		t.Fatal(err)
+	}
+
+	base := "/api/projects/" + created.ID + "/assets/"
+	w = do(h, "PATCH", base+"a1", "", map[string]string{"name": "Checkout flow"})
+	if w.Code != 200 {
+		t.Fatalf("rename = %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Asset schema.Asset `json:"asset"`
+	}
+	json.Unmarshal(w.Body.Bytes(), &got)
+	if got.Asset.Label != "Checkout flow" {
+		t.Fatalf("rename returned %+v", got.Asset)
+	}
+
+	w = do(h, "GET", "/api/projects/"+created.ID, "", nil)
+	var doc schema.EditDoc
+	json.Unmarshal(w.Body.Bytes(), &doc)
+	if len(doc.Assets) != 1 || doc.Assets[0].Label != "Checkout flow" {
+		t.Fatalf("reloaded assets = %+v", doc.Assets)
+	}
+	// The file is still called what it is called.
+	if doc.Assets[0].Name != "recording-screen-2026.mp4" {
+		t.Fatalf("rename overwrote the filename: %q", doc.Assets[0].Name)
+	}
+
+	if w := do(h, "PATCH", base+"a1", "", map[string]string{"name": "  "}); w.Code != 400 {
+		t.Fatalf("blank rename = %d, want 400", w.Code)
+	}
+	if w := do(h, "PATCH", base+"nope", "", map[string]string{"name": "x"}); w.Code != 404 {
+		t.Fatalf("rename missing asset = %d, want 404", w.Code)
 	}
 }
 

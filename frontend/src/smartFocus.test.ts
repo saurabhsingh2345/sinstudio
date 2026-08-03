@@ -8,6 +8,7 @@ import {
   findFocusSegments,
   focusKeyframes,
   followPath,
+  segmentTravel,
   smartFocus,
   type SmartFocusOptions,
 } from "./smartFocus";
@@ -654,5 +655,83 @@ describe("following the cursor within a hold", () => {
       expect(Math.abs(x)).toBeLessThanOrEqual((canvas.width * (s - 1)) / 2 + 1e-6);
       expect(Math.abs(y)).toBeLessThanOrEqual((canvas.height * (s - 1)) / 2 + 1e-6);
     }
+  });
+});
+
+/*
+ * Pulling the zoom back when the pointer is travelling.
+ *
+ * A parked pointer is someone showing you a thing, and pushing in helps. A
+ * moving pointer is someone going somewhere, and pushing in on that is the shot
+ * that makes people queasy — the subject leaves frame as fast as the camera can
+ * chase it, on a screen whose edges the viewer can no longer see.
+ */
+describe("a travelling pointer is zoomed less", () => {
+  // Two otherwise identical dwells: one parked, one drifting right across the
+  // frame. Same duration, same clicks, same everything the detector reads.
+  const track = (drift: number) => {
+    const samples: { t: number; x: number; y: number; down?: number }[] = [];
+    for (let i = 0; i <= 24; i++) {
+      samples.push({ t: 1000 + i * 120, x: 400 + i * drift, y: 500 });
+    }
+    samples.push({ t: 1100, x: 400, y: 500, down: 1 });
+    samples.push({ t: 1160, x: 400, y: 500, down: 0 });
+    return { samples: samples.sort((a, b) => a.t - b.t), video: { width: 1920, height: 1080 } };
+  };
+
+  const zoomOf = (drift: number) => {
+    const segs = findFocusSegments(track(drift), 12, SMART_FOCUS_DEFAULTS);
+    expect(segs.length).toBeGreaterThan(0);
+    return segs[0]!;
+  };
+
+  it("halves the zoom's excess over full frame while the pointer travels", () => {
+    const parked = zoomOf(0);
+    const moving = zoomOf(40); // 24 * 40 = 960px, well past the threshold
+    expect(parked.moving).toBeFalsy();
+    expect(moving.moving).toBe(true);
+    // Half the EXCESS, not half the number — half of 1.35 would be 0.675, which
+    // is smaller than the frame and would show the background.
+    expect(moving.zoom! - 1).toBeCloseTo((parked.zoom! - 1) / 2, 3);
+    expect(moving.zoom!).toBeGreaterThan(1);
+  });
+
+  it("still zooms — this calms the camera, it does not switch it off", () => {
+    expect(zoomOf(40).zoom!).toBeGreaterThan(1.1);
+  });
+
+  it("leaves a pointer that only fidgets at full depth", () => {
+    // A few pixels of jitter is reading a line, not going somewhere.
+    expect(zoomOf(2).moving).toBeFalsy();
+  });
+
+  it("measures travel in the recording's own pixels, not the reference", () => {
+    // The same gesture on a 4K capture covers twice the pixels, and must not
+    // therefore count as travel when the 1080p version of it does not.
+    const hidpi = { samples: track(2).samples.map((s) => ({ ...s, x: s.x * 2, y: s.y * 2 })), video: { width: 3840, height: 2160 } };
+    expect(findFocusSegments(hidpi, 12, SMART_FOCUS_DEFAULTS)[0]!.moving).toBeFalsy();
+  });
+});
+
+describe("segmentTravel", () => {
+  const seg = { start: 1, end: 3, x: 100, y: 100 };
+  const at = (t: number, x: number, y: number) => ({ t: t * 1000, x, y });
+
+  it("reports how far the pointer got from the segment's aim", () => {
+    const s = [at(1, 100, 100), at(2, 400, 100), at(3, 100, 100)];
+    expect(segmentTravel(s, seg)).toBeCloseTo(300, 6);
+  });
+
+  // The furthest excursion, not the path length: a pointer jiggling around one
+  // spot for four seconds covers ground without going anywhere, and pulling the
+  // zoom back for that would be reading noise.
+  it("ignores distance covered going nowhere", () => {
+    const s = [at(1, 100, 100), at(1.5, 110, 100), at(2, 100, 100), at(2.5, 110, 100), at(3, 100, 100)];
+    expect(segmentTravel(s, seg)).toBeCloseTo(10, 6);
+  });
+
+  it("ignores samples outside the segment", () => {
+    const s = [at(0, 900, 900), at(2, 100, 100), at(9, 900, 900)];
+    expect(segmentTravel(s, seg)).toBeCloseTo(0, 6);
   });
 });

@@ -78,7 +78,7 @@ func TestRedactionFiltergraph(t *testing.T) {
 	var fc strings.Builder
 	out := writeRedaction(&fc, "[in]", 0, 0, schema.Redaction{
 		Kind: schema.RedactBlur, X: 0.25, Y: 0.5, W: 0.3, H: 0.2, Amount: 0.5,
-	})
+	}, 0, 10)
 	g := fc.String()
 
 	for _, want := range []string{
@@ -96,11 +96,78 @@ func TestRedactionFiltergraph(t *testing.T) {
 	}
 }
 
+/*
+A region bounded in time draws only inside its window.
+
+The thing being hidden usually appears and leaves — a password is typed and the
+field closes — so covering the whole clip for it blurs a stretch of video with
+nothing to hide.
+*/
+func TestRedactionTimeWindow(t *testing.T) {
+	// Clip sitting at 4s on the timeline, 10s long; region live from 2s to 6s
+	// into it. The gate is in timeline seconds, because by this point the
+	// stream has been setpts-shifted onto the timeline.
+	var fc strings.Builder
+	writeRedaction(&fc, "[in]", 0, 0, schema.Redaction{
+		Kind: schema.RedactBlur, W: 0.2, H: 0.2, Start: 2, End: 6,
+	}, 4, 10)
+	g := fc.String()
+
+	if !strings.Contains(g, "enable='between(t,6.000,10.000)'") {
+		t.Errorf("region should be gated to its own window in timeline time\ngot: %s", g)
+	}
+	// The gate belongs on the overlay: the patch is always the same, and gating
+	// its production would leave overlay nothing to composite outside the window.
+	if !strings.Contains(g, "overlay=") || strings.Contains(g, "crop=w='max(2,iw*0.200000)':h='max(2,ih*0.200000)':x='iw*0.000000':y='ih*0.000000':enable") {
+		t.Errorf("enable should gate the overlay, not the crop\ngot: %s", g)
+	}
+}
+
+// An unbounded region must emit exactly the filtergraph it always did, so
+// adding time bounds cannot change a single existing export.
+func TestRedactionWithoutTimeWindowIsUnchanged(t *testing.T) {
+	var fc strings.Builder
+	writeRedaction(&fc, "[in]", 0, 0, schema.Redaction{Kind: "blur", W: 0.2, H: 0.2}, 4, 10)
+	if g := fc.String(); strings.Contains(g, "enable") {
+		t.Errorf("an unbounded region should not be gated at all\ngot: %s", g)
+	}
+	// An End past the clip's own length is not a bound, it's the whole clip.
+	var fc2 strings.Builder
+	writeRedaction(&fc2, "[in]", 0, 0, schema.Redaction{Kind: "blur", W: 0.2, H: 0.2, End: 99}, 4, 10)
+	if g := fc2.String(); strings.Contains(g, "enable") {
+		t.Errorf("End beyond the clip is not a bound\ngot: %s", g)
+	}
+}
+
+func TestRedactionWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		r          schema.Redaction
+		start, dur float64
+		from, to   float64
+	}{
+		{"unset is the whole clip", schema.Redaction{}, 4, 10, 4, 14},
+		{"start only runs to the clip's end", schema.Redaction{Start: 2}, 4, 10, 6, 14},
+		{"end only runs from the clip's start", schema.Redaction{End: 3}, 4, 10, 4, 7},
+		{"both", schema.Redaction{Start: 2, End: 6}, 4, 10, 6, 10},
+		// A window inverted by trimming the clip shorter collapses rather than
+		// emitting between(t,8,5), which ffmpeg reads as never.
+		{"inverted collapses", schema.Redaction{Start: 8, End: 5}, 0, 10, 8, 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			from, to := tc.r.Window(tc.start, tc.dur)
+			if from != tc.from || to != tc.to {
+				t.Fatalf("Window = (%v, %v), want (%v, %v)", from, to, tc.from, tc.to)
+			}
+		})
+	}
+}
+
 // Several regions chain, so a clip can hide more than one thing.
 func TestRedactionsChain(t *testing.T) {
 	var fc strings.Builder
-	a := writeRedaction(&fc, "[in]", 0, 0, schema.Redaction{Kind: "blur", W: 0.2, H: 0.2})
-	b := writeRedaction(&fc, a, 0, 1, schema.Redaction{Kind: "pixelate", X: 0.5, W: 0.2, H: 0.2})
+	a := writeRedaction(&fc, "[in]", 0, 0, schema.Redaction{Kind: "blur", W: 0.2, H: 0.2}, 0, 10)
+	b := writeRedaction(&fc, a, 0, 1, schema.Redaction{Kind: "pixelate", X: 0.5, W: 0.2, H: 0.2}, 0, 10)
 	g := fc.String()
 
 	if a == b {
@@ -205,6 +272,54 @@ func TestRedactionDestroysDetailInTheExport(t *testing.T) {
 					hidden, visible)
 			}
 		})
+	}
+}
+
+/*
+The whole point of a time window: the blur is really gone afterwards.
+
+A gate that merely looked right in the filtergraph would be worth very little —
+this renders two frames of the same export, one inside the region's window and
+one after it, and checks the detail comes back.
+*/
+func TestRedactionTimeWindowInTheExport(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	const W, H = 320, 180
+	dir := t.TempDir()
+	src := filepath.Join(dir, "stripes.mp4")
+	stripeSource(t, src, W, H)
+
+	// The stripe source is 2s, so: a 2s clip whose left half is blurred for only
+	// its first second.
+	doc := func() *schema.EditDoc {
+		return &schema.EditDoc{
+			Canvas: schema.Canvas{Width: W, Height: H, FPS: 15},
+			Tracks: []schema.Track{{ID: "v", Kind: schema.TrackVideo, Clips: []schema.Clip{{
+				ID: "c1", AssetID: "a", Start: 0, In: 0, Out: 2,
+				Transform:  schema.Transform{Scale: 1, Opacity: 1},
+				Redactions: []schema.Redaction{{Kind: schema.RedactBlur, X: 0, Y: 0, W: 0.5, H: 1, Amount: 0.8, End: 1}},
+			}}}},
+		}
+	}
+
+	left := func(frame string) float64 { return edgeEnergy(t, frame, 10, 20, W/2-10, H-20) }
+	right := func(frame string) float64 { return edgeEnergy(t, frame, W/2+10, 20, W-10, H-20) }
+
+	during := renderFrame(t, doc(), src, dir, 0.5)
+	after := renderFrame(t, doc(), src, dir, 1.5)
+
+	if right(during) < 1 {
+		t.Fatalf("the un-redacted half has no detail either — bad source")
+	}
+	if left(during) > right(during)/4 {
+		t.Errorf("inside the window the region should be hidden: %.3f vs %.3f", left(during), right(during))
+	}
+	// And after it, the same pixels are back — otherwise the window did nothing
+	// and the region simply covers the clip as it always did.
+	if left(after) < right(after)/2 {
+		t.Errorf("after the window the region should be clear again: %.3f vs %.3f", left(after), right(after))
 	}
 }
 

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { autoFrame } from "./autoFrame";
-import { smartFocus } from "./smartFocus";
+import { SMART_FOCUS_DEFAULTS, smartFocus } from "./smartFocus";
+import { VIRTUAL_CAMERA_OPTS } from "./virtualCamera";
 import { kfValue } from "./components/studio/preview-engine";
 import realTrack from "./__fixtures__/recording.cursor.json";
 
@@ -35,12 +36,31 @@ describe("autoFrame on a real recording", () => {
     expect(r!.patch.cursor?.clicks).toBeDefined();
   });
 
+  /*
+   * The shape of the move, not a particular depth.
+   *
+   * This recording's pointer travels most of the way across the capture during
+   * its one focus segment, so the camera deliberately pulls its zoom back — see
+   * "a travelling pointer is zoomed less" in smartFocus.test.ts. Asserting a
+   * fixed depth here would be asserting the tuning, and would have to be edited
+   * every time the camera is calmed or sharpened. What must hold regardless is
+   * that there IS a push-in and that it returns to full frame.
+   */
   it("writes a zoom that goes in and comes back to full frame", () => {
     const r = autoFrame({ hasCursor: true }, {}, track, 3.685, canvas)!;
     const scale = r.patch.keyframes!.scale!;
-    expect(Math.max(...scale.map((k) => k.value))).toBeGreaterThan(1.2);
+    expect(Math.max(...scale.map((k) => k.value))).toBeGreaterThan(1.1);
     expect(scale[0]!.value).toBeCloseTo(1, 6);
     expect(scale[scale.length - 1]!.value).toBeCloseTo(1, 6);
+  });
+
+  // And the reason its zoom is shallow is the rule, not an accident of tuning.
+  it("reads this recording as one the pointer travels across", () => {
+    const { segments } = smartFocus(track as never, 3.685, canvas, {
+      ...SMART_FOCUS_DEFAULTS,
+      ...VIRTUAL_CAMERA_OPTS,
+    });
+    expect(segments.some((s) => s.moving)).toBe(true);
   });
 
   // The capture is 2072 wide, not the 1920 the radii are quoted at. Before the

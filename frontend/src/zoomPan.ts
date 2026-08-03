@@ -294,6 +294,25 @@ export const PAN_PEAK = 1.9;
 const HOLD_GIVE = 0.4;
 const AUTO_HOLD_GIVE = 0.55;
 
+/*
+The gap that has to open up before the camera bothers pulling back to full frame.
+
+Between two holds the camera can either pull out to 1 and push back in, or stay
+zoomed and pan across. Panning is almost always the better shot: it keeps the
+subject at a readable size and reads as one continuous move, where out-and-in
+reads as two cuts and a lurch.
+
+The condition used to be "is there room for both ramps", i.e. about 1.8s — which
+on a real recording is most gaps, so the camera pumped in and out every few
+seconds for the whole take. That is the single biggest reason auto-framing felt
+like too much. Requiring a genuinely long pause means a pull-out now says
+something ("we have finished with that area") instead of happening by default.
+
+Only the auto camera uses it. Manual zoom stops are placed deliberately, and a
+person who put two of them 2s apart meant two zooms.
+*/
+export const AUTO_PULLOUT_GAP = 3.0;
+
 /**
  * Compile held zooms into scale/x/y keyframes.
  *
@@ -324,6 +343,22 @@ export function zoomKeyframes(
 
   const camSpeed = speedAware ? AUTO_CAM_SPEED : MAX_CAM_SPEED;
   const holdGive = speedAware ? AUTO_HOLD_GIVE : HOLD_GIVE;
+  /*
+   * Does the camera pull back to full frame between these two holds, or stay
+   * zoomed and pan across?
+   *
+   * Both the gap-widening pass and the emitter ask this, and they have to agree:
+   * if one decides "pan" and the other "pull out", a pan gets widened into a gap
+   * that then renders as a pull-out, and the hold it stole time from is short
+   * for nothing.
+   */
+  const pullsOut = (prev: { end: number; ramp: number }, h: { start: number; ramp: number }) => {
+    const gap = h.start - prev.end;
+    // Room for both ramps is necessary either way — without it there is no
+    // pull-out to render, only a snap.
+    if (gap < prev.ramp + h.ramp) return false;
+    return speedAware ? gap >= AUTO_PULLOUT_GAP : true;
+  };
 
   const pushKf = (arr: Keyframe[], t: number, value: number, ease: string) => {
     const tt = +Math.max(0, Math.min(duration, t)).toFixed(3);
@@ -403,7 +438,7 @@ export function zoomKeyframes(
       const prev = sorted[i - 1];
       const h = sorted[i];
       const gap = h.start - prev.end;
-      if (gap >= prev.ramp + h.ramp) continue; // pulls out to full frame instead
+      if (pullsOut(prev, h)) continue; // pulls out to full frame instead
       const from = prev.path?.length ? prev.path[prev.path.length - 1] : prev;
       const dist = Math.hypot(h.x - from.x, h.y - from.y);
       const need = (PAN_PEAK * dist) / (camSpeed * canvas!.width);
@@ -447,7 +482,7 @@ export function zoomKeyframes(
       }
       atPan(h.start, h.x, h.y, "linear");
       atScale(h.start, h.scale, "linear");
-    } else if (h.start - prev.end >= prev.ramp + h.ramp) {
+    } else if (pullsOut(prev, h)) {
       const pullAt = prev.end + prev.ramp;
       atAll(pullAt, 1, 0, 0, out(h), out(h));
       const inStart = Math.max(pullAt, h.start - h.ramp);

@@ -8,9 +8,11 @@ import { buildMotionPreset, type MotionPreset } from "./motionPresets";
 import { clearPeaks } from "./peaks";
 import { rippleCutTrackClips } from "./rippleCut";
 import { cutClipSilences, planSilenceCuts, type SilenceSpan } from "./silence";
+import { splitRedactions } from "./redaction";
 import { applySpeedup, planSpeedup, type IdleSpan } from "./idle";
 import { clearCursorTracks } from "./cursorTracks";
 import { restack, type RestackMode } from "./clipZ";
+import { toast } from "./toast";
 
 interface StudioState {
   doc: EditDoc | null;
@@ -34,6 +36,12 @@ interface StudioState {
   // state: it lives here so the Inspector's Crop section and the preview's drag
   // handles are the same mode rather than two switches that can disagree.
   croppingClip: string | null;
+  // The clip whose blur regions are being drawn on the canvas, and which of them
+  // is selected. Same reasoning as croppingClip — the Inspector's Redact section
+  // and the preview's drag handles have to be one mode, not two switches that
+  // can disagree. Mutually exclusive with cropping: both own the picture.
+  redactingClip: string | null;
+  redactionIndex: number;
 
   load: (id: string) => Promise<void>;
   save: () => Promise<void>;
@@ -50,6 +58,7 @@ interface StudioState {
 
   addAsset: (a: Asset) => void;
   updateAsset: (a: Asset) => void;
+  renameAsset: (assetId: string, name: string) => void;
   removeAsset: (assetId: string) => void;
   addClip: (trackId: string, assetId: string, start: number) => void;
   addClipToLane: (assetId: string, start?: number) => void;
@@ -124,6 +133,8 @@ interface StudioState {
   setZoom: (px: number) => void;
   setSnapLine: (t: number | null) => void;
   setCroppingClip: (clipId: string | null) => void;
+  setRedactingClip: (clipId: string | null) => void;
+  setRedactionIndex: (i: number) => void;
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -152,6 +163,8 @@ export const useStudio = create<StudioState>((set, get) => ({
   pxPerSec: 80,
   snapLine: null,
   croppingClip: null,
+  redactingClip: null,
+  redactionIndex: 0,
 
   load: async (id) => {
     const doc = await api.getProject(id);
@@ -300,6 +313,39 @@ export const useStudio = create<StudioState>((set, get) => ({
         if (touched && t.kind === "video") reflowClips(t);
       }
     }),
+
+  // renameAsset sets an asset's display label. Like removeAsset it has to go to
+  // the server itself — the asset set is not part of a document save — but unlike
+  // it this is not a timeline edit, so it deliberately does NOT go through
+  // mutate(): a rename has no business landing in the undo stack alongside real
+  // edits, and triggering an autosave per keystroke is worse than free.
+  renameAsset: (assetId, label) => {
+    const trimmed = label.trim();
+    const doc = get().doc;
+    if (!trimmed || !doc) return;
+    const asset = doc.assets.find((a) => a.id === assetId);
+    if (!asset || (asset.label ?? "") === trimmed) return;
+    const before = asset.label;
+    const setLabel = (to: string | undefined) =>
+      set((s) =>
+        s.doc
+          ? {
+              doc: {
+                ...s.doc,
+                assets: s.doc.assets.map((a) => (a.id === assetId ? { ...a, label: to } : a)),
+              },
+            }
+          : s
+      );
+    setLabel(trimmed);
+    // Put the old label back if the server refused it. A name that survives on
+    // screen but not on disk reappears as the old one after any reload, with
+    // nothing to say why.
+    api.renameAsset(doc.id, assetId, trimmed).catch((e) => {
+      setLabel(before);
+      toast.error(`Rename failed: ${(e as Error).message}`);
+    });
+  },
 
   // removeAsset drops the asset's clips from the timeline (a document edit) AND
   // deletes the asset itself (a separate resource now). Filtering it out of
@@ -525,7 +571,18 @@ export const useStudio = create<StudioState>((set, get) => ({
                 .filter((p) => p.t >= -1e-6);
               if (shifted.length) rightKf[prop] = shifted;
             }
-            list.push({ ...c, out: srcCut, fadeOut: 0, transitionOut: undefined });
+            // Redaction windows are clip-local too, so they need the same
+            // treatment — otherwise splitting a clip slides every timed blur off
+            // the moment it was covering, which for a redaction means exposing
+            // the thing it was hiding.
+            const wholeDur = (c.out - c.in) / sp;
+            list.push({
+              ...c,
+              out: srcCut,
+              fadeOut: 0,
+              transitionOut: undefined,
+              redactions: splitRedactions(c.redactions, 0, off, wholeDur),
+            });
             list.push({
               ...c,
               id: newId("clip_"),
@@ -534,6 +591,7 @@ export const useStudio = create<StudioState>((set, get) => ({
               fadeIn: 0,
               transitionIn: undefined,
               keyframes: Object.keys(rightKf).length ? rightKf : undefined,
+              redactions: splitRedactions(c.redactions, off, wholeDur, wholeDur),
             });
           } else {
             list.push(c);
@@ -1118,7 +1176,11 @@ export const useStudio = create<StudioState>((set, get) => ({
   setPlaying: (p) => set({ playing: p }),
   setZoom: (px) => set({ pxPerSec: Math.min(400, Math.max(4, px)) }),
   setSnapLine: (t) => set({ snapLine: t }),
-  setCroppingClip: (clipId) => set({ croppingClip: clipId }),
+  // The two canvas modes are exclusive: each wants the whole picture, and two
+  // sets of drag targets over one frame is a coin toss about which you grabbed.
+  setCroppingClip: (clipId) => set({ croppingClip: clipId, redactingClip: null }),
+  setRedactingClip: (clipId) => set({ redactingClip: clipId, croppingClip: null, redactionIndex: 0 }),
+  setRedactionIndex: (i) => set({ redactionIndex: i }),
 }));
 
 // unmuteOrphanedSources restores audio on video clips whose detached-audio clip

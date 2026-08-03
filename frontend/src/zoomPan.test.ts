@@ -638,3 +638,63 @@ describe("hand-placed zooms on a mismatched recording", () => {
     expect(back[0].rect.x + back[0].rect.w).toBeLessThanOrEqual(cb.x1 + 0.5);
   });
 });
+
+/*
+ * Whether the camera pulls back to full frame between two holds, or stays
+ * zoomed and pans across.
+ *
+ * Panning is nearly always the better shot: it keeps the subject readable and
+ * reads as one continuous move, where out-and-in reads as two cuts and a lurch.
+ * The old rule pulled out whenever there was room for both ramps — about 1.8s,
+ * which on a real recording is most gaps — so the camera pumped in and out for
+ * the whole take. That is what "too much zooming in and out" was.
+ */
+describe("pulling back to full frame", () => {
+  const canvas = { width: 1920, height: 1080 };
+  const hold = (start: number, end: number, x: number) => ({
+    start,
+    end,
+    scale: 1.4,
+    x,
+    y: 0,
+    ramp: 0.6,
+    ease: "easeInOut",
+  });
+  // Does the camera reach full frame at any point strictly between the holds?
+  const pullsOutBetween = (kf: Keyframe[], from: number, to: number) => {
+    for (let t = from; t <= to; t += 0.02) if (kfValue(kf, t) <= 1.0001) return true;
+    return false;
+  };
+
+  it("stays zoomed and pans across an ordinary gap", () => {
+    // 2.2s apart: room for both 0.6s ramps, so the old rule pulled out here.
+    const { scale } = zoomKeyframes([hold(2, 4, -200), hold(6.2, 8, 200)], 12, canvas, true);
+    expect(pullsOutBetween(scale, 4.05, 6.15)).toBe(false);
+  });
+
+  it("still pulls back when the gap is genuinely long", () => {
+    // A real pause. Staying zoomed through it would strand the viewer inside a
+    // crop of a screen nothing is happening on.
+    const { scale } = zoomKeyframes([hold(2, 4, -200), hold(9, 11, 200)], 14, canvas, true);
+    expect(pullsOutBetween(scale, 4.7, 8.3)).toBe(true);
+  });
+
+  it("leaves hand-placed zooms alone", () => {
+    // Manual stops are deliberate: two placed 2.2s apart mean two zooms, and
+    // silently welding them into one pan would be the editor overruling a
+    // decision someone made on purpose. (adaptSpeed=false is the manual path.)
+    const { scale } = zoomKeyframes([hold(2, 4, -200), hold(6.2, 8, 200)], 12, canvas, false);
+    expect(pullsOutBetween(scale, 4.05, 6.15)).toBe(true);
+  });
+
+  it("never leaves the picture, whichever branch it takes", () => {
+    for (const gap of [2.2, 4.0, 7.0]) {
+      const { scale, x } = zoomKeyframes([hold(2, 4, -200), hold(4 + gap, 6 + gap, 200)], 20, canvas, true);
+      for (let t = 0; t <= 20; t += 0.05) {
+        const s = kfValue(scale, t);
+        expect(s).toBeGreaterThanOrEqual(1 - 1e-9);
+        expect(Math.abs(kfValue(x, t))).toBeLessThanOrEqual((canvas.width * (s - 1)) / 2 + 1e-6);
+      }
+    }
+  });
+});

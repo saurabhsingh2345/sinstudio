@@ -105,6 +105,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /api/projects/{id}/duplicate", s.duplicateProject)
 
 	mux.HandleFunc("POST /api/projects/{id}/assets", s.importAsset)
+	mux.HandleFunc("PATCH /api/projects/{id}/assets/{assetId}", s.renameAsset)
 	mux.HandleFunc("DELETE /api/projects/{id}/assets/{assetId}", s.deleteAsset)
 	mux.HandleFunc("POST /api/projects/{id}/generate", s.generate)
 	mux.HandleFunc("POST /api/projects/{id}/rerender", s.rerender)
@@ -393,6 +394,29 @@ func (s *Server) importAsset(w http.ResponseWriter, r *http.Request) {
 //
 // This exists because the asset set no longer round-trips through the client's
 // document save — dropping an asset from the PUT body is now a no-op.
+// renameAsset changes an asset's display name. Only the name is accepted: the
+// rest of the asset row is probed metadata and generation provenance, which the
+// editor has no business overwriting.
+func (s *Server) renameAsset(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	asset, err := s.Store.RenameAsset(r.Context(), r.PathValue("id"), r.PathValue("assetId"), body.Name)
+	if errors.Is(err, store.ErrNotFound) {
+		httpErr(w, 404, fmt.Errorf("unknown asset"))
+		return
+	}
+	if err != nil {
+		httpErr(w, 400, err)
+		return
+	}
+	writeJSON(w, 200, map[string]any{"asset": asset})
+}
+
 func (s *Server) deleteAsset(w http.ResponseWriter, r *http.Request) {
 	err := s.Store.DeleteAsset(r.Context(), r.PathValue("id"), r.PathValue("assetId"))
 	if errors.Is(err, store.ErrNotFound) {
@@ -523,6 +547,7 @@ func (s *Server) rerender(w http.ResponseWriter, r *http.Request) {
 		AssetID: asset.ID,
 		Source:  asset.Source,
 		Name:    asset.Name,
+		Label:   asset.Label,
 		Input:   body.Input,
 		Params:  body.Params,
 	})

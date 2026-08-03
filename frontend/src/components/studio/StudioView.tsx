@@ -91,6 +91,14 @@ export function StudioView({ projectId, onHome }: { projectId: string; onHome?: 
         st.setCroppingClip(st.croppingClip === sel.clipId ? null : sel.clipId);
         return;
       }
+      // Blur a region of the selected clip on the canvas. Same toggle shape as
+      // crop, and the two modes turn each other off in the store.
+      if (k === "b") {
+        if (sel.kind !== "clip") return;
+        e.preventDefault();
+        st.setRedactingClip(st.redactingClip === sel.clipId ? null : sel.clipId);
+        return;
+      }
       if (k === "m") {
         e.preventDefault();
         const id = st.addMarker();

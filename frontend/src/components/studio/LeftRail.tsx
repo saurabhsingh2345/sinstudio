@@ -9,6 +9,7 @@ import {
   Music2,
   Image as ImageIcon,
   X,
+  Pencil,
   Package,
   RotateCw,
 } from "lucide-react";
@@ -153,10 +154,10 @@ async function autoTranscribe(projectId: string, asset: Asset) {
   if (asset.kind !== "video" || asset.hasAudio === false) return;
   if (!(await transcribeAvailable())) return;
   try {
-    toast.info(`Transcribing ${asset.name}…`);
+    toast.info(`Transcribing ${assetLabel(asset)}…`);
     const n = await transcribeToCues(projectId, asset);
-    if (n) toast.success(`${asset.name}: ${n} captions added`);
-    else toast.info(`${asset.name}: no speech found`);
+    if (n) toast.success(`${assetLabel(asset)}: ${n} captions added`);
+    else toast.info(`${assetLabel(asset)}: no speech found`);
   } catch (e) {
     toast.error(`Transcribe failed: ${(e as Error).message}`);
   }
@@ -214,7 +215,7 @@ function CaptionsPanel({ projectId, doc, onSelect }: { projectId: string; doc: E
             <SelectTrigger className="h-8 flex-1 bg-panel-2 text-[12px]"><SelectValue placeholder="pick audio/video" /></SelectTrigger>
             <SelectContent>
               {audible.map((a) => (
-                <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
+                <SelectItem key={a.id} value={a.id}>{assetLabel(a)}</SelectItem>
               ))}
             </SelectContent>
           </Select>
@@ -290,6 +291,7 @@ function MediaPanel({
   const addAsset = useStudio((s) => s.addAsset);
   const addClipToLane = useStudio((s) => s.addClipToLane);
   const removeAsset = useStudio((s) => s.removeAsset);
+  const renameAsset = useStudio((s) => s.renameAsset);
   const [busy, setBusy] = useState(false);
   const [lib, setLib] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -373,7 +375,13 @@ function MediaPanel({
         ) : (
           <div className="space-y-1.5">
             {doc.assets.map((a) => (
-              <MediaCard key={a.id} asset={a} onAdd={() => addToTimeline(a)} onRemove={() => removeAsset(a.id)} />
+              <MediaCard
+                key={a.id}
+                asset={a}
+                onAdd={() => addToTimeline(a)}
+                onRemove={() => removeAsset(a.id)}
+                onRename={(name) => renameAsset(a.id, name)}
+              />
             ))}
           </div>
         )}
@@ -394,13 +402,43 @@ function MediaPanel({
   );
 }
 
-function MediaCard({ asset, onAdd, onRemove }: { asset: Asset; onAdd: () => void; onRemove: () => void }) {
+function MediaCard({
+  asset,
+  onAdd,
+  onRemove,
+  onRename,
+}: {
+  asset: Asset;
+  onAdd: () => void;
+  onRemove: () => void;
+  onRename: (name: string) => void;
+}) {
   const Icon = asset.kind === "video" ? VideoIcon : asset.kind === "audio" ? Music2 : ImageIcon;
+  // Editing is card-local state rather than a store field: a half-typed name is
+  // not part of the document, and committing per keystroke would rename on disk
+  // five times while someone types "Chrome".
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const begin = () => {
+    setDraft(assetLabel(asset));
+    setEditing(true);
+  };
+  const commit = () => {
+    setEditing(false);
+    // Opening the editor and closing it again is not a rename. Without this an
+    // asset that was never renamed picks up a label identical to its derived
+    // one, which is invisible until the file is renamed underneath it.
+    if (draft.trim() && draft.trim() !== assetLabel(asset)) onRename(draft);
+  };
+
   return (
     <div
-      onClick={onAdd}
-      title="Click to add at playhead · or drag onto a track"
-      draggable
+      onClick={editing ? undefined : onAdd}
+      title={editing ? undefined : "Click to add at playhead · double-click the name to rename · or drag onto a track"}
+      // Not draggable mid-edit: a drag gesture would otherwise win over
+      // selecting the text you are trying to replace.
+      draggable={!editing}
       onDragStart={(e) => {
         e.dataTransfer.setData("text/assetId", asset.id);
         // Kind-scoped type so a track row can validate compatibility during
@@ -408,7 +446,10 @@ function MediaCard({ asset, onAdd, onRemove }: { asset: Asset; onAdd: () => void
         e.dataTransfer.setData(`asset/${asset.kind}`, asset.id);
         e.dataTransfer.effectAllowed = "copy";
       }}
-      className="group relative flex cursor-grab items-center gap-2.5 rounded-lg border border-transparent bg-panel-2/60 p-2 transition-colors hover:border-hairline hover:bg-panel-2 active:cursor-grabbing"
+      className={cn(
+        "group relative flex items-center gap-2.5 rounded-lg border border-transparent bg-panel-2/60 p-2 transition-colors hover:border-hairline hover:bg-panel-2",
+        editing ? "border-hairline bg-panel-2" : "cursor-grab active:cursor-grabbing"
+      )}
     >
       <div className="relative grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-md bg-gradient-to-br from-panel-3 to-panel">
         {asset.thumbnail ? (
@@ -423,26 +464,75 @@ function MediaCard({ asset, onAdd, onRemove }: { asset: Asset; onAdd: () => void
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
-          <div className="truncate text-[13px] font-medium">{assetLabel(asset)}</div>
-          <span className="rounded bg-panel-3 px-1 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground">
-            {asset.source}
-          </span>
+          {editing ? (
+            <input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onClick={(e) => e.stopPropagation()}
+              onFocus={(e) => e.currentTarget.select()}
+              onBlur={commit}
+              onKeyDown={(e) => {
+                e.stopPropagation(); // the editor's global shortcuts are listening
+                if (e.key === "Enter") commit();
+                // Escape abandons the draft — the one way back out of a rename
+                // you started by mistake.
+                if (e.key === "Escape") setEditing(false);
+              }}
+              className="h-6 min-w-0 flex-1 rounded border hairline bg-panel px-1 text-[13px] font-medium outline-none focus:border-brand/60"
+            />
+          ) : (
+            <div
+              // The name is the rename target, so a click on it is NOT a click
+              // on the card. Without this, double-clicking to rename adds the
+              // clip to the timeline twice on the way — the two clicks land
+              // before the dblclick does.
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                begin();
+              }}
+              title="Double-click to rename"
+              className="cursor-text truncate text-[13px] font-medium"
+            >
+              {assetLabel(asset)}
+            </div>
+          )}
+          {!editing && (
+            <span className="rounded bg-panel-3 px-1 py-0.5 text-[9px] uppercase tracking-wider text-muted-foreground">
+              {asset.source}
+            </span>
+          )}
         </div>
         <div className="mt-0.5 truncate text-[11px] text-muted-foreground tabular">
           {asset.kind} · {asset.duration.toFixed(1)}s{asset.hasAlpha ? " · alpha" : ""}
           {asset.kind === "video" && asset.hasAudio === false ? " · silent" : ""}
         </div>
       </div>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          if (confirm(`Remove "${assetLabel(asset)}" and any clips using it?`)) onRemove();
-        }}
-        title="Remove asset (and its clips)"
-        className="absolute right-1.5 top-1.5 hidden h-5 w-5 items-center justify-center rounded text-muted-foreground hover:bg-panel-3 hover:text-foreground group-hover:flex"
-      >
-        <X className="h-3 w-3" />
-      </button>
+      {!editing && (
+        <div className="absolute right-1.5 top-1.5 hidden items-center gap-0.5 group-hover:flex">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              begin();
+            }}
+            title="Rename"
+            className="grid h-5 w-5 place-items-center rounded text-muted-foreground hover:bg-panel-3 hover:text-foreground"
+          >
+            <Pencil className="h-3 w-3" />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              if (confirm(`Remove "${assetLabel(asset)}" and any clips using it?`)) onRemove();
+            }}
+            title="Remove asset (and its clips)"
+            className="grid h-5 w-5 place-items-center rounded text-muted-foreground hover:bg-panel-3 hover:text-foreground"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -535,7 +625,7 @@ function PluginsPanel({ projectId, doc }: { projectId: string; doc: EditDoc }) {
     }
     addAsset(asset);
     addClipToLane(asset.id);
-    toast.success(`${asset.name} → timeline`);
+    toast.success(`${assetLabel(asset)} → timeline`);
     void autoTranscribe(projectId, asset);
   };
 

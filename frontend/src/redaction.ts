@@ -1,3 +1,4 @@
+import type { Rect } from "./crop";
 import type { Redaction, RedactKind } from "./types";
 
 // Region blur / pixelate — hiding a password, a name, a licence key.
@@ -68,4 +69,119 @@ export function normRedaction(r: Redaction): Redaction {
     w: Math.abs(r.w),
     h: Math.abs(r.h),
   });
+}
+
+/*
+ * Time windows. Twin of Redaction.Window/Timed in schema.go — the preview has to
+ * agree with the renderer about when a region is live, or a blur that is on in
+ * the editor is off in the file.
+ */
+
+/** Is this region bounded to less than the whole clip? */
+export function isTimed(r: Redaction, playDur: number): boolean {
+  return (r.start ?? 0) > 0 || ((r.end ?? 0) > 0 && (r.end as number) < playDur);
+}
+
+/** The region's window in clip-local seconds, with both ends opened out. */
+export function redactionWindow(r: Redaction, playDur: number): { from: number; to: number } {
+  const from = (r.start ?? 0) > 0 ? (r.start as number) : 0;
+  const end = r.end ?? 0;
+  const to = end > 0 && end < playDur ? end : playDur;
+  return { from, to: Math.max(from, to) };
+}
+
+/** Is the region showing at this clip-local time? */
+export function isLiveAt(r: Redaction, localT: number, playDur: number): boolean {
+  const { from, to } = redactionWindow(r, playDur);
+  return localT >= from && localT <= to;
+}
+
+/**
+ * The regions that survive one half of a split, retimed onto it.
+ *
+ * `from`/`to` are the half's span in the ORIGINAL clip's local seconds, and
+ * playDur is that clip's length, needed to resolve an unset `end` into a real
+ * one before it can be clipped. Windows are intersected with the half and
+ * rebased onto it; a region the half never shows is dropped rather than carried
+ * with an empty window.
+ *
+ * Getting this wrong is not cosmetic. A blur whose window is not rebased slides
+ * onto a different moment of the second half — which for a redaction means
+ * uncovering the thing it was put there to hide.
+ */
+export function splitRedactions(
+  regions: Redaction[] | undefined,
+  from: number,
+  to: number,
+  playDur: number
+): Redaction[] | undefined {
+  if (!regions?.length) return undefined;
+  const half = to - from;
+  const out: Redaction[] = [];
+  for (const r of regions) {
+    const w = redactionWindow(r, playDur);
+    const lo = Math.max(w.from, from);
+    const hi = Math.min(w.to, to);
+    if (hi - lo <= 1e-4) continue; // this half never shows it
+    const start = lo - from;
+    const end = hi - from;
+    out.push({
+      ...r,
+      // Back to "unset" whenever the clipped window reaches a boundary, so a
+      // whole-clip region stays whole-clip on both halves rather than acquiring
+      // explicit bounds that mean the same thing.
+      start: start > 1e-4 ? +start.toFixed(4) : undefined,
+      end: end < half - 1e-4 ? +end.toFixed(4) : undefined,
+    });
+  }
+  return out.length ? out : undefined;
+}
+
+/*
+ * Source fractions ⇄ stage pixels.
+ *
+ * A redaction's numbers are fractions of the clip's UNCROPPED source, because
+ * the renderer applies them before the crop — that is what stops trimming an
+ * edge from sliding a blur off the thing it was hiding.
+ *
+ * So the rectangle they describe is a rectangle of `cropLayout().media`, which
+ * is the whole source laid out in the clip's box, and NOT of the box itself.
+ * Measuring against the box is right only while there is no crop, and silently
+ * wrong the moment there is one: the preview shows the blur somewhere the export
+ * will not put it.
+ */
+
+/**
+ * Where a region lands, in px relative to the CROP WINDOW — the same space
+ * cropLayout's `media` is expressed in, because that is the element the region
+ * is glued to. Not the clip's box: under `fill` the window starts outside the
+ * box, and treating the two as the same shifts every region by that offset.
+ */
+export function redactionRect(r: Redaction, media: Rect): Rect {
+  return {
+    left: media.left + r.x * media.width,
+    top: media.top + r.y * media.height,
+    width: r.w * media.width,
+    height: r.h * media.height,
+  };
+}
+
+/** The inverse: a point in the clip's box, as a fraction of the source. */
+export function sourceFraction(bx: number, by: number, media: Rect): { x: number; y: number } {
+  return {
+    x: media.width > 0 ? (bx - media.left) / media.width : 0,
+    y: media.height > 0 ? (by - media.top) / media.height : 0,
+  };
+}
+
+/** The region described by dragging from one point to another, in box px. */
+export function redactionFromDrag(
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+  media: Rect,
+  kind: RedactKind = "blur"
+): Redaction {
+  const a = sourceFraction(from.x, from.y, media);
+  const b = sourceFraction(to.x, to.y, media);
+  return normRedaction({ kind, x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y, amount: 0.6 });
 }

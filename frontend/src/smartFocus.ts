@@ -69,6 +69,22 @@ export interface SmartFocusOptions {
   followDeadzone: number; // px at a 1920-wide reference, scaled like the radii
   followDamping: number; // 0..1 — how much of the excess to actually travel
   followInterval: number; // seconds between reconsiderations
+  /**
+   * How much of the zoom to keep while the pointer is travelling, 0..1.
+   *
+   * A parked pointer is someone showing you a thing, and pushing in on it helps.
+   * A moving pointer is someone going somewhere, and pushing in on that is the
+   * shot that makes people queasy: the subject leaves frame as fast as the
+   * camera can chase it, and the viewer loses where they are on a screen they
+   * can no longer see the edges of.
+   *
+   * So a segment the pointer travels across is zoomed less. This scales the
+   * EXCESS over 1, not the number itself — 0.5 on a 1.4x zoom gives 1.2x, i.e.
+   * half as much zoom, rather than 0.7x, which would be smaller than the frame.
+   */
+  motionZoom: number;
+  /** Travel that counts as "the pointer went somewhere", px at 1920 reference. */
+  motionTravel: number;
   ease: string;
   /** Use cover-fit viewport math (full frame of pixels, no letterbox bars). */
   cameraViewport?: boolean;
@@ -87,29 +103,44 @@ export const SMART_FOCUS_DEFAULTS: SmartFocusOptions = {
   // travel is what makes it look like a camera rather than a cut — the count
   // of zooms matters less than any one of them being watchable.
   ramp: 0.9,
-  minHold: 1.1,
+  // A zoom cycle is worth watching only if it settles. At 1.1 a hold was barely
+  // longer than the ramps around it, so the camera arrived and immediately left
+  // — the "in and out, in and out" complaint. Nearly two seconds of stillness is
+  // what makes a push-in read as attention rather than a twitch.
+  minHold: 1.8,
   useClicks: true,
   useDwell: true,
   dwellTime: 1.0,
   dwellRadius: 60,
-  clusterGap: 2.5,
+  // Events within a few seconds of each other are one piece of work, not
+  // several. At 2.5 a click, a short read and a second click became three zooms
+  // where a person would have called it one; 4 merges them and the camera
+  // simply stays put through the whole thing.
+  clusterGap: 4.0,
   clusterRadius: 320,
   // A second visit is worth a noticeable push; the ceiling stops a spot that
   // was returned to a dozen times from filling the frame with four pixels.
-  revisitStep: 0.18,
-  revisitMax: 1.95,
+  // Both are gentler than they were: escalation compounds with everything else
+  // here, and 1.95 on a dense screen recording is most of the context gone.
+  revisitStep: 0.12,
+  revisitMax: 1.7,
   follow: true,
   // Roughly a ninth of the frame: a deliberate move across a panel crosses it,
   // reading a line of text or nudging a slider does not.
-  followDeadzone: 200,
-  // Under half of the excess, so the camera lags the pointer and settles behind
-  // it rather than chasing it exactly — chasing exactly is what reads as jitter.
-  followDamping: 0.45,
-  // A hold is often only a little longer than minHold, and at 0.6 that is a
-  // single reconsideration in the whole shot — following that coarse cannot
-  // track anything. 0.35 gives a couple of chances in a short hold and several
-  // in a long one, while still being far too slow to chase jitter.
-  followInterval: 0.35,
+  followDeadzone: 240,
+  // Well under half of the excess, so the camera lags the pointer and settles
+  // behind it rather than chasing it — chasing is what reads as jitter, and
+  // even 0.45 still had the camera arriving with a visible check.
+  followDamping: 0.28,
+  // Together with the damping this sets the spring's stiffness: softer and
+  // slower than before, so the drift through a hold is a glide rather than a
+  // series of small corrections.
+  followInterval: 0.5,
+  // Half the zoom while the pointer is travelling, and "travelling" is about an
+  // eighth of the frame — comfortably more than reading along a line of text,
+  // comfortably less than crossing to another panel.
+  motionZoom: 0.5,
+  motionTravel: 240,
   // Spring on the way in. A smoothstep arrival reads as a machine moving a
   // camera; a small overshoot and settle reads as someone pushing in on the
   // thing they wanted you to look at. zoomKeyframes applies this ONLY to the
@@ -125,6 +156,8 @@ export interface FocusSegment {
   y: number;
   /** How many times attention landed on this area across the whole recording. */
   visits?: number;
+  /** The pointer travelled during this segment, so its zoom was pulled back. */
+  moving?: boolean;
   /** Zoom for this segment. Absent means the flat default. */
   zoom?: number;
   /** Positions to drift through during the hold, in video px. */
@@ -279,9 +312,21 @@ export function findFocusSegments(
    */
   return kept.map((seg) => {
     const visits = kept.filter((o) => Math.hypot(o.x - seg.x, o.y - seg.y) <= clusterRadius).length;
+    /*
+     * Pull the zoom back on a segment the pointer travels across.
+     *
+     * Pushing in on a moving pointer is the shot that makes people queasy: the
+     * subject leaves frame as fast as the camera can chase it, on a screen whose
+     * edges the viewer can no longer see. Halving the EXCESS over 1 keeps the
+     * move — there is still a push-in, it is simply shallower — which is the
+     * difference between calming the camera and switching it off.
+     */
+    const travelled = segmentTravel(track.samples, seg) > opts.motionTravel * k;
+    const soften = (s: number) => (travelled ? 1 + (s - 1) * clamp(opts.motionZoom, 0, 1) : s);
     return {
       ...seg,
       visits,
+      moving: travelled,
       // Scaled to the recording for the same reason the radii are: a deadzone
       // in fixed pixels is a different gesture on every capture resolution.
       follow: opts.follow
@@ -293,9 +338,11 @@ export function findFocusSegments(
       // The ceiling bounds the ESCALATION, never the chosen zoom: asked for 2x
       // with a 1.95 ceiling, this must give 2x and not quietly less. A cap that
       // can reduce the setting above it is a setting that silently doesn't work.
-      zoom: Math.min(
-        Math.max(opts.zoom, opts.revisitMax),
-        opts.zoom + Math.max(0, visits - 1) * opts.revisitStep
+      zoom: soften(
+        Math.min(
+          Math.max(opts.zoom, opts.revisitMax),
+          opts.zoom + Math.max(0, visits - 1) * opts.revisitStep
+        )
       ),
     };
   });
@@ -376,6 +423,30 @@ export function smartFocus(
 ): { keyframes: Record<string, Keyframe[]>; segments: FocusSegment[] } {
   const segments = findFocusSegments(track, duration, opts);
   return { keyframes: focusKeyframes(segments, duration, track.video, canvas, opts), segments };
+}
+
+/**
+ * How far the pointer actually got from where the segment is aimed, in the
+ * recording's own pixels.
+ *
+ * The furthest excursion, not the path length: a pointer that jiggles around one
+ * spot for four seconds has covered a lot of ground without going anywhere, and
+ * pulling the zoom back for that would be reading noise. What matters is whether
+ * it LEFT — because that is when a deep zoom starts losing the subject off the
+ * side of the frame.
+ */
+export function segmentTravel(
+  samples: CursorSample[],
+  seg: { start: number; end: number; x: number; y: number }
+): number {
+  let worst = 0;
+  for (const s of samples) {
+    const t = s.t / 1000;
+    if (t < seg.start) continue;
+    if (t > seg.end) break;
+    worst = Math.max(worst, Math.hypot(s.x - seg.x, s.y - seg.y));
+  }
+  return worst;
 }
 
 /** Pointer position at time `t` (seconds), interpolated between samples. */

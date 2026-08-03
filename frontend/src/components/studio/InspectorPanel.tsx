@@ -51,7 +51,7 @@ import type {
   Keyable,
   Watermark,
 } from "../../types";
-import { clipPlayDur, clipSrcDur, anchorFrac } from "../../types";
+import { clipPlayDur, clipSrcDur, anchorFrac, assetLabel } from "../../types";
 import { zOrder, type RestackMode } from "../../clipZ";
 import { MOTION_PRESETS } from "../../motionPresets";
 import { SMART_FOCUS_DEFAULTS, smartFocus, type SmartFocusOptions } from "../../smartFocus";
@@ -1270,7 +1270,7 @@ function ProjectInspector({ doc, onSelectMarker }: { doc: EditDoc; onSelectMarke
         >
           <option value="">No watermark</option>
           {logos.map((a) => (
-            <option key={a.id} value={a.id}>{a.name}</option>
+            <option key={a.id} value={a.id}>{assetLabel(a)}</option>
           ))}
         </select>
       </Field>

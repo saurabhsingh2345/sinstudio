@@ -59,6 +59,64 @@ func (s *Store) RenameProject(ctx context.Context, id, name string) (*ProjectMet
 	return &ProjectMeta{ID: id, Name: name, Updated: updated.UTC().Format(time.RFC3339)}, nil
 }
 
+/*
+RenameAsset sets an asset's display label and returns the updated asset.
+
+It writes Label, not Name. Name is the filename the ingest path built and the
+media on disk is still called; renaming a clip in the editor is a change to what
+it is *called in the UI*, and spending the provenance to buy that is a bad trade.
+
+Deliberately NOT a revision bump, unlike RenameProject. An asset lives in its
+own table precisely so that writing one cannot invalidate an editor's in-flight
+timeline save, and a rename is the smallest possible asset write — bumping the
+revision here would make typing a new name in the media panel conflict with the
+autosave the same keystroke triggers.
+*/
+func (s *Store) RenameAsset(ctx context.Context, projID, assetID, label string) (*schema.Asset, error) {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return nil, errors.New("name is required")
+	}
+	if s.local {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		doc, err := s.readLocal(projID)
+		if err != nil {
+			return nil, err
+		}
+		for i := range doc.Assets {
+			if doc.Assets[i].ID == assetID {
+				doc.Assets[i].Label = label
+				if err := s.writeLocal(doc); err != nil {
+					return nil, err
+				}
+				a := doc.Assets[i]
+				return &a, nil
+			}
+		}
+		return nil, ErrNotFound
+	}
+	// One statement rather than read-modify-write: two concurrent renames would
+	// otherwise be able to lose one another, and the rest of the asset row is
+	// owned by background jobs that must not be written back from here.
+	var data []byte
+	err := s.db.QueryRow(ctx,
+		`UPDATE assets SET data = jsonb_set(data, '{label}', to_jsonb($3::text))
+		  WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL
+		  RETURNING data`, assetID, projID, label).Scan(&data)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var a schema.Asset
+	if err := json.Unmarshal(data, &a); err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
 // DeleteProject removes a project, its asset rows, and its whole media
 // directory.
 //
