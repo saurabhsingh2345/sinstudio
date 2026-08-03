@@ -6,9 +6,12 @@ import type { CropLayout } from "../../crop";
 import {
   REDACT_KINDS,
   clampRedaction,
+  isLiveAt,
+  isTimed,
   previewBlurPx,
   redactionFromDrag,
   redactionRect,
+  redactionWindow,
   sourceFraction,
 } from "../../redaction";
 import type { RedactKind, Redaction } from "../../types";
@@ -36,6 +39,8 @@ export function RedactOverlay({
   layout,
   box,
   sourceWidth,
+  localTime,
+  playDur,
   selected,
   onSelect,
   onBegin,
@@ -48,6 +53,11 @@ export function RedactOverlay({
   /** The clip's rectangle on the stage, and its rotation in degrees. */
   box: { left: number; top: number; vw: number; vh: number; rotation: number };
   sourceWidth: number;
+  /** Where the playhead sits in the clip, and how long the clip plays — a region
+   *  outside its own window is drawn as an outline rather than hidden, so it can
+   *  still be selected and retimed. */
+  localTime: number;
+  playDur: number;
   selected: number;
   onSelect: (i: number) => void;
   onBegin: () => void;
@@ -197,12 +207,17 @@ export function RedactOverlay({
           const rect = redactionRect(r, media);
           const blur = previewBlurPx(r.amount, media.width, sourceWidth);
           const isSel = i === selected;
+          // A region whose window has passed is drawn as a dashed outline, not
+          // hidden: it still has to be findable and retimable from a moment it
+          // does not cover, and a region that vanished would look deleted.
+          const live = isLiveAt(r, localTime, playDur);
           return (
             <div
               key={i}
               onPointerDown={(e) => startMove(e, i)}
               className={cn(
                 "absolute cursor-move border-2",
+                !live && "border-dashed",
                 isSel ? "border-brand" : "border-white/60 hover:border-white"
               )}
               style={{
@@ -210,12 +225,18 @@ export function RedactOverlay({
                 top: rect.top,
                 width: rect.width,
                 height: rect.height,
-                backdropFilter: `blur(${blur}px)`,
-                WebkitBackdropFilter: `blur(${blur}px)`,
+                backdropFilter: live ? `blur(${blur}px)` : undefined,
+                WebkitBackdropFilter: live ? `blur(${blur}px)` : undefined,
               }}
             >
-              <span className="absolute left-0 top-0 bg-brand px-1 text-[9px] font-medium leading-4 text-brand-foreground">
+              <span
+                className={cn(
+                  "absolute left-0 top-0 px-1 text-[9px] font-medium leading-4",
+                  live ? "bg-brand text-brand-foreground" : "bg-panel/90 text-muted-foreground"
+                )}
+              >
                 {i + 1}
+                {!live && " · off"}
               </span>
               {isSel && (
                 <span
@@ -253,6 +274,8 @@ way of the work.
 export function RedactToolbar({
   regions,
   selected,
+  localTime,
+  playDur,
   onSelect,
   onPatch,
   onRemove,
@@ -260,12 +283,20 @@ export function RedactToolbar({
 }: {
   regions: Redaction[];
   selected: number;
+  /** The playhead's position in the clip, which is what "Starts here" and
+   *  "Ends here" mean — retiming a blur is something you do while looking at the
+   *  frame where the secret appears or goes away. */
+  localTime: number;
+  playDur: number;
   onSelect: (i: number) => void;
   onPatch: (p: Partial<Redaction>) => void;
   onRemove: () => void;
   onDone: () => void;
 }) {
   const r = regions[selected];
+  const at = Math.max(0, Math.min(playDur, localTime));
+  const win = r ? redactionWindow(r, playDur) : { from: 0, to: playDur };
+  const bounded = r ? isTimed(r, playDur) : false;
   return (
     <div className="flex max-w-full flex-wrap items-center justify-center gap-x-2 gap-y-1 rounded-2xl border hairline bg-panel/95 px-3 py-1.5 text-[11px] shadow-lg backdrop-blur">
       <span className="font-medium">Blur</span>
@@ -328,6 +359,48 @@ export function RedactToolbar({
 
           <Divider />
 
+          {/*
+            When the blur is on. A secret usually appears and leaves — a password
+            is typed and the field closes — and covering the whole clip for it
+            smears a stretch of video with nothing to hide.
+
+            Set from the playhead rather than typed: you are looking at the frame
+            where the thing appears, and reading its timecode off the transport to
+            type back in is work the button can do.
+          */}
+          <span className="text-muted-foreground">Shown</span>
+          <button
+            type="button"
+            title={`Start this blur at the playhead (${at.toFixed(1)}s)`}
+            onClick={() => onPatch({ start: at <= 0.001 ? undefined : +at.toFixed(3) })}
+            className="rounded-md bg-panel-3 px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
+          >
+            Starts here
+          </button>
+          <button
+            type="button"
+            title={`End this blur at the playhead (${at.toFixed(1)}s)`}
+            onClick={() => onPatch({ end: at >= playDur - 0.001 ? undefined : +at.toFixed(3) })}
+            className="rounded-md bg-panel-3 px-1.5 py-0.5 text-muted-foreground hover:text-foreground"
+          >
+            Ends here
+          </button>
+          <span className="tabular text-foreground">
+            {win.from.toFixed(1)}–{win.to.toFixed(1)}s
+          </span>
+          {bounded && (
+            <button
+              type="button"
+              title="Cover the whole clip again"
+              onClick={() => onPatch({ start: undefined, end: undefined })}
+              className="text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+            >
+              whole clip
+            </button>
+          )}
+
+          <Divider />
+
           <button
             type="button"
             title="Remove this region"
@@ -337,6 +410,13 @@ export function RedactToolbar({
             <Trash2 className="h-3 w-3" /> Delete
           </button>
         </>
+      )}
+      {/* The playhead sitting outside the selected region's window is the one
+          state where the picture and the panel disagree, so it is said. */}
+      {r && !isLiveAt(r, localTime, playDur) && (
+        <span className="w-full text-center text-[10px] text-amber-400/90">
+          Not shown at the playhead — this blur runs {win.from.toFixed(1)}–{win.to.toFixed(1)}s.
+        </span>
       )}
       <button
         type="button"

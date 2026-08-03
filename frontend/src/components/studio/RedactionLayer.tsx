@@ -1,4 +1,4 @@
-import { previewBlurPx, redactionRect } from "../../redaction";
+import { isLiveAt, previewBlurPx, redactionRect } from "../../redaction";
 import type { CropLayout } from "../../crop";
 import type { Redaction } from "../../types";
 
@@ -25,13 +25,21 @@ export function RedactionLayer({
   redactions,
   layout,
   sourceWidth,
+  localTime,
+  playDur,
 }: {
   redactions: Redaction[];
   layout: CropLayout;
   /** The asset's native width, so the blur radius can be carried into screen space. */
   sourceWidth: number;
+  /** Where the playhead sits inside the clip, and how long the clip plays for —
+   *  a region bounded in time only paints inside its own window, the same way
+   *  the renderer's enable= gate works. */
+  localTime: number;
+  playDur: number;
 }) {
-  if (!redactions.length) return null;
+  const live = redactions.filter((r) => isLiveAt(r, localTime, playDur));
+  if (!live.length) return null;
   const { window: win, media } = layout;
   return (
     // The crop's surviving window clips the regions, so a blur on an edge that
@@ -47,7 +55,7 @@ export function RedactionLayer({
         pointerEvents: "none",
       }}
     >
-      {redactions.map((r, i) => {
+      {live.map((r, i) => {
         const rect = redactionRect(r, media);
         // Scaled against the width the SOURCE is displayed at, which is what
         // media.width is — the box's width is the cropped picture's.

@@ -804,6 +804,8 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                         mode
                       )}
                       sourceWidth={asset.width}
+                      localTime={playhead - clip.start}
+                      playDur={clipPlayDur(clip)}
                     />
                   </div>
                 </Fragment>
@@ -869,6 +871,8 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                 layout={redactLayout}
                 box={{ left: selBox.left, top: selBox.top, vw: selBox.vw, vh: selBox.vh, rotation: selRot }}
                 sourceWidth={selAsset.width}
+                localTime={playhead - redacting.start}
+                playDur={clipPlayDur(redacting)}
                 selected={selRegion}
                 onSelect={setRedactionIndex}
                 onBegin={beginTransient}
@@ -940,6 +944,8 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
               <RedactToolbar
                 regions={redactions}
                 selected={selRegion}
+                localTime={playhead - redacting.start}
+                playDur={clipPlayDur(redacting)}
                 onSelect={setRedactionIndex}
                 onPatch={(p) =>
                   setRegions(redactions.map((r, i) => (i === selRegion ? clampRedaction({ ...r, ...p }) : r)))

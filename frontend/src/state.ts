@@ -8,6 +8,7 @@ import { buildMotionPreset, type MotionPreset } from "./motionPresets";
 import { clearPeaks } from "./peaks";
 import { rippleCutTrackClips } from "./rippleCut";
 import { cutClipSilences, planSilenceCuts, type SilenceSpan } from "./silence";
+import { splitRedactions } from "./redaction";
 import { applySpeedup, planSpeedup, type IdleSpan } from "./idle";
 import { clearCursorTracks } from "./cursorTracks";
 import { restack, type RestackMode } from "./clipZ";
@@ -570,7 +571,18 @@ export const useStudio = create<StudioState>((set, get) => ({
                 .filter((p) => p.t >= -1e-6);
               if (shifted.length) rightKf[prop] = shifted;
             }
-            list.push({ ...c, out: srcCut, fadeOut: 0, transitionOut: undefined });
+            // Redaction windows are clip-local too, so they need the same
+            // treatment — otherwise splitting a clip slides every timed blur off
+            // the moment it was covering, which for a redaction means exposing
+            // the thing it was hiding.
+            const wholeDur = (c.out - c.in) / sp;
+            list.push({
+              ...c,
+              out: srcCut,
+              fadeOut: 0,
+              transitionOut: undefined,
+              redactions: splitRedactions(c.redactions, 0, off, wholeDur),
+            });
             list.push({
               ...c,
               id: newId("clip_"),
@@ -579,6 +591,7 @@ export const useStudio = create<StudioState>((set, get) => ({
               fadeIn: 0,
               transitionIn: undefined,
               keyframes: Object.keys(rightKf).length ? rightKf : undefined,
+              redactions: splitRedactions(c.redactions, off, wholeDur, wholeDur),
             });
           } else {
             list.push(c);

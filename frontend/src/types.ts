@@ -107,6 +107,17 @@ export interface Redaction {
   w: number;
   h: number;
   amount?: number; // 0..1 strength (0 = unset)
+  /*
+   * The part of the clip this region covers, in CLIP-LOCAL seconds (from the
+   * clip's start, after speed — like a keyframe's `t`), so it survives the clip
+   * being moved or split.
+   *
+   * Zero is unset at both ends, which makes the absent case the whole clip and
+   * leaves every document written before this unchanged. `end` therefore cannot
+   * mean "stop at 0s", which is not a thing anyone wants.
+   */
+  start?: number;
+  end?: number;
 }
 
 /*

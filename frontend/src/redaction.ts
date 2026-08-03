@@ -72,6 +72,72 @@ export function normRedaction(r: Redaction): Redaction {
 }
 
 /*
+ * Time windows. Twin of Redaction.Window/Timed in schema.go — the preview has to
+ * agree with the renderer about when a region is live, or a blur that is on in
+ * the editor is off in the file.
+ */
+
+/** Is this region bounded to less than the whole clip? */
+export function isTimed(r: Redaction, playDur: number): boolean {
+  return (r.start ?? 0) > 0 || ((r.end ?? 0) > 0 && (r.end as number) < playDur);
+}
+
+/** The region's window in clip-local seconds, with both ends opened out. */
+export function redactionWindow(r: Redaction, playDur: number): { from: number; to: number } {
+  const from = (r.start ?? 0) > 0 ? (r.start as number) : 0;
+  const end = r.end ?? 0;
+  const to = end > 0 && end < playDur ? end : playDur;
+  return { from, to: Math.max(from, to) };
+}
+
+/** Is the region showing at this clip-local time? */
+export function isLiveAt(r: Redaction, localT: number, playDur: number): boolean {
+  const { from, to } = redactionWindow(r, playDur);
+  return localT >= from && localT <= to;
+}
+
+/**
+ * The regions that survive one half of a split, retimed onto it.
+ *
+ * `from`/`to` are the half's span in the ORIGINAL clip's local seconds, and
+ * playDur is that clip's length, needed to resolve an unset `end` into a real
+ * one before it can be clipped. Windows are intersected with the half and
+ * rebased onto it; a region the half never shows is dropped rather than carried
+ * with an empty window.
+ *
+ * Getting this wrong is not cosmetic. A blur whose window is not rebased slides
+ * onto a different moment of the second half — which for a redaction means
+ * uncovering the thing it was put there to hide.
+ */
+export function splitRedactions(
+  regions: Redaction[] | undefined,
+  from: number,
+  to: number,
+  playDur: number
+): Redaction[] | undefined {
+  if (!regions?.length) return undefined;
+  const half = to - from;
+  const out: Redaction[] = [];
+  for (const r of regions) {
+    const w = redactionWindow(r, playDur);
+    const lo = Math.max(w.from, from);
+    const hi = Math.min(w.to, to);
+    if (hi - lo <= 1e-4) continue; // this half never shows it
+    const start = lo - from;
+    const end = hi - from;
+    out.push({
+      ...r,
+      // Back to "unset" whenever the clipped window reaches a boundary, so a
+      // whole-clip region stays whole-clip on both halves rather than acquiring
+      // explicit bounds that mean the same thing.
+      start: start > 1e-4 ? +start.toFixed(4) : undefined,
+      end: end < half - 1e-4 ? +end.toFixed(4) : undefined,
+    });
+  }
+  return out.length ? out : undefined;
+}
+
+/*
  * Source fractions ⇄ stage pixels.
  *
  * A redaction's numbers are fractions of the clip's UNCROPPED source, because
