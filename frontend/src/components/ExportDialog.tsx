@@ -111,17 +111,13 @@ export function ExportDialog({ projectId, onClose }: { projectId: string; onClos
       if (sp !== 1) opts.speed = sp;
       const { jobId: id } = await api.exportVideo(projectId, opts);
       setJobId(id);
-      toast.info("Export started…");
       const data = await awaitJob(id);
-      toast.success("Export ready");
+      // No announcements on the happy path: the dialog closing is the signal,
+      // and the render is waiting under Renders. The link still lands on the
+      // clipboard, quietly — Renders has a copy button if this doesn't take.
       if (data?.url) {
         const abs = String(data.url).startsWith("http") ? String(data.url) : `${window.location.origin}${data.url}`;
-        try {
-          await navigator.clipboard.writeText(abs);
-          toast.info("Share link copied — paste to share the render");
-        } catch {
-          window.open(data.url, "_blank");
-        }
+        await navigator.clipboard.writeText(abs).catch(() => {});
       }
       onClose();
     } catch (e) {

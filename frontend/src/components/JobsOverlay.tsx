@@ -7,42 +7,42 @@ const label: Record<string, string> = {
   import: "Importing",
 };
 
+// A quiet corner ticker: what's running and how far along, nothing more. The
+// detail — logs, retries, past renders — lives in the render queue. Finished
+// jobs drop out on their own; only failures stay put, so a problem is seen.
 export function JobsOverlay() {
   const { jobs, dismiss, cancel } = useJobs();
-  const list = Object.values(jobs);
+  const list = Object.values(jobs).filter((j) => j.status !== "done");
   if (list.length === 0) return null;
   return (
     <div className="jobs legacy">
       {list.map((j) => {
-        const terminal = j.status === "done" || j.status === "error" || j.status === "canceled";
         const bad = j.status === "error" || j.status === "canceled";
+        const pct = Math.round(j.progress * 100);
         return (
-        <div key={j.id} className={`job ${bad ? "err" : ""}`}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <strong style={{ fontSize: 12 }}>{label[j.kind] || j.kind}</strong>
-            <span className="small">{Math.round(j.progress * 100)}%</span>
-            <div style={{ flex: 1 }} />
-            {!terminal && (
-              <a onClick={() => cancel(j.id)} style={{ cursor: "pointer", color: "var(--dim)" }} title="Cancel">
-                Cancel
-              </a>
-            )}
-            {terminal && (
-              <a onClick={() => dismiss(j.id)} style={{ cursor: "pointer", color: "var(--dim)" }}>
+          <div key={j.id} className={`job ${bad ? "err" : ""}`}>
+            <div className="job-row">
+              <span className="job-name">{label[j.kind] || j.kind}</span>
+              <span className="job-pct">
+                {bad ? (j.status === "canceled" ? "Canceled" : "Failed") : j.status === "queued" ? "Queued" : `${pct}%`}
+              </span>
+              <button
+                className="job-x"
+                onClick={() => (bad ? dismiss(j.id) : cancel(j.id))}
+                title={bad ? "Dismiss" : "Cancel"}
+              >
                 ✕
-              </a>
+              </button>
+            </div>
+            {/* One line, always clamped: enough to see the render is alive
+                ("rendering", "encoding"), never enough to become a wall. */}
+            <div className={`job-msg ${bad ? "err" : ""}`}>{j.message || j.status}</div>
+            {!bad && (
+              <div className="bar">
+                <div style={{ width: `${pct}%` }} />
+              </div>
             )}
           </div>
-          <div className="small" style={{ color: bad ? "var(--danger)" : "var(--dim)" }}>
-            {j.status === "done" ? "Done" : j.message || j.status}
-          </div>
-          <div className="bar">
-            <div style={{ width: `${Math.round(j.progress * 100)}%`, background: j.status === "error" ? "var(--danger)" : undefined }} />
-          </div>
-          {j.log.length > 0 && !terminal && (
-            <div className="log">{j.log.slice(-6).join("\n")}</div>
-          )}
-        </div>
         );
       })}
     </div>
