@@ -34,9 +34,10 @@ export function JobsOverlay() {
                 ✕
               </button>
             </div>
-            {bad ? (
-              <div className="job-msg">{j.message || j.status}</div>
-            ) : (
+            {/* One line, always clamped: enough to see the render is alive
+                ("rendering", "encoding"), never enough to become a wall. */}
+            <div className={`job-msg ${bad ? "err" : ""}`}>{j.message || j.status}</div>
+            {!bad && (
               <div className="bar">
                 <div style={{ width: `${pct}%` }} />
               </div>
