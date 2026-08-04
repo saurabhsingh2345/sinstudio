@@ -36,19 +36,38 @@ export const useJobs = create<JobsStore>((set) => ({
 
 const waiters = new Map<string, { resolve: (d: any) => void; reject: (e: Error) => void }>();
 
+// A job that finished cleanly clears itself out shortly after — the caller's
+// toast already says it's ready, and the render queue keeps the history. Only
+// failures wait to be dismissed by hand.
+const clearing = new Set<string>();
+function clearWhenDone(id: string) {
+  if (clearing.has(id)) return;
+  clearing.add(id);
+  setTimeout(() => {
+    clearing.delete(id);
+    const s = useJobs.getState();
+    if (s.jobs[id]?.status === "done") s.dismiss(id);
+  }, 4000);
+}
+
 function apply(ev: JobEvent) {
   useJobs.setState((s) => {
     const prev: JobState =
       s.jobs[ev.jobId] || { id: ev.jobId, kind: ev.kind, progress: 0, status: "running", message: "", log: [] };
     const next: JobState = { ...prev, kind: ev.kind, progress: ev.progress };
-    if (ev.type === "log" && ev.message) next.log = [...prev.log, ev.message].slice(-200);
-    if (ev.message) next.message = ev.message;
+    // A log line is diagnostic text (the whole ffmpeg command line, say) — it
+    // belongs in the log, never in the status message the overlay shows.
+    if (ev.type === "log") {
+      if (ev.message) next.log = [...prev.log, ev.message].slice(-200);
+    } else if (ev.message) next.message = ev.message;
     // Prefer the authoritative status the backend now sends; fall back to type.
     if (ev.status) next.status = ev.status as JobState["status"];
     else if (ev.type === "done") next.status = "done";
     else if (ev.type === "error") next.status = ev.message === "canceled" ? "canceled" : "error";
     return { jobs: { ...s.jobs, [ev.jobId]: next } };
   });
+
+  if (useJobs.getState().jobs[ev.jobId]?.status === "done") clearWhenDone(ev.jobId);
 
   const w = waiters.get(ev.jobId);
   if (w) {
