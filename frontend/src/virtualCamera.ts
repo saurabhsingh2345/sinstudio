@@ -20,15 +20,15 @@ export const VIRTUAL_CAMERA_OPTS: Partial<SmartFocusOptions> = {
   dwellTime: 0.75,
   revisitStep: 0.14,
   revisitMax: 1.62,
-  followDamping: 0.24,
-  followInterval: 0.58,
-  // The strongest anti-jitter knob there is: nothing moves at all until the
-  // pointer has genuinely gone somewhere. A screen recording's pointer is never
-  // still — it twitches while reading, overshoots and corrects — and following
-  // any of that is what reads as an unsteady camera. Roughly a seventh of the
-  // frame, so crossing to another panel moves the camera and working within one
-  // does not.
-  followDeadzone: 280,
+  // Following is deliberately NOT overridden here.
+  //
+  // It used to be — a wider deadzone and a softer spring than the defaults, on
+  // the reasoning that a screen recording's pointer twitches more than most. But
+  // the twitch is a few tens of pixels and the gestures are hundreds, so both
+  // sets of numbers were gating the same noise; the only thing the screen-
+  // recording override bought was the camera reaching less than half of each
+  // move before the hold ended. A single tuning is also one place to look when
+  // the camera feels wrong, rather than two that drift apart.
   ease: "easeInOut",
   cameraViewport: true,
 };

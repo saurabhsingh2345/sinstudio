@@ -125,21 +125,42 @@ export const SMART_FOCUS_DEFAULTS: SmartFocusOptions = {
   revisitStep: 0.12,
   revisitMax: 1.7,
   follow: true,
-  // Roughly a ninth of the frame: a deliberate move across a panel crosses it,
-  // reading a line of text or nudging a slider does not.
-  followDeadzone: 240,
-  // Well under half of the excess, so the camera lags the pointer and settles
-  // behind it rather than chasing it — chasing is what reads as jitter, and
-  // even 0.45 still had the camera arriving with a visible check.
-  followDamping: 0.28,
-  // Together with the damping this sets the spring's stiffness: softer and
-  // slower than before, so the drift through a hold is a glide rather than a
-  // series of small corrections.
+  /*
+   * About a twelfth of the frame.
+   *
+   * The deadzone is a NOISE GATE, not a speed limit, and widening it past the
+   * size of a real gesture does not smooth the following — it stops it. At 240,
+   * measured on a hold where the pointer reads with ±33px of twitch and then
+   * crosses 520px to another control, the camera covered 327px of that crossing
+   * and finished 288px behind the pointer: far enough back that the thing being
+   * pointed at is no longer what the frame is centred on. At 150 it covers
+   * 428px and settles 184px behind, and the twitching on its own still moves it
+   * about a pixel — so nothing was bought by the extra 90px except the camera
+   * giving up on the move.
+   *
+   * Smoothness is the spring's job, below, and it is better at it.
+   */
+  followDeadzone: 150,
+  // Around a third of the excess, so the camera lags the pointer and settles
+  // behind it rather than chasing it — chasing exactly is what reads as jitter.
+  // With the deadzone above this peaks at ~320px/s on a real crossing, against
+  // the ~470px/s of the tuning that was called unsteady, so the camera follows
+  // further than it did while moving more slowly than either earlier setting.
+  followDamping: 0.35,
+  // Together with the damping this sets the spring's stiffness. Soft enough
+  // that the drift through a hold is one glide rather than a series of small
+  // corrections, stiff enough to arrive within a hold rather than after it.
   followInterval: 0.5,
-  // Half the zoom while the pointer is travelling, and "travelling" is about an
-  // eighth of the frame — comfortably more than reading along a line of text,
-  // comfortably less than crossing to another panel.
-  motionZoom: 0.5,
+  // Most of the zoom is kept while the pointer is travelling, and "travelling"
+  // is about an eighth of the frame — comfortably more than reading along a
+  // line of text, comfortably less than crossing to another panel.
+  //
+  // This was 0.5, which on a screen recording's 1.26x base left 1.13x: a push-in
+  // small enough to read as the camera doing nothing. Its premise was that a
+  // deep zoom loses a moving subject off the side of the frame — true when the
+  // follower had been widened into inaction, much weaker now that the camera
+  // actually travels with the pointer. So the pull-back stays and is gentler.
+  motionZoom: 0.75,
   motionTravel: 240,
   // Spring on the way in. A smoothstep arrival reads as a machine moving a
   // camera; a small overshoot and settle reads as someone pushing in on the

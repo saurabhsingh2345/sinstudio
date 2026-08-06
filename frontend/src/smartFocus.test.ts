@@ -14,6 +14,7 @@ import {
 } from "./smartFocus";
 import type { CursorSample } from "./cursor";
 import { kfValue } from "./components/studio/preview-engine";
+import { VIRTUAL_CAMERA_OPTS } from "./virtualCamera";
 import { contentBox } from "./zoomPan";
 
 const opts = (over: Partial<SmartFocusOptions> = {}): SmartFocusOptions => ({
@@ -641,6 +642,72 @@ describe("following the cursor within a hold", () => {
     expect(start - end).toBeGreaterThan(canvas.width * 0.1);
   });
 
+  /*
+   * The tuning that SHIPS has to follow, not just the mechanism.
+   *
+   * Every test above passes its own deadzone and damping, so all of them kept
+   * passing through a retune that widened the shipped deadzone until the camera
+   * covered under half of an ordinary move and finished the hold pointing a
+   * quarter of a frame away from the pointer — following that is present in the
+   * code and absent on screen. These two run the real numbers against a hold
+   * shaped like a real one: read a while with the pointer twitching, then cross
+   * to another control.
+   */
+  const workingHold = () => {
+    const samples: CursorSample[] = [];
+    const twitch = (i: number) => Math.sin(i * 1.9) * 22 + Math.sin(i * 0.7) * 11;
+    let i = 0;
+    const leg = (t0: number, t1: number, x0: number, x1: number) => {
+      for (let t = t0; t < t1; t += 1 / 30, i++) {
+        const u = (t - t0) / (t1 - t0);
+        samples.push({ t: Math.round(t * 1000), x: Math.round(x0 + (x1 - x0) * u + twitch(i)), y: 500 });
+      }
+    };
+    leg(0, 2, 500, 520); // reading, pointer twitching in place
+    leg(2, 2.7, 520, 1040); // a deliberate move to another control
+    leg(2.7, 6, 1040, 1090); // working there
+    return samples;
+  };
+
+  it.each([
+    ["defaults", SMART_FOCUS_DEFAULTS],
+    ["the screen-recording camera", { ...SMART_FOCUS_DEFAULTS, ...VIRTUAL_CAMERA_OPTS }],
+  ])("follows an ordinary move most of the way, with %s", (_name, o) => {
+    const hold = { start: 0, end: 6, x: 512, y: 500 };
+    const path = followPath(
+      workingHold(),
+      hold,
+      o.followDeadzone!,
+      o.followDamping!,
+      o.followInterval!
+    );
+    expect(path.length).toBeGreaterThan(0);
+    // The pointer ended ~510px from where the hold is aimed. Two thirds of that
+    // is the difference between a camera that follows and one that gestures at
+    // following; the deadzone means it is never the whole way.
+    const travelled = path[path.length - 1]!.x - hold.x;
+    expect(travelled).toBeGreaterThan(340);
+    expect(travelled).toBeLessThan(510);
+  });
+
+  it.each([
+    ["defaults", SMART_FOCUS_DEFAULTS],
+    ["the screen-recording camera", { ...SMART_FOCUS_DEFAULTS, ...VIRTUAL_CAMERA_OPTS }],
+  ])("is unmoved by a pointer that only twitches, with %s", (_name, o) => {
+    // The same reading leg, held for the whole segment: ±33px of twitch and a
+    // 40px drift, which is a person looking at something, not going anywhere.
+    const samples: CursorSample[] = [];
+    for (let i = 0; i < 180; i++) {
+      samples.push({
+        t: Math.round((i / 30) * 1000),
+        x: Math.round(600 + (i / 180) * 40 + Math.sin(i * 1.9) * 22 + Math.sin(i * 0.7) * 11),
+        y: 400,
+      });
+    }
+    const path = followPath(samples, { start: 0, end: 6, x: 612, y: 400 }, o.followDeadzone!, o.followDamping!, o.followInterval!);
+    for (const p of path) expect(Math.abs(p.x - 612)).toBeLessThan(10);
+  });
+
   it("never uncovers the canvas while drifting", () => {
     const canvas = { width: 1920, height: 1080 };
     // Click near the middle, then walk the pointer hard into a corner.
@@ -685,14 +752,16 @@ describe("a travelling pointer is zoomed less", () => {
     return segs[0]!;
   };
 
-  it("halves the zoom's excess over full frame while the pointer travels", () => {
+  it("scales the zoom's excess over full frame while the pointer travels", () => {
     const parked = zoomOf(0);
     const moving = zoomOf(40); // 24 * 40 = 960px, well past the threshold
     expect(parked.moving).toBeFalsy();
     expect(moving.moving).toBe(true);
-    // Half the EXCESS, not half the number — half of 1.35 would be 0.675, which
-    // is smaller than the frame and would show the background.
-    expect(moving.zoom! - 1).toBeCloseTo((parked.zoom! - 1) / 2, 3);
+    // The EXCESS is scaled, not the number — 0.5 of 1.35 would be 0.675, which
+    // is smaller than the frame and would show the background. Read against the
+    // option rather than a literal, so retuning how much the camera pulls back
+    // does not have to edit a test of whether it pulls back at all.
+    expect(moving.zoom! - 1).toBeCloseTo((parked.zoom! - 1) * SMART_FOCUS_DEFAULTS.motionZoom, 3);
     expect(moving.zoom!).toBeGreaterThan(1);
   });
 
