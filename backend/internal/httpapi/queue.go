@@ -113,8 +113,12 @@ type task struct {
 
 	// Resolved at enqueue and valid only in this process. A durable queue would
 	// drop these and re-derive them in the worker from Payload.
-	assetID    string
-	outPath    string
+	assetID string
+	outPath string
+	// Where an export is written WHILE it runs, renamed to outPath on success.
+	// See exportWorkPath for why a render in progress must not carry its final
+	// name.
+	workPath   string
 	retirePath string // previous media file to remove once the new one is written
 	plan       *render.Plan
 }
@@ -288,16 +292,53 @@ func (q *workQueue) prepExport(ctx context.Context, t *task, p exportPayload) er
 	if p.Opts.LUTDir == "" {
 		p.Opts.LUTDir, _ = q.srv.Store.LutsDir(p.ProjID)
 	}
-	t.outPath = filepath.Join(renders, "export-"+store.NewID("")+"."+ext)
-	t.plan, err = render.Compile(p.Doc, resolve, t.outPath, renders, p.Opts)
+	id := store.NewID("")
+	t.outPath = filepath.Join(renders, "export-"+id+"."+ext)
+	t.workPath = exportWorkPath(renders, id, ext)
+	t.plan, err = render.Compile(p.Doc, resolve, t.workPath, renders, p.Opts)
 	return err
+}
+
+/*
+exportWorkPath names the file an export is written to while it runs.
+
+An export must not carry its final name until it HAS one. The render history is
+every export-* file in the directory, and it is a list the editor can download
+from and delete from — so a render in progress showed up there the moment ffmpeg
+created the file, offering a truncated download and, worse, a delete button
+pointed at a file ffmpeg still had open.
+
+Deleting it does not stop anything. The writes carry on into the unlinked inode
+for however long the encode has left, and the render fails at the very end, at
+the faststart pass, which is the first moment anything reads the file back BY
+NAME:
+
+	[mp4] Unable to re-open …/export-….mp4 output file for shifting data
+	Error writing trailer: No such file or directory
+
+Twenty minutes of encoding thrown away, and a message about mp4 internals rather
+than about the file having been deleted. Both routes into that are closed here
+by naming: listRenders shows export-* and deleteRender REFUSES anything that is
+not export-*, so a name outside that prefix can be neither offered nor removed.
+
+The rename at the end is within one directory, so publishing is atomic: an
+export appears in the history complete, or not at all.
+*/
+func exportWorkPath(dir, id, ext string) string {
+	return filepath.Join(dir, "rendering-"+id+"."+ext)
 }
 
 func (q *workQueue) runExport(t *task, p exportPayload) (any, error) {
 	job := t.job
 	job.Progress(0.02, "rendering")
 	if err := render.Run(job.Context(), job, t.plan); err != nil {
+		// A half-written render is of no use to anyone, and under its working
+		// name nothing else will ever clean it up.
+		_ = os.Remove(t.workPath)
 		return nil, err
+	}
+	if err := os.Rename(t.workPath, t.outPath); err != nil {
+		return nil, fmt.Errorf("publishing the render: %w", err)
 	}
 	asset, err := q.srv.registerAsset(job.Context(), p.ProjID, store.NewID("asset_"),
 		t.outPath, "Export "+filepath.Base(t.outPath), "export")

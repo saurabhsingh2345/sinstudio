@@ -19,6 +19,13 @@ type renderEntry struct {
 // listRenders returns a project's finished exports (newest first), so the UI can
 // show a render history with re-download. Transient preview frames (frame-*.png)
 // are excluded.
+//
+// "Finished" rests entirely on the export- prefix: a render in progress is
+// called rendering-* until ffmpeg is done with it and is renamed into place
+// afterwards (see exportWorkPath). That is what keeps a running export out of a
+// list whose rows offer a download and a delete — before it, both were offered
+// against a file ffmpeg still had open, and using the delete one killed the
+// render twenty minutes later.
 func (s *Server) listRenders(w http.ResponseWriter, r *http.Request) {
 	projID := r.PathValue("id")
 	if _, err := s.Store.GetProject(r.Context(), projID); err != nil {

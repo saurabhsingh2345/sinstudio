@@ -107,6 +107,32 @@ type Plan struct {
 	Dur     float64
 }
 
+/*
+stillInput holds a single still image for `dur` seconds, as one input.
+
+-stream_loop rather than -loop, because -loop is an option of the IMAGE2
+DEMUXER and not every still is a file image2 opens. AVIF and HEIC are ISOBMFF
+containers, so ffmpeg reaches for the mov demuxer, which has no such option and
+refuses the whole command before it has even read the file:
+
+	Option loop not found. Error opening input file .../asset_….avif
+
+That is one imported screenshot taking down an export that has nothing else
+wrong with it, and no way to tell from the message that the format is the
+problem. Forcing -f image2 does not help: image2 has no AVIF decoder either.
+
+-stream_loop is ffmpeg's own input option and works whatever the demuxer. On a
+PNG the two are exactly equivalent — same duration, same frame count — so this
+is one way to hold a still rather than one per format, and the next still we
+accept cannot reintroduce the bug.
+
+-t bounds the loop: unbounded, an input never reaches EOF, and filters that
+need end-of-stream (gif palettegen, for one) hang instead of finishing.
+*/
+func stillInput(path string, dur float64) []string {
+	return []string{"-stream_loop", "-1", "-t", fmt.Sprintf("%.3f", dur), "-i", path}
+}
+
 // presetDims returns output geometry for a preset (falls back to doc canvas).
 func presetDims(preset string, w, h int) (int, int) {
 	switch preset {
@@ -436,7 +462,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		redacting := len(v.redactions) > 0
 		if v.still {
 			// Looped still (title PNG): bound to its span, PTS shifted to start.
-			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", v.path)
+			args = append(args, stillInput(v.path, v.end-v.start)...)
 			fmt.Fprintf(&fc, "[%d:v]setpts=PTS-STARTPTS+%.3f/TB", inputIdx, v.start)
 		} else {
 			args = append(args, "-i", v.path)
@@ -455,7 +481,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				return nil, err
 			}
 			devGeom = deviceLayout(v.device.Kind, w, h)
-			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", png)
+			args = append(args, stillInput(png, v.end-v.start)...)
 			devIdx = inputIdx + 1
 			extraInputs = 1
 		}
@@ -478,10 +504,10 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			if err := renderBubbleFramePNG(bubble, bbGeom, w, h, framePNG); err != nil {
 				return nil, err
 			}
-			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", maskPNG)
+			args = append(args, stillInput(maskPNG, v.end-v.start)...)
 			bbMaskIdx = inputIdx + 1 + extraInputs
 			extraInputs++
-			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", framePNG)
+			args = append(args, stillInput(framePNG, v.end-v.start)...)
 			bbFrameIdx = bbMaskIdx + 1
 			extraInputs++
 		}
@@ -497,7 +523,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			if err := renderBackdropPNG(v.backdrop, bdGeom, w, h, v.device == nil, wallPNG); err != nil {
 				return nil, err
 			}
-			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", wallPNG)
+			args = append(args, stillInput(wallPNG, v.end-v.start)...)
 			bgIdx = inputIdx + 1 + extraInputs
 			extraInputs++
 			if v.device == nil {
@@ -505,7 +531,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				if err := renderBackdropMaskPNG(bdGeom, maskPNG); err != nil {
 					return nil, err
 				}
-				args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", maskPNG)
+				args = append(args, stillInput(maskPNG, v.end-v.start)...)
 				maskIdx = bgIdx + 1
 				extraInputs++
 			}
@@ -640,7 +666,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		// later clip covering this one also covers its highlight.
 		if v.cursor != nil {
 			for si, seg := range v.cursor.segments {
-				args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", seg.png)
+				args = append(args, stillInput(seg.png, v.end-v.start)...)
 				src := fmt.Sprintf("[cx%d_%d]", i, si)
 				// Shift the looped still onto the clip's span so that `t` inside
 				// its own filters is timeline time — the scale and fade below are
@@ -694,7 +720,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			}
 			// Bound the looped still with -t so every input reaches EOF; an unbounded
 			// -loop hangs filters that need end-of-stream (e.g. gif palettegen).
-			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", dur), "-i", png)
+			args = append(args, stillInput(png, dur)...)
 			out := fmt.Sprintf("[c%d]", i)
 			fmt.Fprintf(&fc, "%s[%d:v]overlay=x=0:y=0:enable='between(t,%.3f,%.3f)':eof_action=repeat:format=auto%s;",
 				base, inputIdx, c.Start, c.End, out)
@@ -795,7 +821,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	if wm := doc.Watermark; wm != nil {
 		if p, ok := resolve(wm.AssetID); ok {
 			g := watermarkLayout(wm, srcDims[wm.AssetID][0], srcDims[wm.AssetID][1], w, h)
-			args = append(args, "-loop", "1", "-t", fmt.Sprintf("%.3f", dur), "-i", p)
+			args = append(args, stillInput(p, dur)...)
 			fmt.Fprintf(&fc, "[%d:v]scale=%d:%d:flags=bicubic,format=rgba,colorchannelmixer=aa=%.3f[wmk];",
 				inputIdx, g.w, g.h, watermarkOpacity(wm))
 			fmt.Fprintf(&fc, "%s[wmk]overlay=%d:%d:format=auto[vwm];", vlab, g.x, g.y)
@@ -981,7 +1007,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
 		hold: hold, cursorFX: c.Cursor, cursorPath: p, motionBlur: c.MotionBlur,
 		redactions: validRedactions(c.Redactions),
-		chroma: c.Chroma, device: c.Device, backdrop: c.Backdrop, bubble: c.Bubble,
+		chroma:     c.Chroma, device: c.Device, backdrop: c.Backdrop, bubble: c.Bubble,
 		still: still,
 	})
 	// A still has no audio stream to contribute. The ffprobe sweep below would
