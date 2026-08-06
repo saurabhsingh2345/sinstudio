@@ -39,7 +39,7 @@ func imgClip(id, asset string, z int) schema.Clip {
 // to be looped and bounded to the clip's span instead.
 func TestImageClipIsLoopedForItsWholeSpan(t *testing.T) {
 	args := compileArgs(t, imageDoc(imgClip("c1", "logo", 0)))
-	if !strings.Contains(args, "-loop 1 -t 5.000 -i /tmp/logo.mp4") {
+	if !strings.Contains(args, "-stream_loop -1 -t 5.000 -i /tmp/logo.mp4") {
 		t.Errorf("image clip not looped for its span:\n%s", args)
 	}
 	if strings.Contains(args, "trim=start=0.000:end=5.000") {
@@ -52,7 +52,7 @@ func TestImageClipIsLoopedForItsWholeSpan(t *testing.T) {
 func TestImageClipLoopCoversHold(t *testing.T) {
 	c := imgClip("c1", "logo", 0)
 	c.Hold = 2
-	if args := compileArgs(t, imageDoc(c)); !strings.Contains(args, "-loop 1 -t 7.000 -i /tmp/logo.mp4") {
+	if args := compileArgs(t, imageDoc(c)); !strings.Contains(args, "-stream_loop -1 -t 7.000 -i /tmp/logo.mp4") {
 		t.Errorf("hold not folded into the loop duration:\n%s", args)
 	}
 }
