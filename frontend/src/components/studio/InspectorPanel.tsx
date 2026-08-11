@@ -70,6 +70,7 @@ import {
   detachedAudioFor,
   fmtDur,
   fmtTC,
+  volumePatch,
 } from "./bridge";
 
 // Easing curves the renderer + preview both understand (render.easeProgress).
@@ -442,10 +443,16 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
   const setTr = (patch: Partial<Clip["transform"]>) => updateClip(trackId, clip.id, { transform: { ...tr, ...patch } });
   const eff = clip.effects ?? {};
   const tIn = clip.transitionIn?.type || "none";
+  // A music/voiceover clip carries sound and no picture: lead with its level and
+  // skip the transform box, which has nothing to move.
+  const soundOnly = asset?.kind === "audio";
+  const hasSound = !!asset && asset.kind !== "image" && asset.hasAudio !== false;
 
   return (
     <>
       {asset && <LivePluginSection asset={asset} />}
+      {hasSound && <ClipAudioSection trackId={trackId} clip={clip} soundOnly={soundOnly} />}
+      {!soundOnly && (
       <Section label="Transform">
         <div className="grid grid-cols-2 gap-2">
           <Field label="X"><NumInput value={tr.x} step={5} suffix="px" onChange={(v) => setTr({ x: v })} /></Field>
@@ -457,6 +464,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
         <AnchorPicker tr={tr} onChange={setTr} />
         <LayerRow trackId={trackId} clip={clip} />
       </Section>
+      )}
 
       {asset && asset.kind !== "audio" && <StylePresetsSection trackId={trackId} clip={clip} asset={asset} />}
       {asset && asset.kind !== "audio" && <ZoomPanSection trackId={trackId} clip={clip} asset={asset} />}
@@ -489,7 +497,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
         </Section>
       )}
 
-      <KeyframeEditor trackId={trackId} clip={clip} />
+      {!soundOnly && <KeyframeEditor trackId={trackId} clip={clip} />}
 
       <Section label="Timing">
         <div className="grid grid-cols-2 gap-2">
@@ -524,6 +532,7 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
         )}
       </Section>
 
+      {!soundOnly && (
       <Section label="Transition" defaultOpen={false}>
         <Field label="Type">
           <Select value={tIn} onValueChange={(v) => updateClip(trackId, clip.id, { transitionIn: v === "none" ? undefined : { type: v, duration: clip.transitionIn?.duration || 0.35 } })}>
@@ -541,12 +550,17 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
           <Field label="Duration"><NumInput value={clip.transitionIn?.duration ?? 0.35} step={0.1} min={0.1} suffix="s" onChange={(v) => updateClip(trackId, clip.id, { transitionIn: { type: tIn, duration: v } })} /></Field>
         )}
       </Section>
+      )}
 
+      {/* Sound-only clips get their fades next to the fader, in Audio. */}
+      {!soundOnly && (
       <Section label="Fades" defaultOpen={false}>
         <Field label="Fade in"><NumInput value={clip.fadeIn ?? 0} step={0.1} min={0} suffix="s" onChange={(v) => updateClip(trackId, clip.id, { fadeIn: v })} /></Field>
         <Field label="Fade out"><NumInput value={clip.fadeOut ?? 0} step={0.1} min={0} suffix="s" onChange={(v) => updateClip(trackId, clip.id, { fadeOut: v })} /></Field>
       </Section>
+      )}
 
+      {!soundOnly && (
       <Section label="Effects" defaultOpen={false}>
         <SliderRow label="Bright" value={Math.round((eff.brightness ?? 0) * 100)} min={-100} max={100} onChange={(v) => updateEffect(trackId, clip.id, "brightness", v / 100)} />
         <SliderRow label="Contrast" value={Math.round((eff.contrast ?? 1) * 100)} min={0} max={200} onChange={(v) => updateEffect(trackId, clip.id, "contrast", v / 100)} />
@@ -555,7 +569,51 @@ function ClipInspector({ trackId, clip }: { trackId: string; clip: Clip }) {
         <SliderRow label="Blur" value={eff.blur ?? 0} min={0} max={30} step={0.5} onChange={(v) => updateEffect(trackId, clip.id, "blur", v)} />
         <button onClick={() => resetEffects(trackId, clip.id)} className="text-[10px] text-muted-foreground hover:text-foreground">reset effects</button>
       </Section>
+      )}
     </>
+  );
+}
+
+// ClipAudioSection is the fader on any clip that makes sound — the music or
+// voiceover you just dropped on an audio lane, or a screen recording's own
+// audio. Before this, the only level control lived on the timeline block's
+// rubber-band and on the sub-lane inspectors, so a music clip selected the
+// obvious way (click it) showed no volume at all.
+function ClipAudioSection({ trackId, clip, soundOnly }: { trackId: string; clip: Clip; soundOnly: boolean }) {
+  const updateClip = useStudio((s) => s.updateClip);
+  const toggleTrackFlag = useStudio((s) => s.toggleTrackFlag);
+  const track = useStudio((s) => s.doc?.tracks.find((t) => t.id === trackId));
+  const onAudioLane = track?.kind === "audio";
+  const vol = Math.round((clip.mute ? 0 : (clip.volume ?? 1)) * 100);
+
+  return (
+    <Section label="Audio">
+      <SliderRow
+        label="Volume"
+        value={vol}
+        min={0}
+        max={200}
+        onChange={(v) => updateClip(trackId, clip.id, volumePatch(clip, v / 100))}
+        fmt={(v) => (v === 0 ? "mute" : `${v}%`)}
+      />
+      {soundOnly && (
+        <div className="grid grid-cols-2 gap-2">
+          <Field label="Fade in"><NumInput value={clip.fadeIn ?? 0} step={0.1} min={0} suffix="s" onChange={(v) => updateClip(trackId, clip.id, { fadeIn: v })} /></Field>
+          <Field label="Fade out"><NumInput value={clip.fadeOut ?? 0} step={0.1} min={0} suffix="s" onChange={(v) => updateClip(trackId, clip.id, { fadeOut: v })} /></Field>
+        </div>
+      )}
+      {!soundOnly && (
+        <ToggleRow label="Mute clip" hint="Silences this clip's own audio" checked={!!clip.mute} onChange={(b) => updateClip(trackId, clip.id, { mute: b })} />
+      )}
+      {onAudioLane && (
+        <ToggleRow
+          label="Duck under voice"
+          hint="Dips this whole lane whenever someone is talking"
+          checked={!!track?.duck}
+          onChange={() => toggleTrackFlag(trackId, "duck")}
+        />
+      )}
+    </Section>
   );
 }
 
@@ -1052,7 +1110,7 @@ function AudioInspector({ doc, trackId, clip }: { doc: EditDoc; trackId: string;
             <Button size="sm" variant="ghost" className="h-7 w-full text-xs" onClick={() => updateClip(tId, target.id, { start: +Math.max(0, useStudio.getState().playhead).toFixed(3) })}>At playhead</Button>
           </div>
         </div>
-        <SliderRow label="Volume" value={Math.round((target.volume ?? 1) * 100)} min={0} max={200} onChange={(v) => updateClip(tId, target.id, { volume: v / 100 })} fmt={(v) => `${v}%`} />
+        <SliderRow label="Volume" value={Math.round((target.mute ? 0 : (target.volume ?? 1)) * 100)} min={0} max={200} onChange={(v) => updateClip(tId, target.id, volumePatch(target, v / 100))} fmt={(v) => (v === 0 ? "mute" : `${v}%`)} />
         <Field label="Fade in"><NumInput value={target.fadeIn ?? 0} step={0.1} min={0} suffix="s" onChange={(v) => updateClip(tId, target.id, { fadeIn: v })} /></Field>
         <Field label="Fade out"><NumInput value={target.fadeOut ?? 0} step={0.1} min={0} suffix="s" onChange={(v) => updateClip(tId, target.id, { fadeOut: v })} /></Field>
       </Section>
@@ -1197,7 +1255,8 @@ function SoundtrackInspector({ doc, trackId }: { doc: EditDoc; trackId: string }
   const toggleTrackFlag = useStudio((s) => s.toggleTrackFlag);
   const batchUpdateClips = useStudio((s) => s.batchUpdateClips);
   const track = doc.tracks.find((t) => t.id === trackId);
-  const vol = Math.round(((track?.clips?.[0]?.volume ?? 1) as number) * 100);
+  const first = track?.clips?.[0];
+  const vol = Math.round((first?.mute ? 0 : (first?.volume ?? 1)) * 100);
   return (
     <Section label="Soundtrack">
       <SliderRow
@@ -1207,9 +1266,9 @@ function SoundtrackInspector({ doc, trackId }: { doc: EditDoc; trackId: string }
         max={200}
         onChange={(v) => {
           if (!track?.clips) return;
-          batchUpdateClips(track.clips.map((c) => ({ trackId, clipId: c.id, patch: { volume: v / 100 } })));
+          batchUpdateClips(track.clips.map((c) => ({ trackId, clipId: c.id, patch: volumePatch(c, v / 100) })));
         }}
-        fmt={(v) => `${v}%`}
+        fmt={(v) => (v === 0 ? "mute" : `${v}%`)}
       />
       <div className="flex items-center justify-between rounded-md bg-panel-2 px-2 py-1.5">
         <span className="text-[12px]">Duck under voice</span>
