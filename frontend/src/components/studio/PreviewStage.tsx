@@ -205,6 +205,8 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
     for (const { clip } of audios) {
       const a = audioRefs.current[clip.id];
       if (!a) continue;
+      // Same "0 means unset" rule as video, so silence has to come from `mute`.
+      a.muted = !!clip.mute;
       a.volume = Math.max(0, Math.min(1, clip.volume || 1));
       const sp = clip.speed && clip.speed > 0 ? clip.speed : 1;
       if (a.playbackRate !== sp) a.playbackRate = sp;

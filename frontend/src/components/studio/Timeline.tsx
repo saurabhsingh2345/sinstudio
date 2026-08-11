@@ -56,7 +56,7 @@ import type { Clip, EditDoc, Track } from "../../types";
 import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
 import { getPeaks, peaksNow } from "../../peaks";
 import { zOrder } from "../../clipZ";
-import { hueFor, fmtTC } from "./bridge";
+import { hueFor, fmtTC, volumePatch } from "./bridge";
 import type { Selection } from "./selection";
 import { findClip } from "./selection";
 
@@ -1049,7 +1049,7 @@ function ClipBar({
   // envelope and adjustable with on-clip handles.
   const fadeIn = clip.fadeIn && clip.fadeIn > 0 ? clip.fadeIn : 0;
   const fadeOut = clip.fadeOut && clip.fadeOut > 0 ? clip.fadeOut : 0;
-  const level = isAudioLane ? (clip.volume ?? 1) : (clip.transform.opacity ?? 1);
+  const level = isAudioLane ? (clip.mute ? 0 : (clip.volume ?? 1)) : (clip.transform.opacity ?? 1);
   const levelY = (1 - Math.max(0, Math.min(1, level))) * (rowH - 8) + 2; // px from clip top
 
   // Snap a proposed edge value to the nearest candidate within SNAP_PX.
@@ -1250,7 +1250,7 @@ function ClipBar({
       const v = +frac.toFixed(2);
       const cur = findClip(useStudio.getState().doc, track.id, clip.id);
       if (!cur) return;
-      if (isAudioLane) st.updateClip(track.id, clip.id, { volume: v });
+      if (isAudioLane) st.updateClip(track.id, clip.id, volumePatch(cur, v));
       else st.updateClip(track.id, clip.id, { transform: { ...cur.transform, opacity: v } });
     };
     const up = () => {

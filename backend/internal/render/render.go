@@ -243,7 +243,9 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				continue
 			}
 			for _, c := range t.Clips {
-				if c.Disabled {
+				// Mute is how a clip on an audio lane says "silent": Volume 0 reads
+				// as "unset" here and would come back at full gain.
+				if c.Disabled || c.Mute {
 					continue
 				}
 				p, ok := resolve(c.AssetID)

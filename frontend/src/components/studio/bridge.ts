@@ -67,6 +67,19 @@ export function detachedAudioFor(d: EditDoc, videoClipId: string): { trackId: st
   return undefined;
 }
 
+// volumePatch turns a gain (0..2, 1 = as recorded) into a clip patch.
+//
+// Volume 0 can't say "silent" on its own: the renderer reads a zero as "unset"
+// and plays the clip at full gain, so a fader pulled all the way down would get
+// LOUDER on export. Silence is spelled with `mute` instead. Lifting the fader
+// only clears a mute this fader set (the volume was still 0) — never one that
+// came from detaching the clip's audio to its own lane.
+export function volumePatch(c: Clip, v: number): Partial<Clip> {
+  const vol = Math.max(0, v);
+  if (vol <= 0) return { volume: 0, mute: true };
+  return c.mute && !c.volume ? { volume: vol, mute: false } : { volume: vol };
+}
+
 // cueForClip returns the first caption cue that overlaps a clip's timeline span.
 export function cueForClip(cues: CaptionCue[] | undefined, c: Clip): CaptionCue | undefined {
   if (!cues) return undefined;

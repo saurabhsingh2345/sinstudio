@@ -76,9 +76,10 @@ type Clip struct {
 	// LUT names a .cube color lookup table (in the project's luts dir) applied to
 	// this clip's video. Empty = none.
 	LUT string `json:"lut,omitempty"`
-	// Mute silences this clip's own audio in the export — used after its audio is
-	// detached to a separate audio-track clip. This is distinct from Volume 0,
-	// which the renderer treats as "unset" (and plays at full gain).
+	// Mute silences this clip's own audio in the export — set after its audio is
+	// detached to a separate audio-track clip, and by any fader pulled to zero.
+	// This is distinct from Volume 0, which the renderer treats as "unset" (and
+	// plays at full gain), so silence must always be spelled with Mute.
 	Mute bool `json:"mute,omitempty"`
 	// Hold appends this many seconds of the frozen last frame after the source
 	// plays out, so a clip can cover trailing audio without cutting to black.
