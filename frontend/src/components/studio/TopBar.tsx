@@ -23,6 +23,9 @@ import { cn } from "@/lib/utils";
 import { useStudio } from "../../state";
 import type { EditDoc } from "../../types";
 import { ASPECT_CANVAS, type AspectKey } from "./bridge";
+import { planReframe, reframeSummary } from "../../reframe";
+import { getCursorTrack, cursorTrackNow } from "../../cursorTracks";
+import { toast } from "../../toast";
 const ASPECTS = {
   "9:16": { label: "9:16 · Vertical", Icon: RectangleVertical },
   "1:1": { label: "1:1 · Square", Icon: Square },
@@ -70,12 +73,35 @@ export function TopBar({
   const mutate = useStudio((s) => s.mutate);
   const A = ASPECTS[aspect];
 
-  const setAspect = (k: AspectKey) => {
+  // Switching aspect reframes the content, it does not merely resize the frame.
+  // Setting the canvas alone drops a 16:9 recording into a 1080x1920 letterbox
+  // with two thirds of the picture missing, which is what this used to do.
+  //
+  // The pointer sidecars are fetched first because the reframe wants to
+  // recompute each recording's camera for the new shape, and that needs the
+  // track. A clip whose sidecar cannot be fetched is still filled to the frame —
+  // a worse result rather than a wrong one.
+  const setAspect = async (k: AspectKey) => {
     const { w, h } = ASPECT_CANVAS[k];
+    const canvas = { width: w, height: h };
+    await Promise.all(
+      (doc.assets ?? [])
+        .filter((a) => a.hasCursor)
+        .map((a) => getCursorTrack(doc.id, a.id).catch(() => null))
+    );
+    const plan = planReframe(doc, canvas, (assetId) => cursorTrackNow(doc.id, assetId));
     mutate((d) => {
-      d.canvas.width = w;
-      d.canvas.height = h;
+      d.canvas.width = canvas.width;
+      d.canvas.height = canvas.height;
+      // Applied inside the same mutate as the canvas, so the whole switch is
+      // one undo. Half a reframe is worse than none.
+      for (const u of plan.patches) {
+        const c = d.tracks.find((t) => t.id === u.trackId)?.clips?.find((x) => x.id === u.clipId);
+        if (c) Object.assign(c, u.patch);
+      }
     });
+    const summary = reframeSummary(plan);
+    if (summary) toast.info(`${k} — ${summary}`);
   };
 
   const status = conflict ? "Conflict" : saving ? "Saving…" : dirty ? "Unsaved" : "Saved";
@@ -138,7 +164,7 @@ export function TopBar({
             {(Object.keys(ASPECTS) as AspectKey[]).map((k) => {
               const Item = ASPECTS[k];
               return (
-                <DropdownMenuItem key={k} onClick={() => setAspect(k)} className="flex items-center gap-2">
+                <DropdownMenuItem key={k} onClick={() => void setAspect(k)} className="flex items-center gap-2">
                   <Item.Icon className="h-4 w-4 text-muted-foreground" />
                   <span>{Item.label}</span>
                   {aspect === k && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-brand" />}

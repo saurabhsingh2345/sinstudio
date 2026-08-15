@@ -208,6 +208,26 @@ position produces a video with no cursor at all.
 
 ---
 
+## Switching to vertical
+
+The aspect menu in the top bar reframes the project, it does not merely resize
+the frame. Changing the canvas alone drops a 16:9 recording into a 1080×1920
+letterbox with two thirds of the picture missing — "vertical" is a decision
+about what stays in frame, not a canvas size.
+
+So anything that would letterbox is filled instead, and every clip with a
+pointer track has its camera **recomputed** for the new shape: the same pass
+that ran when the recording landed, asked again with a different answer
+available. A 9:16 frame has far less width to spare, so what it finds is a
+genuinely different camera rather than the landscape one stretched.
+
+The whole switch is one undo, and the toast says how many clips it touched.
+Webcam bubbles and device frames are left alone — both already fit the picture
+into something of their own, and filling would crop the thing they are built
+around.
+
+---
+
 ## What happens when a recording lands
 
 Automatically, as the clip hits the timeline:
