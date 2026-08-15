@@ -198,6 +198,39 @@ const DIP_IN = 0.06;
 const DIP_OUT = 0.26;
 const DIP_MAX = 0.28;
 
+/*
+ * Motion blur on the cursor itself.
+ *
+ * Mirrors render.pointerBlurSigma exactly — the sigmas are the shared,
+ * golden-tested number. How they are *drawn* is not shared: the exporter runs a
+ * real gaussian per axis, and canvas has only an isotropic filter, so the
+ * preview lays down a few ghost copies along the travel instead. That is a
+ * genuine approximation of the texture, in the same spirit as the mosaic the
+ * redaction preview cannot do. The extent and the timing are exact.
+ */
+const BLUR_TRAVEL_K = 0.33;
+const BLUR_MIN_TRAVEL = 1.5;
+const BLUR_MAX_OF_SIZE = 0.2;
+
+/** Mirrors render.pointerBlurSigma. Velocity and size in the same unit. */
+export function pointerBlurSigma(
+  vx: number,
+  vy: number,
+  amount: number,
+  size: number,
+  fps: number
+): [number, number] {
+  if (amount <= 0 || fps <= 0 || size <= 0) return [0, 0];
+  const a = clamp01(amount);
+  const max = size * BLUR_MAX_OF_SIZE * a;
+  const axis = (v: number) => {
+    const travel = Math.abs(v) / fps;
+    if (travel < BLUR_MIN_TRAVEL) return 0;
+    return Math.max(0, Math.min(max, (travel - BLUR_MIN_TRAVEL) * BLUR_TRAVEL_K * a));
+  };
+  return [axis(vx), axis(vy)];
+}
+
 /** The drawn cursor's size multiplier at source time t. */
 export function pointerClickScale(clicks: number[], t: number, amount: number): number {
   if (amount <= 0 || !clicks.length) return 1;
@@ -251,7 +284,10 @@ export function drawCursorFX(
   _asset?: Pick<Asset, "hasCursor">,
   camera = false,
   /** When set, use the video element's clock so overlays match what's on screen. */
-  mediaT?: number
+  mediaT?: number,
+  /** The project's frame rate. Motion blur models one frame's exposure, so the
+   *  same flick smears half as far at 60fps as at 30 — see pointerBlurSigma. */
+  fps = 30
 ) {
   const fx = clip.cursor;
   if (!fx || !track.samples.length) return;
@@ -321,8 +357,11 @@ export function drawCursorFX(
     }
   }
   // Pointer position on the stage, via the clip's box.
-  const px = box.left + (fx0 + (at.x / vw) * cfw) * box.vw;
-  const py = box.top + (fy0 + (at.y / vh) * cfh) * box.vh;
+  const toStage = (p: { x: number; y: number }): [number, number] => [
+    box.left + (fx0 + (p.x / vw) * cfw) * box.vw,
+    box.top + (fy0 + (p.y / vh) * cfh) * box.vh,
+  ];
+  const [px, py] = toStage(at);
   // How magnified the clip is, so effects grow with the content they mark.
   const zoom = box.vw / Math.max(1, ctx.canvas.width);
   const unit = canvasScale * zoom;
@@ -402,35 +441,66 @@ export function drawCursorFX(
     const size = (fx.pointer.size ?? PTR_DEFAULTS.size) * unit * dip;
     const col = fx.pointer.color ?? PTR_DEFAULTS.color;
     const op = (fx.pointer.opacity ?? PTR_DEFAULTS.opacity) * idleAlpha;
-    ctx.globalAlpha = clamp01(op);
-    ctx.fillStyle = col;
-    ctx.strokeStyle = "rgba(0,0,0,0.9)";
-    ctx.lineWidth = Math.max(1, size * 0.11);
-    ctx.lineJoin = "round";
-
     const style = fx.pointer.style ?? PTR_DEFAULTS.style;
-    if (style === "dot" || style === "ring") {
-      ctx.beginPath();
-      ctx.arc(px, py, size / 2, 0, Math.PI * 2);
-      if (style === "ring") {
-        ctx.lineWidth = Math.max(1, size * 0.22);
-        ctx.strokeStyle = col;
-        ctx.stroke();
+
+    const shape = (ox: number, oy: number) => {
+      ctx.fillStyle = col;
+      ctx.strokeStyle = "rgba(0,0,0,0.9)";
+      ctx.lineWidth = Math.max(1, size * 0.11);
+      ctx.lineJoin = "round";
+      if (style === "dot" || style === "ring") {
+        ctx.beginPath();
+        ctx.arc(px + ox, py + oy, size / 2, 0, Math.PI * 2);
+        if (style === "ring") {
+          ctx.lineWidth = Math.max(1, size * 0.22);
+          ctx.strokeStyle = col;
+          ctx.stroke();
+        } else {
+          ctx.fill();
+          ctx.stroke();
+        }
       } else {
-        ctx.fill();
+        ctx.beginPath();
+        ARROW.forEach(([ax, ay], i) => {
+          const x = px + ox + ax * size;
+          const y = py + oy + ay * size;
+          if (i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.closePath();
         ctx.stroke();
+        ctx.fill();
+      }
+    };
+
+    // Motion blur. The travel is measured over exactly one frame — the same
+    // exposure the exporter models — by asking where the pointer was a frame
+    // ago, which needs no state carried between draws.
+    const amount = fx.pointer.motionBlur ?? 0;
+    let sx = 0;
+    let sy = 0;
+    if (amount > 0 && fps > 0) {
+      const prev = cursorAt(samples, srcT - 1 / fps);
+      if (prev) {
+        const [qx, qy] = toStage(prev);
+        [sx, sy] = pointerBlurSigma((px - qx) * fps, (py - qy) * fps, amount, size, fps);
+      }
+    }
+
+    if (sx > 0.5 || sy > 0.5) {
+      // A box smear along the travel, in place of the gaussian the export runs.
+      // Ghost copies rather than ctx.filter because canvas blur is isotropic —
+      // it would round a horizontal flick out in every direction, which is the
+      // opposite of what motion blur says about the movement.
+      const n = 5;
+      for (let i = 0; i < n; i++) {
+        const f = i / (n - 1) - 0.5;
+        ctx.globalAlpha = clamp01(op) / n;
+        shape(sx * 3 * f, sy * 3 * f);
       }
     } else {
-      ctx.beginPath();
-      ARROW.forEach(([ax, ay], i) => {
-        const x = px + ax * size;
-        const y = py + ay * size;
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.closePath();
-      ctx.stroke();
-      ctx.fill();
+      ctx.globalAlpha = clamp01(op);
+      shape(0, 0);
     }
   }
 

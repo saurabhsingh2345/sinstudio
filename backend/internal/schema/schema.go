@@ -174,6 +174,10 @@ type CursorPointer struct {
 	// ClickDip presses the cursor itself in at each click, 0..1. The rings say
 	// where a click landed; this is what makes it look like a press happened.
 	ClickDip float64 `json:"clickDip,omitempty"`
+	// MotionBlur smears the cursor along its own travel when it moves fast,
+	// 0..1. Distinct from Clip.MotionBlur, which blurs the picture on camera
+	// moves and leaves the cursor — composited afterwards — perfectly sharp.
+	MotionBlur float64 `json:"motionBlur,omitempty"`
 	// AutoHide fades the cursor out once it has sat still this many seconds,
 	// and brings it straight back when it moves. 0 leaves it on screen for the
 	// whole clip. Only the drawn pointer and its highlight fade — a burned-in

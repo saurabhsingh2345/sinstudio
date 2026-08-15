@@ -53,6 +53,9 @@ export interface CursorPointer {
   autoHide?: number;
   /** How far the cursor presses in at each click, 0..1. 0 leaves it rigid. */
   clickDip?: number;
+  /** Smear the cursor along its travel when it moves fast, 0..1. Distinct from
+   *  Clip.motionBlur, which blurs the picture and leaves the cursor sharp. */
+  motionBlur?: number;
 }
 export interface CursorClickSound {
   volume?: number; // 0..1

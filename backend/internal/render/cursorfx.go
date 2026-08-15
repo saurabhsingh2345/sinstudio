@@ -78,6 +78,9 @@ type cursorSegment struct {
 	// A named colourchannel mixer whose alpha gain sendcmd drives, for the
 	// auto-hide fade. Empty leaves the overlay at the alpha it was drawn with.
 	alphaName string
+	// A named gaussian blur whose per-axis sigma sendcmd drives, for the
+	// pointer's motion blur. Empty adds no blur filter at all.
+	blurName string
 }
 
 func hexColor(s, fallback string) color.NRGBA {
@@ -227,6 +230,7 @@ func buildCursorFX(
 	idx int,
 	v *visual,
 	canvasW, canvasH int,
+	fps int,
 ) (*cursorPlan, error) {
 	start, end := v.start, v.end
 	if fx == nil || track == nil || len(track.Samples) == 0 {
@@ -290,7 +294,7 @@ func buildCursorFX(
 			y:      fmt.Sprintf("%d", -canvasH/2),
 			enable: fmt.Sprintf("between(t,%.3f,%.3f)", start, end),
 		})
-		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, nil, canvasW, canvasH, 0, 0)...)
+		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, nil, canvasW, canvasH, 0, 0, nil)...)
 	}
 
 	if hl := fx.Highlight; hl != nil {
@@ -317,7 +321,7 @@ func buildCursorFX(
 		seg := &plan.segments[len(plan.segments)-1]
 		seg.scaleName = name
 		seg.baseW, seg.baseH = size, size
-		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, nil, size/2, size/2, size, size)...)
+		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, nil, size/2, size/2, size, size, nil)...)
 		if len(alphaSteps) > 0 {
 			seg.alphaName = name
 			cmds = append(cmds, alphaCommands(name)...)
@@ -391,7 +395,13 @@ func buildCursorFX(
 			size = defPointerSize
 		}
 		pp := filepath.Join(dir, fmt.Sprintf("cur-%d-ptr.png", idx))
-		ptrW, ptrH, hotX, hotY, err := writePointerPNG(pp, p.Style, size, hexColor(p.Color, defPointerColor), p.Opacity)
+		// Room for the smear to bleed into, only when there is a smear. Padding
+		// unconditionally would enlarge every pointer overlay for nothing.
+		pad := 0
+		if p.MotionBlur > 0 {
+			pad = int(math.Round(float64(size) * pointerBlurPad))
+		}
+		ptrW, ptrH, hotX, hotY, err := writePointerPNG(pp, p.Style, size, pad, hexColor(p.Color, defPointerColor), p.Opacity)
 		if err != nil {
 			return nil, err
 		}
@@ -418,7 +428,16 @@ func buildCursorFX(
 			dense.Samples = densifyForClicks(track.Samples, clicks)
 			ptrTrack = &dense
 		}
-		cmds = append(cmds, cursorCommands(v, ptrTrack, name, canvasW, canvasH, dip, hotX, hotY, ptrW, ptrH)...)
+		var blur func(vx, vy, size float64) (float64, float64)
+		if p.MotionBlur > 0 {
+			blur = func(vx, vy, size float64) (float64, float64) {
+				return pointerBlurSigma(vx, vy, p.MotionBlur, size, fps)
+			}
+		}
+		cmds = append(cmds, cursorCommands(v, ptrTrack, name, canvasW, canvasH, dip, hotX, hotY, ptrW, ptrH, blur)...)
+		if blur != nil {
+			seg.blurName = name
+		}
 		if len(alphaSteps) > 0 {
 			seg.alphaName = name
 			cmds = append(cmds, alphaCommands(name)...)
@@ -511,9 +530,16 @@ func contentFracFor(v *visual, vw, vh, w, h int, t float64) (x0, y0, fw, fh floa
 // dip, when set, is an extra size multiplier at a given source time — the
 // pointer's reaction to a click. It scales the hotspot offset as well as the
 // image, or the cursor would shrink away from its own tip.
-func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dip func(float64) float64, hotX, hotY int, sizeW, sizeH int) []string {
+//
+// blur, when set, turns the overlay's velocity in canvas pixels per second into
+// a per-axis blur sigma. Velocity is measured between consecutive commands in
+// TIMELINE time, so a clip played at half speed smears half as much — which is
+// what the viewer actually sees, and what a real camera would have recorded.
+func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dip func(float64) float64, hotX, hotY int, sizeW, sizeH int, blur func(vx, vy, size float64) (float64, float64)) []string {
 	out := make([]string, 0, len(track.Samples))
 	var lastX, lastY, lastW int
+	var lastPx, lastPy, lastAt float64
+	var lastSX, lastSY float64
 	var have bool
 	for _, s := range track.Samples {
 		ts := float64(s.T) / 1000
@@ -553,14 +579,32 @@ func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dip f
 			cmds = fmt.Sprintf(", scale@%s w %d, scale@%s h %d",
 				sendcmdEscape(name), maxInt(2, sw), sendcmdEscape(name), maxInt(2, sh))
 			lastW = sw
-		} else if have && x == lastX && y == lastY {
+		}
+		// The smear is measured against the previous command's position, so it
+		// follows the overlay's real path on the canvas — including the part of
+		// the motion that comes from the clip being panned rather than from the
+		// hand moving.
+		var bsx, bsy float64
+		if blur != nil && have {
+			if dt := at - lastAt; dt > 1e-6 {
+				bsx, bsy = blur((px-lastPx)/dt, (py-lastPy)/dt, float64(sh))
+			}
+		}
+		if blur != nil && (math.Abs(bsx-lastSX) > 0.15 || math.Abs(bsy-lastSY) > 0.15) {
+			cmds += fmt.Sprintf(", gblur@%s sigma %.2f, gblur@%s sigmaV %.2f",
+				sendcmdEscape(name), bsx, sendcmdEscape(name), bsy)
+			lastSX, lastSY = bsx, bsy
+		}
+		if cmds == "" && have && x == lastX && y == lastY {
 			// The sampler's heartbeat repeats a stationary position every 250ms;
 			// re-issuing an unchanged command just makes the script bigger.
+			lastPx, lastPy, lastAt = px, py, at
 			continue
 		}
 		out = append(out, fmt.Sprintf("%.3f overlay@%s x %d, overlay@%s y %d%s;",
 			at, sendcmdEscape(name), x, sendcmdEscape(name), y, cmds))
 		lastX, lastY, have = x, y, true
+		lastPx, lastPy, lastAt = px, py, at
 	}
 	return out
 }

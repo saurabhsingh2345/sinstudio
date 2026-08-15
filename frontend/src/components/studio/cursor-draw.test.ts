@@ -10,6 +10,7 @@ import {
   FADE_IN,
   FADE_OUT,
   pointerClickScale,
+  pointerBlurSigma,
 } from "./cursor-draw";
 import { clicksInStep } from "../../clickAudio";
 import type { CursorSample, CursorSidecar } from "../../cursor";
@@ -486,5 +487,95 @@ describe("drawCursorFX click dip", () => {
     const { ctx, calls } = stubCtx();
     drawCursorFX(ctx, clipFor({ pointer: { style: "dot", size: 100 } }), clicked(), FULL_BOX, 1.06, 1);
     expect(calls.join(" ")).toContain("arc(960,540,50");
+  });
+});
+
+// Motion blur. The sigmas are the shared number — same goldens as
+// TestPointerBlurGolden — so a flick smears by the same extent in both halves,
+// even though the export draws a real gaussian and the preview lays down
+// ghosts.
+describe("pointerBlurSigma", () => {
+  it("matches the Go golden", () => {
+    const size = 44;
+    const fps = 30;
+    const cases: [number, number, number, [number, number]][] = [
+      [0, 0, 1, [0, 0]],
+      [30, 0, 1, [0, 0]],
+      [900, 0, 1, [8.8, 0]],
+      [0, 900, 1, [0, 8.8]],
+      [900, 900, 1, [8.8, 8.8]],
+      [900, 0, 0.5, [4.4, 0]],
+      [900, 900, 0, [0, 0]],
+    ];
+    for (const [vx, vy, amount, [wx, wy]] of cases) {
+      const [gx, gy] = pointerBlurSigma(vx, vy, amount, size, fps);
+      expect(gx).toBeCloseTo(wx, 1);
+      expect(gy).toBeCloseTo(wy, 1);
+    }
+  });
+
+  it("smears less at a higher frame rate, because it models one exposure", () => {
+    const [a30] = pointerBlurSigma(400, 0, 1, 200, 30);
+    const [a60] = pointerBlurSigma(400, 0, 1, 200, 60);
+    expect(a30).toBeGreaterThan(a60);
+    expect(a60).toBeGreaterThan(0);
+  });
+
+  it("caps at a fraction of the cursor, which scales with it", () => {
+    const [small] = pointerBlurSigma(1e6, 0, 1, 44, 30);
+    const [big] = pointerBlurSigma(1e6, 0, 1, 88, 30);
+    expect(small).toBeCloseTo(44 * 0.2, 9);
+    expect(big).toBeCloseTo(2 * small, 9);
+  });
+
+  it("degenerates safely", () => {
+    expect(pointerBlurSigma(900, 900, 0, 44, 30)).toEqual([0, 0]);
+    expect(pointerBlurSigma(900, 900, 1, 0, 30)).toEqual([0, 0]);
+    expect(pointerBlurSigma(900, 900, 1, 44, 0)).toEqual([0, 0]);
+  });
+});
+
+describe("drawCursorFX motion blur", () => {
+  // Still for a second, then flung 1200px across the recording in one second.
+  const flick = (): CursorSidecar =>
+    trackFor({
+      hidden: true,
+      samples: [
+        { t: 0, x: 100, y: 540 },
+        { t: 1000, x: 100, y: 540 },
+        { t: 2000, x: 1300, y: 540 },
+      ],
+    });
+
+  const arcsAt = (t: number, motionBlur: number) => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(
+      ctx,
+      clipFor({ pointer: { style: "dot", size: 60, motionBlur } }),
+      flick(), FULL_BOX, t, 1, undefined, false, undefined, 30
+    );
+    return calls.filter((c) => c.startsWith("arc("));
+  };
+
+  it("lays a smear along the travel while the cursor is moving", () => {
+    expect(arcsAt(1.5, 1).length).toBeGreaterThan(1);
+  });
+
+  it("draws one crisp cursor while it is at rest", () => {
+    expect(arcsAt(0.5, 1)).toHaveLength(1);
+  });
+
+  it("draws one crisp cursor when the blur is off, however fast it moves", () => {
+    expect(arcsAt(1.5, 0)).toHaveLength(1);
+  });
+
+  // A horizontal flick must smear horizontally. An isotropic blur would spread
+  // it in every direction, which says the opposite about the movement.
+  it("smears along the direction of travel, not around it", () => {
+    const arcs = arcsAt(1.5, 1).map((c) => c.slice(4, -1).split(",").map(Number));
+    const xs = arcs.map((a) => a[0]);
+    const ys = arcs.map((a) => a[1]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(2);
+    expect(Math.max(...ys) - Math.min(...ys)).toBe(0);
   });
 });

@@ -388,7 +388,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			}
 		}
 
-		plan, err := buildCursorFX(v.cursorFX, track, srtDir, i, v, w, h)
+		plan, err := buildCursorFX(v.cursorFX, track, srtDir, i, v, w, h, fps)
 		if err != nil {
 			return nil, err
 		}
@@ -687,6 +687,14 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				}
 				if seg.fadeDur > 0 {
 					fmt.Fprintf(&fc, ",fade=t=out:st=%.3f:d=%.3f:alpha=1", seg.fadeStart, seg.fadeDur)
+				}
+				// A named blur for the cursor's motion smear. sigma 0 is a true
+				// no-op, so a cursor that never moves fast renders exactly as it
+				// would without the filter. It sits before the alpha gain
+				// because a faded cursor should smear by the same amount, not
+				// less.
+				if seg.blurName != "" {
+					fmt.Fprintf(&fc, ",gblur@%s=sigma=0:sigmaV=0", seg.blurName)
 				}
 				// A named alpha gain for the auto-hide fade. It starts fully
 				// opaque, so a clip whose pointer never parks is untouched by

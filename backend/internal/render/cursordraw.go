@@ -49,9 +49,17 @@ func rasterize(w, h int, pts [][2]float64, scale, offX, offY float64) *image.Alp
 
 // writePointerPNG draws the cursor and returns its hotspot — the point in the
 // image that sits exactly on the recorded coordinate.
-func writePointerPNG(path, style string, size int, c color.NRGBA, opacity float64) (imgW, imgH, hotX, hotY int, err error) {
+//
+// pad is transparent margin on every side, for motion blur to bleed into. It
+// moves the hotspot with it, so a padded cursor still sits on its own
+// coordinate; getting that wrong offsets the pointer by the padding, which is
+// far more visible than any blur.
+func writePointerPNG(path, style string, size, pad int, c color.NRGBA, opacity float64) (imgW, imgH, hotX, hotY int, err error) {
 	if size < 8 {
 		size = 8
+	}
+	if pad < 0 {
+		pad = 0
 	}
 	op := clampF(opacity, 0, 1)
 	if op == 0 {
@@ -61,7 +69,8 @@ func writePointerPNG(path, style string, size int, c color.NRGBA, opacity float6
 	switch style {
 	case "dot", "ring":
 		// A round pointer is its own hotspot: dead centre.
-		img := image.NewNRGBA(image.Rect(0, 0, size, size))
+		box := size + pad*2
+		img := image.NewNRGBA(image.Rect(0, 0, box, box))
 		r := float64(size) / 2
 		inner := 0.0
 		if style == "ring" {
@@ -83,10 +92,10 @@ func writePointerPNG(path, style string, size int, c color.NRGBA, opacity float6
 				if a <= 0 {
 					continue
 				}
-				img.SetNRGBA(x, y, color.NRGBA{col.R, col.G, col.B, uint8(a * op * 255)})
+				img.SetNRGBA(x+pad, y+pad, color.NRGBA{col.R, col.G, col.B, uint8(a * op * 255)})
 			}
 		}
-		return size, size, size / 2, size / 2, encodePNG(path, img)
+		return box, box, size/2 + pad, size/2 + pad, encodePNG(path, img)
 	}
 
 	// Arrow. The outline is the fill dilated in every direction rather than a
@@ -95,10 +104,10 @@ func writePointerPNG(path, style string, size int, c color.NRGBA, opacity float6
 	// Same 8-direction trick the caption renderer uses for text.
 	scale := float64(size)
 	stroke := math.Max(1.5, scale*0.055)
-	w := int(scale*0.8+stroke*2) + 2
-	h := int(scale*1.12+stroke*2) + 2
+	w := int(scale*0.8+stroke*2) + 2 + pad*2
+	h := int(scale*1.12+stroke*2) + 2 + pad*2
 
-	fill := rasterize(w, h, arrowPath, scale, stroke, stroke)
+	fill := rasterize(w, h, arrowPath, scale, stroke+float64(pad), stroke+float64(pad))
 
 	// Dilate: a pixel is outline if any pixel within `stroke` is fill.
 	st := int(math.Ceil(stroke))
@@ -141,8 +150,9 @@ func writePointerPNG(path, style string, size int, c color.NRGBA, opacity float6
 			img.SetNRGBA(x, y, color.NRGBA{uint8(rr), uint8(gg), uint8(bb), uint8(clampF(a, 0, 1) * 255)})
 		}
 	}
-	// The tip is the fill's origin, which the stroke inset pushed in.
-	return w, h, st, st, encodePNG(path, img)
+	// The tip is the fill's origin, which the stroke inset and the padding
+	// pushed in.
+	return w, h, st + pad, st + pad, encodePNG(path, img)
 }
 
 // smoothPath irons jitter out of a recorded pointer path.

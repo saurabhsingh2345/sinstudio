@@ -803,6 +803,11 @@ function CursorFXSection({ trackId, clip, ownsCursor }: { trackId: string; clip:
                 fmt={(v) => (v === 0 ? "off" : `${v}%`)}
               />
               <SliderRow
+                label="Motion blur" value={Math.round((fx.pointer.motionBlur ?? 0) * 100)} min={0} max={100} step={5}
+                onChange={(v) => set({ pointer: { ...fx.pointer, motionBlur: v / 100 } })}
+                fmt={(v) => (v === 0 ? "off" : `${v}%`)}
+              />
+              <SliderRow
                 label="Press on click" value={Math.round((fx.pointer.clickDip ?? 0) * 100)} min={0} max={100} step={5}
                 onChange={(v) => set({ pointer: { ...fx.pointer, clickDip: v / 100 } })}
                 fmt={(v) => (v === 0 ? "off" : `${v}%`)}
@@ -818,9 +823,10 @@ function CursorFXSection({ trackId, clip, ownsCursor }: { trackId: string; clip:
               />
               <div className="text-[10px] leading-relaxed text-muted-foreground">
                 Smoothing irons out hand shake. Clicks stay pinned to where they actually landed.
-                Press on click gives the cursor itself at each press, which is what reads as a
-                click. Hide when idle fades it away while it sits unused, and brings it straight
-                back the moment it moves.
+                Motion blur smears the cursor along its own travel on a fast move — the clip's
+                Motion blur cannot, since the cursor is drawn after it. Press on click gives the
+                cursor itself at each press, which is what reads as a click. Hide when idle fades
+                it away while it sits unused, and brings it straight back the moment it moves.
               </div>
             </div>
           )}
