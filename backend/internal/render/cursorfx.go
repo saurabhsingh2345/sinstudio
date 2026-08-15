@@ -244,6 +244,15 @@ func buildCursorFX(
 		smoothed.Samples = smoothPath(track.Samples, p.Smoothing)
 		track = &smoothed
 	}
+	// The loop return comes after smoothing and before everything else, so the
+	// glide home is the path every effect agrees the pointer took — including
+	// the auto-hide, which then treats it as the movement it is and brings the
+	// cursor back for the loop point rather than fading out mid-glide.
+	if p := fx.Pointer; p != nil && p.LoopReturn > 0 && track.Hidden {
+		looped := *track
+		looped.Samples = loopReturnPath(track.Samples, p.LoopReturn, v.in, v.out)
+		track = &looped
+	}
 	// The auto-hide ramp is computed once, from the same (already smoothed)
 	// track every effect is placed against, and shared by the pointer and its
 	// highlight. A pointer that faded while its amber disc stayed put would

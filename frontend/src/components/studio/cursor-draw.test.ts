@@ -11,6 +11,7 @@ import {
   FADE_OUT,
   pointerClickScale,
   pointerBlurSigma,
+  loopReturnPath,
 } from "./cursor-draw";
 import { clicksInStep } from "../../clickAudio";
 import type { CursorSample, CursorSidecar } from "../../cursor";
@@ -577,5 +578,56 @@ describe("drawCursorFX motion blur", () => {
     const ys = arcs.map((a) => a[1]);
     expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(2);
     expect(Math.max(...ys) - Math.min(...ys)).toBe(0);
+  });
+});
+
+// The loop return. Mirrors cursorloop_test.go case for case.
+describe("loopReturnPath", () => {
+  const walkAway = (): CursorSample[] =>
+    Array.from({ length: 31 }, (_, i) => ({ t: i * 100, x: i * 10, y: i * 5 }));
+
+  it("lands exactly where it started", () => {
+    const got = loopReturnPath(walkAway(), 1, 0, 3);
+    expect(got[got.length - 1]).toMatchObject({ x: 0, y: 0 });
+  });
+
+  it("leaves everything before the window alone", () => {
+    const s = walkAway();
+    const got = loopReturnPath(s, 1, 0, 3);
+    for (let i = 0; i < s.length; i++) {
+      if (s[i].t / 1000 > 2) continue;
+      expect(got[i]).toEqual(s[i]);
+    }
+  });
+
+  // The glide is a fiction, and one that drags the pointer off the button it is
+  // pressing is worse than the jump it fixes.
+  it("never moves the cursor through a click", () => {
+    const s: CursorSample[] = Array.from({ length: 31 }, (_, i) => ({
+      t: i * 100,
+      x: i === 0 ? 0 : 400,
+      y: i === 0 ? 0 : 400,
+      down: i === 25 ? 1 : 0,
+    }));
+    const got = loopReturnPath(s, 2, 0, 3);
+    for (let i = 0; i < s.length; i++) {
+      if (!s[i].down) continue;
+      expect(got[i].x).toBe(s[i].x);
+      expect(got[i].y).toBe(s[i].y);
+    }
+    // Shortened, not abandoned — it still gets home.
+    expect(got[got.length - 1]).toMatchObject({ x: 0, y: 0 });
+  });
+
+  it("loops at the clip's out point, not the track's end", () => {
+    const got = loopReturnPath(walkAway(), 1, 0.5, 2.0);
+    expect(cursorAt(got, 2.0)).toEqual(cursorAt(got, 0.5));
+  });
+
+  it("is a no-op when off or nonsensical", () => {
+    const s = walkAway();
+    expect(loopReturnPath(s, 0, 0, 3)).toEqual(s);
+    expect(loopReturnPath(s, 1, 3, 3)).toEqual(s);
+    expect(loopReturnPath(s, 1, 3, 1)).toEqual(s);
   });
 });

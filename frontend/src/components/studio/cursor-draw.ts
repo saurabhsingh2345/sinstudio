@@ -199,6 +199,53 @@ const DIP_OUT = 0.26;
 const DIP_MAX = 0.28;
 
 /*
+ * Gliding the cursor home, so a looping demo has no jump cut.
+ *
+ * Mirrors render.loopReturnPath. The rule that matters is the one about clicks:
+ * the glide is a fiction, and a fiction that drags the pointer off the button it
+ * is pressing is worse than the jump it fixes, so a click inside the window
+ * pushes the glide's start past it rather than distorting it.
+ */
+const LOOP_CLICK_HOLD = 0.3;
+
+/** Mirrors render.loopReturnPath. from/to are the clip's visible source range. */
+export function loopReturnPath(
+  samples: CursorSample[],
+  dur: number,
+  from: number,
+  to: number
+): CursorSample[] {
+  if (dur <= 0 || samples.length < 2 || to <= from) return samples;
+  const home = cursorAt(samples, from);
+  if (!home) return samples;
+
+  let begin = Math.max(from, to - dur);
+  let prev = 0;
+  for (const s of samples) {
+    const t = s.t / 1000;
+    if (t > to) break;
+    const d = s.down ?? 0;
+    if (d !== 0 && prev === 0 && t + LOOP_CLICK_HOLD > begin) begin = t + LOOP_CLICK_HOLD;
+    prev = d;
+  }
+  if (begin >= to) return samples;
+
+  const span = to - begin;
+  return samples.map((s) => {
+    const t = s.t / 1000;
+    if (t <= begin || t > to) return s;
+    // Smootherstep, so the glide leaves and arrives at rest. A linear walk home
+    // reads as the cursor being dragged by something.
+    const p = ease("easeInOut", (t - begin) / span);
+    return {
+      ...s,
+      x: Math.trunc(s.x * (1 - p) + home.x * p),
+      y: Math.trunc(s.y * (1 - p) + home.y * p),
+    };
+  });
+}
+
+/*
  * Motion blur on the cursor itself.
  *
  * Mirrors render.pointerBlurSigma exactly — the sigmas are the shared,
@@ -298,7 +345,13 @@ export function drawCursorFX(
 
   const smoothing = fx.pointer?.smoothing ?? 0;
   const useSmooth = fx.pointer && smoothing > 0 && track.hidden && !camera;
-  const samples = useSmooth ? smoothSamples(track.samples, smoothing) : track.samples;
+  const smoothed = useSmooth ? smoothSamples(track.samples, smoothing) : track.samples;
+  // The loop return goes after smoothing and before everything else, so the
+  // glide home is the path every effect agrees the pointer took — including the
+  // auto-hide, which then treats it as the movement it is.
+  const loop = fx.pointer?.loopReturn ?? 0;
+  const samples =
+    loop > 0 && track.hidden ? loopReturnPath(smoothed, loop, clip.in, clip.out) : smoothed;
 
   const at = cursorAt(samples, srcT);
   if (!at) return;

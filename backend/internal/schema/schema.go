@@ -174,6 +174,10 @@ type CursorPointer struct {
 	// ClickDip presses the cursor itself in at each click, 0..1. The rings say
 	// where a click landed; this is what makes it look like a press happened.
 	ClickDip float64 `json:"clickDip,omitempty"`
+	// LoopReturn glides the cursor back to where it started over this many
+	// seconds at the end of the clip, so a looping demo has no jump cut. The
+	// glide never runs through a click — see loopReturnPath.
+	LoopReturn float64 `json:"loopReturn,omitempty"`
 	// MotionBlur smears the cursor along its own travel when it moves fast,
 	// 0..1. Distinct from Clip.MotionBlur, which blurs the picture on camera
 	// moves and leaves the cursor — composited afterwards — perfectly sharp.

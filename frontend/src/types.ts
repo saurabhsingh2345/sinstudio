@@ -56,6 +56,9 @@ export interface CursorPointer {
   /** Smear the cursor along its travel when it moves fast, 0..1. Distinct from
    *  Clip.motionBlur, which blurs the picture and leaves the cursor sharp. */
   motionBlur?: number;
+  /** Glide the cursor back to where it started over this many seconds at the
+   *  end, so a looping demo has no jump cut. 0 leaves it where it finished. */
+  loopReturn?: number;
 }
 export interface CursorClickSound {
   volume?: number; // 0..1

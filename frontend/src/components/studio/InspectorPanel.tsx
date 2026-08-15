@@ -817,6 +817,11 @@ function CursorFXSection({ trackId, clip, ownsCursor }: { trackId: string; clip:
                 onChange={(v) => set({ pointer: { ...fx.pointer, autoHide: v } })}
                 fmt={(v) => (v === 0 ? "never" : `${v}s`)}
               />
+              <SliderRow
+                label="Return for looping" value={fx.pointer.loopReturn ?? 0} min={0} max={4} step={0.25}
+                onChange={(v) => set({ pointer: { ...fx.pointer, loopReturn: v } })}
+                fmt={(v) => (v === 0 ? "off" : `${v}s`)}
+              />
               <ColorRow
                 label="Color" value={fx.pointer.color ?? "#ffffff"}
                 onChange={(v) => set({ pointer: { ...fx.pointer, color: v } })}
@@ -827,6 +832,8 @@ function CursorFXSection({ trackId, clip, ownsCursor }: { trackId: string; clip:
                 Motion blur cannot, since the cursor is drawn after it. Press on click gives the
                 cursor itself at each press, which is what reads as a click. Hide when idle fades
                 it away while it sits unused, and brings it straight back the moment it moves.
+                Return for looping walks the cursor home over the last seconds, so a demo that
+                autoplays on repeat has no jump — it never glides through a click.
               </div>
             </div>
           )}
