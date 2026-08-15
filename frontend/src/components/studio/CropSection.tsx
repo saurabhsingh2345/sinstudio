@@ -44,7 +44,7 @@ export function CropSection({ trackId, clip, asset }: { trackId: string; clip: C
   const cropped = sourceSize(asset, clip);
   const px = cropPixels(clip.crop, asset.width, asset.height);
   const camera = isCameraClip(clip, asset);
-  const mode = fitMode(clip.fit, camera);
+  const mode = fitMode(clip.fit);
   const cropping = croppingClip === clip.id;
 
   // Does this clip letterbox as things stand? The one question the panel exists

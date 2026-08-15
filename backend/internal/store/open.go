@@ -99,6 +99,10 @@ func (s *Store) saveProjectLocal(doc *schema.EditDoc, baseRevision int) (int, er
 	cur.Canvas = doc.Canvas
 	cur.Tracks = doc.Tracks
 	cur.Markers = doc.Markers
+	// Carried over explicitly: the local store copies field by field, so a new
+	// document-level field that is not listed here is silently dropped on every
+	// save — and a dropped SchemaRev makes a one-time migration run forever.
+	cur.SchemaRev = doc.SchemaRev
 	cur.Version = baseRevision + 1
 	if err := s.writeLocal(cur); err != nil {
 		return 0, err

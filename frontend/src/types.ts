@@ -412,6 +412,10 @@ export interface EditDoc {
   markers?: Marker[];
   watermark?: Watermark; // project-wide corner logo on every export
   updated?: string;
+  /** Which one-time document upgrades have been applied — see schema.MigrateFit.
+   *  Read-only here: the backend stamps it on save, so the editor only has to
+   *  carry it through rather than maintain it. */
+  schemaRev?: number;
 }
 
 export interface ParamSpec {

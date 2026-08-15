@@ -128,46 +128,49 @@ func TestPrefitModes(t *testing.T) {
 	// A 4:3 source in a 16:9 canvas — the shapes genuinely disagree.
 	const sw, sh, w, h = 1440, 1080, 1920, 1080
 
-	fit := prefitFilter(schema.FitContain, sw, sh, w, h, false)
+	fit := prefitFilter(schema.FitContain, sw, sh, w, h)
 	if !strings.Contains(fit, "decrease") || !strings.Contains(fit, "pad=") {
 		t.Errorf("fit should letterbox: %q", fit)
 	}
-	fill := prefitFilter(schema.FitCover, sw, sh, w, h, false)
+	fill := prefitFilter(schema.FitCover, sw, sh, w, h)
 	if !strings.Contains(fill, "increase") || !strings.Contains(fill, "crop=1920:1080") {
 		t.Errorf("fill should cover and crop: %q", fill)
 	}
-	if got := prefitFilter(schema.FitStretch, sw, sh, w, h, false); got != "" {
+	if got := prefitFilter(schema.FitStretch, sw, sh, w, h); got != "" {
 		t.Errorf("stretch should add nothing, leaving the plain scale: %q", got)
 	}
 	// Shapes that already agree need no prefit in any mode.
 	for _, mode := range []string{schema.FitAuto, schema.FitContain, schema.FitCover} {
-		if got := prefitFilter(mode, 1920, 1080, w, h, false); got != "" {
+		if got := prefitFilter(mode, 1920, 1080, w, h); got != "" {
 			t.Errorf("%q prefitted a matching source: %q", mode, got)
 		}
 	}
 }
 
 /*
-The default depends on whether the camera is working the clip.
+The default letterboxes, whatever else is true of the clip.
 
-A letterboxed picture that is then pushed into slides its own transparent bar
-through frame, and what you see is the recording coming loose from the
-background. So an auto-fitted clip with cursor effects or zoom keyframes fills;
-everything else letterboxes. An explicit choice overrides both.
+It used to fill on any clip the camera was working, so that a push-in could never
+reveal the bar beside the picture — and since every screen recording carries
+cursor effects, that quietly cropped a quarter off any recording whose shape did
+not match the canvas. The bar is kept out of frame by the pan clamp instead (see
+clipBoxAt); the default's job is only to avoid throwing away picture nobody asked
+to lose.
 */
-func TestAutoFitFillsOnlyForCameraClips(t *testing.T) {
+func TestAutoFitLetterboxes(t *testing.T) {
 	const sw, sh, w, h = 1440, 1080, 1920, 1080
-	still := prefitFilter(schema.FitAuto, sw, sh, w, h, false)
-	if !strings.Contains(still, "decrease") {
-		t.Errorf("a static clip should letterboxed by default: %q", still)
+	for _, name := range []string{"a plain clip", "a clip the camera works"} {
+		got := prefitFilter(schema.FitAuto, sw, sh, w, h)
+		if !strings.Contains(got, "decrease") {
+			t.Errorf("%s should letterbox by default: %q", name, got)
+		}
 	}
-	camera := prefitFilter(schema.FitAuto, sw, sh, w, h, true)
-	if !strings.Contains(camera, "increase") {
-		t.Errorf("a camera clip should fill by default: %q", camera)
+	// An explicit choice still wins, in both directions.
+	if got := prefitFilter(schema.FitCover, sw, sh, w, h); !strings.Contains(got, "increase") {
+		t.Errorf("explicit fill was ignored: %q", got)
 	}
-	// And an explicit "fit" must beat the camera default — the user asked.
-	if got := prefitFilter(schema.FitContain, sw, sh, w, h, true); !strings.Contains(got, "decrease") {
-		t.Errorf("explicit fit ignored on a camera clip: %q", got)
+	if got := prefitFilter(schema.FitContain, sw, sh, w, h); !strings.Contains(got, "decrease") {
+		t.Errorf("explicit fit was ignored: %q", got)
 	}
 }
 
@@ -185,12 +188,12 @@ func TestCropChangesWhatThePrefitFits(t *testing.T) {
 	if cw != 960 || ch != 1080 {
 		t.Fatalf("croppedDims = %dx%d, want 960x1080", cw, ch)
 	}
-	seg := prefitFilter(schema.FitContain, cw, ch, 1920, 1080, false)
+	seg := prefitFilter(schema.FitContain, cw, ch, 1920, 1080)
 	if !strings.Contains(seg, "pad=1920:1080") {
 		t.Errorf("the cropped shape was not letterboxed into the canvas: %q", seg)
 	}
 	// Without the crop the source already matched the canvas and needed nothing.
-	if got := prefitFilter(schema.FitContain, 1920, 1080, 1920, 1080, false); got != "" {
+	if got := prefitFilter(schema.FitContain, 1920, 1080, 1920, 1080); got != "" {
 		t.Errorf("uncropped source should need no prefit: %q", got)
 	}
 }

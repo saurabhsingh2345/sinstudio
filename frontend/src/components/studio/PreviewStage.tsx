@@ -38,7 +38,7 @@ import { RedactOverlay, RedactToolbar } from "./RedactOverlay";
 import { clampRedaction } from "../../redaction";
 import { CroppedMedia } from "./CroppedMedia";
 import { isZoomActive } from "../../zoomPan";
-import { isCameraClip } from "../../virtualCamera";
+import { cameraWorks, isCameraClip } from "../../virtualCamera";
 import type { Selection } from "./selection";
 import { findClip } from "./selection";
 import { captionTrack, clipEnd, fmtTC, type AspectKey } from "./bridge";
@@ -278,7 +278,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
       const track = cursorTrackNow(doc.id, clip.assetId);
       if (!track) continue;
       const asset = doc.assets.find((a) => a.id === clip.assetId);
-      const camera = isCameraClip(clip, asset);
+      const camera = cameraWorks(clip);
       const videoSize = asset ? { width: asset.width || W, height: asset.height || H } : undefined;
       const box = clipBox(clip, playhead, stage.w, stage.h, W, H, videoSize, camera);
       const localT = playhead - clip.start;
@@ -414,7 +414,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
           selAsset.width > 0 ? { width: selAsset.width, height: selAsset.height } : { width: W, height: H },
           selBox.vw,
           selBox.vh,
-          fitMode(redacting.fit, isCameraClip(redacting, selAsset) || isZoomActive(redacting, playhead))
+          fitMode(redacting.fit)
         )
       : null;
   const redactions = redacting?.redactions ?? [];
@@ -458,19 +458,27 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
             />
             {visuals.map(({ track, clip }) => {
               const asset = doc.assets.find((a) => a.id === clip.assetId);
+              // Selects the overflow-clipped structure below, and nothing else.
+              // A clip the camera can push past the canvas edge needs a wrapper
+              // that hides what leaves the frame; that is a question about the
+              // DOM, not about fitting, which is why it keeps its own predicate.
               const camera = isCameraClip(clip, asset);
               // The clip's picture size is its source's, minus any crop — the
               // single answer every framing decision below depends on.
               const videoSize = sourceSize(asset, clip) ?? (asset ? { width: W, height: H } : undefined);
-              const zoomed = isZoomActive(clip, playhead);
               // A picture that fills the canvas has no letterbox bar to keep a
-              // pan away from, so it clamps against the canvas like a camera
-              // clip does. Mirrors the `filled` term in kfvalue.go — and, like
-              // it, is a property of the clip rather than of the moment, so the
-              // clamp cannot change under a zoom that is already running.
-              const covering = camera || fillsFrame(clip.fit, camera);
+              // pan away from, so it clamps against the canvas; otherwise the
+              // clamp is the content rectangle. Mirrors schema.FitCovers.
+              //
+              // Both of these are properties of the CLIP. `mode` used to be
+              // computed from whether the clip was zoomed past 1.02 at this
+              // instant, so a clip zoomed only in its second half letterboxed
+              // at the start of a scrub and was cropped by the middle of it —
+              // the framing changed under the playhead while the export, which
+              // asks about the whole clip, did neither.
+              const covering = fillsFrame(clip.fit);
               const box = clipBox(clip, playhead, stage.w, stage.h, W, H, videoSize, covering);
-              const mode = fitMode(clip.fit, camera || zoomed);
+              const mode = fitMode(clip.fit);
               if (clip.annotation) {
                 return (
                   <div

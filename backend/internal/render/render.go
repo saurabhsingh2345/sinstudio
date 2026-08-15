@@ -151,6 +151,13 @@ func presetDims(preset string, w, h int) (int, int) {
 
 // Compile turns an edit document into an ffmpeg arg vector writing to outPath.
 func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string, opts Options) (*Plan, error) {
+	// Brought forward here as well as on the way out of the store, because a
+	// render's document arrives on a job payload rather than from a fresh read —
+	// and a document that renders under the old meaning of FitAuto while the
+	// editor shows it under the new one is the worst possible outcome of a
+	// migration. Idempotent, so doing it twice costs a walk.
+	schema.MigrateFit(doc)
+
 	w, h, fps := doc.Canvas.Width, doc.Canvas.Height, doc.Canvas.FPS
 	if w == 0 || h == 0 {
 		w, h = 1920, 1080
@@ -442,17 +449,16 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		 * and not at all under a device frame, which pads the picture into its
 		 * screen itself.
 		 *
-		 * Which of fit and fill you get is the clip's own choice now — see
-		 * prefitFilter. The default still depends on whether the camera is
-		 * working the clip, because a letterboxed picture that is then pushed
-		 * into shows its own transparent bar sliding through frame.
+		 * Which of fit and fill you get is the clip's own choice, and the
+		 * default is to letterbox. It used to depend on whether the camera was
+		 * working the clip — see FitAuto for why that stopped.
 		 */
 		prefit := ""
 		zoomClip := clipHasZoomKeyframes(v.keyframes)
 		cameraClip := v.cursorFX != nil || zoomClip
 		if v.device == nil && v.bubble == nil && v.srcW > 0 && v.srcH > 0 {
 			if v.backdrop == nil || cameraClip {
-				prefit = prefitFilter(v.fit, v.srcW, v.srcH, w, h, cameraClip)
+				prefit = prefitFilter(v.fit, v.srcW, v.srcH, w, h)
 			}
 		}
 		// The crop is against the source's ORIGINAL frame, so it uses the raw

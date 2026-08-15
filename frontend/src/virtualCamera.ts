@@ -30,10 +30,33 @@ export const VIRTUAL_CAMERA_OPTS: Partial<SmartFocusOptions> = {
   // move before the hold ended. A single tuning is also one place to look when
   // the camera feels wrong, rather than two that drift apart.
   ease: "easeInOut",
+  // Whether the picture covers the canvas, which decides both how pointer
+  // coordinates are mapped and how far the camera may pan. It is NOT a property
+  // of screen recordings — it is a property of the clip's fit — so callers
+  // override it per clip (see autoFrame). Left true here only because that is
+  // what every clip using these options was, back when a screen recording
+  // always filled.
   cameraViewport: true,
 };
 
 /** Screen recording on the timeline — not a styled import with auto-zoom keyframes. */
+/**
+ * Is the camera WORKING this clip — a push-in, a follow, a cursor effect?
+ *
+ * Mirrors render.go's `cameraClip`. Distinct from isCameraClip below, which
+ * asks whether a clip is the sort of thing the camera *would* work, and from
+ * fillsFrame, which asks whether the picture covers the canvas. Those three
+ * questions used to be answered by one muddled predicate; this one is only
+ * used where it belongs — deciding whether a backdrop draws its card, which
+ * scaling would otherwise pull the wallpaper out from under.
+ */
+export function cameraWorks(
+  clip: Pick<Clip, "cursor" | "keyframes">
+): boolean {
+  if (clip.cursor) return true;
+  return (clip.keyframes?.scale ?? []).some((k) => k.value > 1.02);
+}
+
 export function isCameraClip(
   clip: Pick<Clip, "backdrop" | "device" | "chroma" | "bubble">,
   asset?: Pick<Asset, "hasCursor">

@@ -306,9 +306,16 @@ func (r Redaction) Timed(playDur float64) bool {
 // Fit modes: how a clip's picture is fitted to the canvas before its own
 // transform moves and scales it.
 const (
-	// FitAuto keeps the historical behaviour: letterbox, except on a clip the
-	// camera is working (cursor effects or zoom keyframes), which fills instead
-	// so a push-in never reveals the bar beside the picture.
+	// FitAuto letterboxes. Nothing is cropped that nobody asked to crop.
+	//
+	// It used to fill instead on any clip the camera was working, so that a
+	// push-in could never reveal the bar beside the picture. That guard is now
+	// redundant: a pan is clamped to the CONTENT rectangle rather than to the
+	// canvas (see clipBoxAt), so the camera cannot reach the bar in the first
+	// place. What the old rule cost was a quarter of a window recording,
+	// silently, because every recording carries cursor effects by default —
+	// and a crop you did not ask for and cannot see is the worst of the three
+	// possible answers.
 	FitAuto = ""
 	// FitContain shows all of the picture, with transparent bars where the
 	// shapes disagree.
@@ -322,6 +329,25 @@ const (
 	// a bug in the other two.
 	FitStretch = "stretch"
 )
+
+/*
+FitCovers reports whether a clip's picture reaches every edge of the canvas.
+
+This is the ONE question the framing code actually asks, and it used to be asked
+in four places with four different answers. The prefit asked whether the clip
+had cursor effects; the pan clamp asked that plus whether it had zoom keyframes;
+the cursor's coordinate mapping asked whether it was zoomed past 1.02 AT THIS
+INSTANT; and the preview asked whether the asset had a pointer track and the
+clip had no chroma. So a chroma-keyed recording letterboxed on screen and was
+cropped on export, a clip zoomed only in its second half changed shape as you
+scrubbed past the middle, and turning cursor effects off moved the picture.
+
+None of those were the question. Whether a picture covers the canvas is decided
+by how it was fitted to the canvas, and nothing else.
+*/
+func FitCovers(fit string) bool {
+	return fit == FitCover || fit == FitStretch
+}
 
 /*
 Crop trims edges off a clip's own picture.
@@ -687,6 +713,11 @@ type EditDoc struct {
 	// Watermark overlays a brand mark on every frame of every export.
 	Watermark *Watermark `json:"watermark,omitempty"`
 	Updated   string     `json:"updated,omitempty"`
+	// SchemaRev records which document upgrades have already been applied, so a
+	// one-time migration stays one-time. Absent (0) means a document written
+	// before any of them — see MigrateFit. The store stamps this on write; a
+	// client that drops the field cannot cause a document to be migrated twice.
+	SchemaRev int `json:"schemaRev,omitempty"`
 }
 
 // Watermark is a project-wide corner logo. Project-wide on purpose: a brand

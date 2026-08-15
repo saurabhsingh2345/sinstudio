@@ -80,10 +80,24 @@ frame with what is left, and the panel offers it as one button ("Fill the frame
 
 | Fit | What it does |
 | --- | --- |
-| **Auto** | Letterbox, or fill when the camera is working this clip. The behaviour every clip had before fits were settable. |
+| **Auto** | Letterbox. Nothing is cropped that nobody asked to crop. |
 | **Fit** | Show all of it, transparent bars where the shapes differ. |
 | **Fill** | Cover the frame; anything past the edge is not shown. |
 | **Stretch** | Distort to fill. Rarely right, occasionally exactly right. |
+
+**Auto used to fill** whenever the camera was working the clip — and since every
+screen recording carries cursor effects, that quietly cropped a quarter off any
+recording whose shape did not match the canvas. It was there so that a push-in on
+a letterboxed picture could never slide the transparent bar into frame; that is
+handled properly now by clamping the camera to the picture rather than to the
+frame. Projects made before the change keep the framing they had: the fit each
+clip was effectively getting is written onto it once, so nothing moves underfoot.
+
+One consequence worth knowing. On a letterboxed clip the camera can only follow
+your pointer once the zoom is deep enough for the picture to cover the frame —
+below that, any pan would just show more bar on one side, so the push-in stays
+centred. The way to get a following camera on a mismatched recording is to stop
+it being mismatched: match the canvas to the recording.
 
 A crop changes what the clip's picture *is*, so everything downstream is told
 the new shape: the letterbox, the pan clamp that keeps a zoom inside the

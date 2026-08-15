@@ -58,22 +58,24 @@ describe("sourceSize", () => {
 });
 
 describe("fitMode", () => {
-  // Mirrors prefitFilter: an unset fit letterboxes, except where the camera is
-  // working the clip — a push-in on a letterboxed picture slides its own
-  // transparent bar through frame.
-  it("defers to the camera only when unset", () => {
-    expect(fitMode("", false)).toBe("fit");
-    expect(fitMode(undefined, true)).toBe("fill");
-    expect(fitMode("fit", true)).toBe("fit");
-    expect(fitMode("fill", false)).toBe("fill");
-    expect(fitMode("stretch", true)).toBe("stretch");
+  // Mirrors prefitFilter and schema.FitCovers: an unset fit letterboxes, full
+  // stop. It used to fill wherever the camera was working the clip, and since
+  // every screen recording carries cursor effects that cropped a quarter off any
+  // recording whose shape did not match the canvas, silently.
+  it("letterboxes unless told otherwise", () => {
+    expect(fitMode("")).toBe("fit");
+    expect(fitMode(undefined)).toBe("fit");
+    expect(fitMode("fit")).toBe("fit");
+    expect(fitMode("fill")).toBe("fill");
+    expect(fitMode("stretch")).toBe("stretch");
   });
 
   it("reports which modes leave no bars to protect a pan from", () => {
-    expect(fillsFrame("", false)).toBe(false);
-    expect(fillsFrame("fill", false)).toBe(true);
-    expect(fillsFrame("stretch", false)).toBe(true);
-    expect(fillsFrame("", true)).toBe(true);
+    expect(fillsFrame("")).toBe(false);
+    expect(fillsFrame(undefined)).toBe(false);
+    expect(fillsFrame("fit")).toBe(false);
+    expect(fillsFrame("fill")).toBe(true);
+    expect(fillsFrame("stretch")).toBe(true);
   });
 });
 

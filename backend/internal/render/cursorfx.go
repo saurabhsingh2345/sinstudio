@@ -371,7 +371,7 @@ func buildCursorFX(
 				if canvasW > 0 {
 					z = cw / float64(canvasW)
 				}
-				bx, by, bw, bh := contentFracFor(v, track.Video.Width, track.Video.Height, canvasW, canvasH, at)
+				bx, by, bw, bh := contentFracFor(v, track.Video.Width, track.Video.Height, canvasW, canvasH)
 				px := left + (bx+float64(cx)/math.Max(1, float64(track.Video.Width))*bw)*cw
 				py := top + (by+float64(cy)/math.Max(1, float64(track.Video.Height))*bh)*ch
 				ringSize := int(float64(size) * z)
@@ -530,16 +530,26 @@ func coverFrac(vw, vh, w, h int) (x0, y0, fw, fh float64) {
 	return
 }
 
-// contentFracFor maps pointer coordinates into the clip box. Camera clips
-// (screen recordings with cursor FX or zoom) always use cover-fit geometry.
-func contentFracFor(v *visual, vw, vh, w, h int, t float64) (x0, y0, fw, fh float64) {
-	if v.cursorFX != nil || clipScaleAt(v, w, h, t) > 1.02 {
-		return coverFrac(vw, vh, w, h)
-	}
-	if v.backdrop != nil && v.device == nil && w > 0 && h > 0 {
+// contentFracFor maps pointer coordinates into the clip box: where the picture
+// actually sits, so an effect lands on the thing it marks.
+//
+// It asks how the picture was FITTED, which is the only thing that decides where
+// it sits. It used to ask whether the clip was zoomed past 1.02 at this instant —
+// so the cursor's whole coordinate space changed the moment a push-in crossed
+// that threshold, and every effect stepped sideways mid-zoom on any clip whose
+// shape did not match the canvas.
+func contentFracFor(v *visual, vw, vh, w, h int) (x0, y0, fw, fh float64) {
+	// The backdrop's card is only drawn when the camera is not working the clip
+	// (see useBackdropCard); this must agree with that decision or the pointer
+	// is placed against a layout that was never built.
+	camera := v.cursorFX != nil || clipHasZoomKeyframes(v.keyframes)
+	if v.backdrop != nil && v.device == nil && !camera && w > 0 && h > 0 {
 		g := backdropLayout(v.backdrop, vw, vh, w, h)
 		return float64(g.x) / float64(w), float64(g.y) / float64(h),
 			float64(g.w) / float64(w), float64(g.h) / float64(h)
+	}
+	if schema.FitCovers(v.fit) {
+		return coverFrac(vw, vh, w, h)
 	}
 	return contentFrac(vw, vh, w, h)
 }
@@ -579,7 +589,7 @@ func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dip f
 		}
 		at := sourceToTimeline(v, ts)
 		left, top, cw, ch := clipBoxAt(v, w, h, at)
-		bx, by, bw, bh := contentFracFor(v, track.Video.Width, track.Video.Height, w, h, at)
+		bx, by, bw, bh := contentFracFor(v, track.Video.Width, track.Video.Height, w, h)
 		fx := 0.0
 		fy := 0.0
 		if track.Video.Width > 0 {

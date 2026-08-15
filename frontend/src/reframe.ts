@@ -2,6 +2,7 @@ import type { CursorSidecar } from "./cursor";
 import { SMART_FOCUS_DEFAULTS, smartFocus, type SmartFocusOptions } from "./smartFocus";
 import { VIRTUAL_CAMERA_OPTS } from "./virtualCamera";
 import { clipPlayDur, type Asset, type Clip, type EditDoc } from "./types";
+import { fillsFrame } from "./crop";
 
 /*
 Switching a project between landscape and vertical.
@@ -86,7 +87,13 @@ export function planReframe(
       const side = asset?.hasCursor ? track(c.assetId) : null;
       if (side?.samples?.length) {
         const dur = clipPlayDur(c);
-        const { keyframes } = smartFocus(side as never, dur, canvas, opts);
+        // Against the fit this clip is ABOUT to have, not the one it has: the
+        // patch may be setting it to fill in the same breath.
+        const fit = patch.fit ?? c.fit;
+        const { keyframes } = smartFocus(side as never, dur, canvas, {
+          ...opts,
+          cameraViewport: fillsFrame(fit),
+        });
         // The old camera is REMOVED rather than merged over. A 16:9 pan that
         // is not replaced in the 9:16 answer would otherwise survive as a
         // half-updated move through a frame it was never computed for.

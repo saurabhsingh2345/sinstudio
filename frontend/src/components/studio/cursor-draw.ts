@@ -3,6 +3,7 @@ import type { Asset, Clip } from "../../types";
 import { clipSourceAt } from "../../types";
 import { coverBox, contentBox } from "../../zoomPan";
 import { backdropLayout } from "../../backdrop";
+import { fillsFrame } from "../../crop";
 import { ease } from "../../ease";
 
 // Cursor effects, drawn live on the preview canvas.
@@ -421,6 +422,10 @@ export function drawCursorFX(
   localT: number,
   canvasScale: number,
   _asset?: Pick<Asset, "hasCursor">,
+  /** Whether the CAMERA is working this clip — cursor effects or zoom
+   *  keyframes. Only decides whether the backdrop draws its card, which is the
+   *  one thing that genuinely turns on it; where the picture sits is decided by
+   *  the clip's fit. */
   camera = false,
   /** When set, use the video element's clock so overlays match what's on screen. */
   mediaT?: number,
@@ -436,7 +441,11 @@ export function drawCursorFX(
   const srcT = mediaT ?? clipSourceAt(clip, localT);
 
   const smoothing = fx.pointer?.smoothing ?? 0;
-  const useSmooth = fx.pointer && smoothing > 0 && track.hidden && !camera;
+  // No camera term: render.buildCursorFX smooths whenever smoothing is asked
+  // for and the track is hidden, so excluding camera clips here meant the
+  // preview never smoothed a screen recording — every one of them is a camera
+  // clip — while the export always did.
+  const useSmooth = fx.pointer && smoothing > 0 && track.hidden;
   const smoothed = useSmooth ? smoothSamples(track.samples, smoothing) : track.samples;
   // The loop return goes after smoothing and before everything else, so the
   // glide home is the path every effect agrees the pointer took — including the
@@ -476,21 +485,23 @@ export function drawCursorFX(
   let cfh = 1;
   const W = stageW / Math.max(1e-6, canvasScale);
   const H = stageH / Math.max(1e-6, canvasScale);
-  if (camera) {
-    const cb = coverBox({ width: vw, height: vh }, { width: W, height: H });
-    fx0 = cb.x0 / W;
-    fy0 = cb.y0 / H;
-    cfw = (cb.x1 - cb.x0) / W;
-    cfh = (cb.y1 - cb.y0) / H;
-  } else if (clip.backdrop && !clip.device) {
-    // A backdrop pulls the picture into its card; the layout is computed at
-    // CANVAS resolution (recovered via canvasScale) so its even-pixel rounding
-    // matches the exporter's exactly. Mirrors cursorfx.go's contentFracFor.
+  // Order and conditions mirror cursorfx.go's contentFracFor exactly: the card
+  // is only drawn when the camera is not working the clip, and where the
+  // picture sits otherwise follows from how it was fitted — not from whether
+  // the clip happens to be zoomed at this instant, which is what this asked
+  // before and which moved every effect sideways mid-push-in.
+  if (clip.backdrop && !clip.device && !camera) {
     const g = backdropLayout(clip.backdrop, vw, vh, Math.round(W), Math.round(H));
     fx0 = g.x / W;
     fy0 = g.y / H;
     cfw = g.w / W;
     cfh = g.h / H;
+  } else if (fillsFrame(clip.fit)) {
+    const cb = coverBox({ width: vw, height: vh }, { width: W, height: H });
+    fx0 = cb.x0 / W;
+    fy0 = cb.y0 / H;
+    cfw = (cb.x1 - cb.x0) / W;
+    cfh = (cb.y1 - cb.y0) / H;
   } else {
     const canA = W / H;
     if (Math.abs(vw / vh - canA) / canA > 0.005) {

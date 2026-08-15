@@ -103,19 +103,30 @@ export function sourceSize(
 /**
  * Which way this clip meets the canvas, with the default resolved.
  *
- * Mirrors prefitFilter's rule: an unset fit letterboxes, except on a clip the
- * camera is working, which fills — because pushing into a letterboxed picture
- * slides its own transparent bar through frame.
+ * Mirrors prefitFilter and schema.FitCovers: an unset fit letterboxes, full
+ * stop. It used to fill on any clip the camera was working, and since every
+ * screen recording carries cursor effects that quietly cropped a quarter off
+ * any recording whose shape did not match the canvas.
+ *
+ * The half that made the old rule look necessary — a push-in sliding the
+ * transparent bar through frame — is handled by clamping the camera to the
+ * CONTENT rectangle instead, which is what fillsFrame selects below.
  */
-export function fitMode(fit: FitMode | undefined, cameraClip: boolean): "fit" | "fill" | "stretch" {
-  if (fit === "fit" || fit === "fill" || fit === "stretch") return fit;
-  return cameraClip ? "fill" : "fit";
+export function fitMode(fit: FitMode | undefined): "fit" | "fill" | "stretch" {
+  return fit === "fill" || fit === "stretch" ? fit : "fit";
 }
 
-/** Does this clip's picture cover the whole canvas? Then a pan clamps to the
- *  canvas rather than to a content rectangle that has no bars to protect. */
-export function fillsFrame(fit: FitMode | undefined, cameraClip: boolean): boolean {
-  return fitMode(fit, cameraClip) !== "fit";
+/**
+ * Does this clip's picture cover the whole canvas?
+ *
+ * Then a pan clamps to the canvas; otherwise it clamps to the content, so the
+ * camera stops at the edge of the picture rather than framing the bar beside
+ * it. This is the question every framing decision here actually asks, and it
+ * is answered by how the picture was fitted and by nothing else — see
+ * schema.FitCovers for the four different answers it used to get.
+ */
+export function fillsFrame(fit: FitMode | undefined): boolean {
+  return fitMode(fit) !== "fit";
 }
 
 export interface Rect {
