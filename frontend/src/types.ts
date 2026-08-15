@@ -51,6 +51,8 @@ export interface CursorPointer {
   smoothing?: number; // 0..1
   /** Seconds of stillness before the cursor fades out; 0 keeps it on screen. */
   autoHide?: number;
+  /** How far the cursor presses in at each click, 0..1. 0 leaves it rigid. */
+  clickDip?: number;
 }
 export interface CursorClickSound {
   volume?: number; // 0..1

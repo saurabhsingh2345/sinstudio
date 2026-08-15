@@ -3,6 +3,7 @@ import type { Asset, Clip } from "../../types";
 import { clipSourceAt } from "../../types";
 import { coverBox, contentBox } from "../../zoomPan";
 import { backdropLayout } from "../../backdrop";
+import { ease } from "../../ease";
 
 // Cursor effects, drawn live on the preview canvas.
 //
@@ -186,6 +187,33 @@ export function pointerAlphaAt(spans: IdleSpan[], hideAfter: number, t: number):
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
+/*
+ * The cursor's own reaction to a click.
+ *
+ * Mirrors render.pointerClickScale, curve for curve — it is built on the same
+ * shared easings (ease.ts / easeValue), so the press dips and springs back
+ * identically in both halves. cursor-draw.test.ts asserts the Go goldens.
+ */
+const DIP_IN = 0.06;
+const DIP_OUT = 0.26;
+const DIP_MAX = 0.28;
+
+/** The drawn cursor's size multiplier at source time t. */
+export function pointerClickScale(clicks: number[], t: number, amount: number): number {
+  if (amount <= 0 || !clicks.length) return 1;
+  const depth = clamp01(amount) * DIP_MAX;
+  for (const ct of clicks) {
+    const d = t - ct;
+    if (d < 0 || d > DIP_IN + DIP_OUT) continue;
+    if (d <= DIP_IN) return 1 - depth * ease("easeOutCubic", d / DIP_IN);
+    // easeOutBack overshoots, so the cursor passes a shade beyond its own size
+    // before settling. That is what makes the press read as sprung rather than
+    // merely animated, and unlike the camera's overshoot it costs nothing.
+    return 1 - depth * (1 - ease("easeOutBack", (d - DIP_IN) / DIP_OUT));
+  }
+  return 1;
+}
+
 // The arrow outline from cursordraw.go, in a unit box with the tip at the origin.
 const ARROW: [number, number][] = [
   [0.0, 0.0],
@@ -364,7 +392,14 @@ export function drawCursorFX(
   //    recording with a burned-in cursor this would draw a second one, the
   //    same rule the renderer enforces.
   if (fx.pointer && track.hidden && idleAlpha > 0) {
-    const size = (fx.pointer.size ?? PTR_DEFAULTS.size) * unit;
+    // The dip scales the drawn shape about its own hotspot for free here: the
+    // arrow is drawn outward from its tip and the round styles are drawn about
+    // their centre, so neither moves as the size changes. The exporter has to
+    // scale the hotspot offset by hand to get the same result.
+    const dip = fx.pointer.clickDip
+      ? pointerClickScale(clickTimes(samples), srcT, fx.pointer.clickDip)
+      : 1;
+    const size = (fx.pointer.size ?? PTR_DEFAULTS.size) * unit * dip;
     const col = fx.pointer.color ?? PTR_DEFAULTS.color;
     const op = (fx.pointer.opacity ?? PTR_DEFAULTS.opacity) * idleAlpha;
     ctx.globalAlpha = clamp01(op);

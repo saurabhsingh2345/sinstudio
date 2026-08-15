@@ -59,7 +59,7 @@ export function autoFrame(
   // six scrolls down is a feature the recording does not have. A tutorial parks
   // its pointer constantly while the narrator talks, and 3s is long enough that
   // a pause mid-demonstration never triggers it.
-  if (asset.cursorHidden) cursor.pointer = { smoothing: 0.5, autoHide: 3 };
+  if (asset.cursorHidden) cursor.pointer = { smoothing: 0.5, autoHide: 3, clickDip: 1 };
   if (cursor.clicks || cursor.pointer) out.cursor = cursor;
 
   if (segments.length) {

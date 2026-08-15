@@ -803,6 +803,11 @@ function CursorFXSection({ trackId, clip, ownsCursor }: { trackId: string; clip:
                 fmt={(v) => (v === 0 ? "off" : `${v}%`)}
               />
               <SliderRow
+                label="Press on click" value={Math.round((fx.pointer.clickDip ?? 0) * 100)} min={0} max={100} step={5}
+                onChange={(v) => set({ pointer: { ...fx.pointer, clickDip: v / 100 } })}
+                fmt={(v) => (v === 0 ? "off" : `${v}%`)}
+              />
+              <SliderRow
                 label="Hide when idle" value={fx.pointer.autoHide ?? 0} min={0} max={10} step={0.5}
                 onChange={(v) => set({ pointer: { ...fx.pointer, autoHide: v } })}
                 fmt={(v) => (v === 0 ? "never" : `${v}s`)}
@@ -813,7 +818,8 @@ function CursorFXSection({ trackId, clip, ownsCursor }: { trackId: string; clip:
               />
               <div className="text-[10px] leading-relaxed text-muted-foreground">
                 Smoothing irons out hand shake. Clicks stay pinned to where they actually landed.
-                Hide when idle fades the cursor away while it sits unused, and brings it straight
+                Press on click gives the cursor itself at each press, which is what reads as a
+                click. Hide when idle fades it away while it sits unused, and brings it straight
                 back the moment it moves.
               </div>
             </div>

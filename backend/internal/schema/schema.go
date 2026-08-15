@@ -171,6 +171,9 @@ type CursorPointer struct {
 	// anchored to where they actually landed: a smoothed path that drifts off
 	// the button being clicked is worse than a slightly shaky one.
 	Smoothing float64 `json:"smoothing,omitempty"`
+	// ClickDip presses the cursor itself in at each click, 0..1. The rings say
+	// where a click landed; this is what makes it look like a press happened.
+	ClickDip float64 `json:"clickDip,omitempty"`
 	// AutoHide fades the cursor out once it has sat still this many seconds,
 	// and brings it straight back when it moves. 0 leaves it on screen for the
 	// whole clip. Only the drawn pointer and its highlight fade — a burned-in
@@ -612,16 +615,16 @@ const (
 // Track is one horizontal lane. Video/overlay/audio tracks hold Clips; caption
 // tracks hold Cues; background tracks hold either a full-frame Clip or a color.
 type Track struct {
-	ID              string       `json:"id"`
-	Kind            string       `json:"kind"`
-	Name            string       `json:"name,omitempty"`
-	Clips           []Clip       `json:"clips,omitempty"`
-	Cues            []CaptionCue `json:"cues,omitempty"`
+	ID               string       `json:"id"`
+	Kind             string       `json:"kind"`
+	Name             string       `json:"name,omitempty"`
+	Clips            []Clip       `json:"clips,omitempty"`
+	Cues             []CaptionCue `json:"cues,omitempty"`
 	BackgroundColor  string       `json:"backgroundColor,omitempty"`
 	BackgroundColor2 string       `json:"backgroundColor2,omitempty"` // top→bottom gradient end; empty = solid
-	Muted           bool         `json:"muted,omitempty"`
-	Hidden          bool         `json:"hidden,omitempty"`
-	Solo            bool         `json:"solo,omitempty"`
+	Muted            bool         `json:"muted,omitempty"`
+	Hidden           bool         `json:"hidden,omitempty"`
+	Solo             bool         `json:"solo,omitempty"`
 	// Duck marks an audio track as a music/bed lane: its level is automatically
 	// compressed (sidechained) under the voice — every non-ducked audio source.
 	Duck bool `json:"duck,omitempty"`

@@ -9,6 +9,7 @@ import {
   pointerAlphaAt,
   FADE_IN,
   FADE_OUT,
+  pointerClickScale,
 } from "./cursor-draw";
 import { clicksInStep } from "../../clickAudio";
 import type { CursorSample, CursorSidecar } from "../../cursor";
@@ -405,5 +406,85 @@ describe("drawCursorFX auto-hide", () => {
     const { ctx, calls } = stubCtx();
     drawCursorFX(ctx, clipFor({ pointer: {} }), parked(), FULL_BOX, 8, 1);
     expect(calls.join(" ")).toContain("globalAlpha=1");
+  });
+});
+
+// The press. Same goldens as TestClickDipGolden — a dip the preview shows at
+// one depth and the export at another is two different videos.
+describe("pointerClickScale", () => {
+  it("matches the Go golden", () => {
+    const want: [number, number][] = [
+      [0.5, 1],
+      [1.0, 1],
+      [1.06, 0.72],
+      [0.99, 1],
+      [1.32, 1],
+      [5.0, 1],
+    ];
+    for (const [t, s] of want) expect(pointerClickScale([1.0], t, 1)).toBeCloseTo(s, 6);
+  });
+
+  it("is off when nobody asked", () => {
+    expect(pointerClickScale([1], 1.06, 0)).toBe(1);
+    expect(pointerClickScale([], 1.06, 1)).toBe(1);
+  });
+
+  it("scales with strength", () => {
+    const full = pointerClickScale([1], 1.06, 1);
+    const half = pointerClickScale([1], 1.06, 0.5);
+    expect(1 - half).toBeCloseTo((1 - full) / 2, 9);
+  });
+
+  // The overshoot is the point — it is what makes the press feel sprung rather
+  // than merely animated, and sampling the endpoints alone would miss it.
+  it("springs back past its own size", () => {
+    let peak = 0;
+    for (let t = 1; t < 1.4; t += 0.005) peak = Math.max(peak, pointerClickScale([1], t, 1));
+    expect(peak).toBeGreaterThan(1.0001);
+    expect(peak).toBeLessThan(1.06);
+  });
+});
+
+describe("drawCursorFX click dip", () => {
+  const clicked = (): CursorSidecar =>
+    trackFor({
+      hidden: true,
+      samples: [
+        { t: 0, x: 960, y: 540 },
+        { t: 1000, x: 960, y: 540, down: 1 },
+        { t: 1100, x: 960, y: 540 },
+        { t: 3000, x: 960, y: 540 },
+      ],
+    });
+
+  // The dot style is drawn about its centre, so a dip must change the radius
+  // and leave the centre exactly where it was — the pixel that was clicked.
+  const radiusAt = (t: number) => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { style: "dot", size: 100, clickDip: 1 } }), clicked(), FULL_BOX, t, 1);
+    const arc = calls.find((c) => c.startsWith("arc("));
+    const [x, y, r] = arc!.slice(4, -1).split(",").map(Number);
+    return { x, y, r };
+  };
+
+  it("shrinks the cursor on the press and restores it", () => {
+    const before = radiusAt(0.5);
+    const pressed = radiusAt(1.06);
+    const after = radiusAt(1.5);
+    expect(pressed.r).toBeLessThan(before.r);
+    expect(after.r).toBe(before.r);
+  });
+
+  it("dips about the hotspot, so the cursor does not leave what it clicked", () => {
+    const before = radiusAt(0.5);
+    const pressed = radiusAt(1.06);
+    expect(pressed.x).toBe(before.x);
+    expect(pressed.y).toBe(before.y);
+  });
+
+  it("leaves a cursor with no dip configured alone", () => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { style: "dot", size: 100 } }), clicked(), FULL_BOX, 1.06, 1);
+    expect(calls.join(" ")).toContain("arc(960,540,50");
   });
 });

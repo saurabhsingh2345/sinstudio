@@ -240,8 +240,6 @@ func buildCursorFX(
 		smoothed.Samples = smoothPath(track.Samples, p.Smoothing)
 		track = &smoothed
 	}
-	dur := end - start
-
 	// The auto-hide ramp is computed once, from the same (already smoothed)
 	// track every effect is placed against, and shared by the pointer and its
 	// highlight. A pointer that faded while its amber disc stayed put would
@@ -292,7 +290,7 @@ func buildCursorFX(
 			y:      fmt.Sprintf("%d", -canvasH/2),
 			enable: fmt.Sprintf("between(t,%.3f,%.3f)", start, end),
 		})
-		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, dur, canvasW, canvasH, 0, 0)...)
+		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, nil, canvasW, canvasH, 0, 0)...)
 	}
 
 	if hl := fx.Highlight; hl != nil {
@@ -319,7 +317,7 @@ func buildCursorFX(
 		seg := &plan.segments[len(plan.segments)-1]
 		seg.scaleName = name
 		seg.baseW, seg.baseH = size, size
-		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, dur, size/2, size/2, size, size)...)
+		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, nil, size/2, size/2, size, size)...)
 		if len(alphaSteps) > 0 {
 			seg.alphaName = name
 			cmds = append(cmds, alphaCommands(name)...)
@@ -408,7 +406,19 @@ func buildCursorFX(
 		seg := &plan.segments[len(plan.segments)-1]
 		seg.scaleName = name
 		seg.baseW, seg.baseH = ptrW, ptrH
-		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, dur, hotX, hotY, ptrW, ptrH)...)
+		// The dip is the pointer's alone — the highlight is a glow under it, and
+		// a glow that pulses with every press reads as a flicker. The track is
+		// densified only for this call, so the extra control points cannot reach
+		// the click detection every other effect keys off.
+		ptrTrack, dip := track, (func(float64) float64)(nil)
+		if p.ClickDip > 0 {
+			clicks := track.ClickTimes()
+			dip = func(t float64) float64 { return pointerClickScale(clicks, t, p.ClickDip) }
+			dense := *track
+			dense.Samples = densifyForClicks(track.Samples, clicks)
+			ptrTrack = &dense
+		}
+		cmds = append(cmds, cursorCommands(v, ptrTrack, name, canvasW, canvasH, dip, hotX, hotY, ptrW, ptrH)...)
 		if len(alphaSteps) > 0 {
 			seg.alphaName = name
 			cmds = append(cmds, alphaCommands(name)...)
@@ -497,7 +507,11 @@ func contentFracFor(v *visual, vw, vh, w, h int, t float64) (x0, y0, fw, fh floa
 //
 // Sizes ride along too: content magnified 2x should carry a cursor and
 // highlight magnified with it, or they shrink relative to what they mark.
-func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dur float64, hotX, hotY int, sizeW, sizeH int) []string {
+//
+// dip, when set, is an extra size multiplier at a given source time — the
+// pointer's reaction to a click. It scales the hotspot offset as well as the
+// image, or the cursor would shrink away from its own tip.
+func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dip func(float64) float64, hotX, hotY int, sizeW, sizeH int) []string {
 	out := make([]string, 0, len(track.Samples))
 	var lastX, lastY, lastW int
 	var have bool
@@ -523,14 +537,18 @@ func cursorCommands(v *visual, track *cursor.Track, name string, w, h int, dur f
 		if w > 0 {
 			z = cw / float64(w)
 		}
+		d := 1.0
+		if dip != nil {
+			d = dip(ts)
+		}
 		px := left + fx*cw
 		py := top + fy*ch
-		x := int(px - float64(hotX)*z)
-		y := int(py - float64(hotY)*z)
+		x := int(px - float64(hotX)*z*d)
+		y := int(py - float64(hotY)*z*d)
 
 		var cmds string
-		sw := int(float64(sizeW) * z)
-		sh := int(float64(sizeH) * z)
+		sw := int(float64(sizeW) * z * d)
+		sh := int(float64(sizeH) * z * d)
 		if sizeW > 0 && sw != lastW {
 			cmds = fmt.Sprintf(", scale@%s w %d, scale@%s h %d",
 				sendcmdEscape(name), maxInt(2, sw), sendcmdEscape(name), maxInt(2, sh))
