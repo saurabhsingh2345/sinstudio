@@ -668,12 +668,26 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		// later clip covering this one also covers its highlight.
 		if v.cursor != nil {
 			for si, seg := range v.cursor.segments {
-				args = append(args, stillInput(seg.png, v.end-v.start)...)
+				// Looped INSIDE the graph rather than by -stream_loop on the
+				// input, and this is not a style choice.
+				//
+				// A looping input is decoded independently of the rest of the
+				// graph, so its frames can run arbitrarily far ahead of the main
+				// video — while the commands that size these overlays are driven
+				// by sendcmd on the main branch. Anything already pushed through
+				// was sized by the filter's INITIAL value, so the same render
+				// produced a different cursor size on every run: 1184, 1457,
+				// 2299 and 2379 pixels across ten runs of one unchanged command.
+				//
+				// The loop filter is pulled by the graph instead, so a frame is
+				// produced when it is wanted and sees the commands that have
+				// fired by then. Ten runs, one number.
+				args = append(args, "-t", fmt.Sprintf("%.3f", v.end-v.start), "-i", seg.png)
 				src := fmt.Sprintf("[cx%d_%d]", i, si)
 				// Shift the looped still onto the clip's span so that `t` inside
 				// its own filters is timeline time — the scale and fade below are
 				// written against the timeline, not against the still's 0-based PTS.
-				fmt.Fprintf(&fc, "[%d:v]setpts=PTS-STARTPTS+%.3f/TB,format=rgba", inputIdx, v.start)
+				fmt.Fprintf(&fc, "[%d:v]loop=loop=-1:size=1,setpts=PTS-STARTPTS+%.3f/TB,format=rgba", inputIdx, v.start)
 				// A click ring grows and fades over its short life; the highlight
 				// and spotlight are fixed and only move.
 				if seg.scaleExpr != "" {
