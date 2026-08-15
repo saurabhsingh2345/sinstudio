@@ -1,5 +1,15 @@
 import { describe, it, expect } from "vitest";
-import { cursorAt, clickTimes, drawCursorFX, smoothSamples, withAlpha } from "./cursor-draw";
+import {
+  cursorAt,
+  clickTimes,
+  drawCursorFX,
+  smoothSamples,
+  withAlpha,
+  idleSpans,
+  pointerAlphaAt,
+  FADE_IN,
+  FADE_OUT,
+} from "./cursor-draw";
 import { clicksInStep } from "../../clickAudio";
 import type { CursorSample, CursorSidecar } from "../../cursor";
 import type { Clip } from "../../types";
@@ -294,5 +304,106 @@ describe("clicksInStep", () => {
   it("is half-open, so a click never fires twice on consecutive ticks", () => {
     expect(clicksInStep(times, 0.9, 1.0)).toEqual([1.0]);
     expect(clicksInStep(times, 1.0, 1.1)).toEqual([]);
+  });
+});
+
+/*
+ * Auto-hide. These are the same numbers TestPointerAlphaGolden asserts in Go —
+ * the pair is the whole point. Everything else in this file may be approximate;
+ * a fade the preview and the export disagree about is a preview of a different
+ * video.
+ */
+describe("idleSpans", () => {
+  it("finds nothing while the pointer is moving", () => {
+    const s: CursorSample[] = [0, 1, 2, 3, 4].map((i) => ({ t: i * 100, x: i * 40, y: 0 }));
+    expect(idleSpans(s, 1920, 1)).toEqual([]);
+  });
+
+  it("spans from the last movement to the next one", () => {
+    const s: CursorSample[] = [{ t: 0, x: 0, y: 0 }, { t: 100, x: 100, y: 0 }];
+    for (let t = 200; t <= 3000; t += 250) s.push({ t, x: 100, y: 0 });
+    s.push({ t: 3100, x: 400, y: 200 });
+    expect(idleSpans(s, 1920, 1)).toEqual([{ start: 0.1, end: 3.1 }]);
+  });
+
+  it("treats a click as activity even at a standstill", () => {
+    const s: CursorSample[] = [];
+    for (let t = 0; t <= 5000; t += 250) s.push({ t, x: 50, y: 50, down: t === 2500 ? 1 : 0 });
+    const spans = idleSpans(s, 1920, 1);
+    expect(spans).toHaveLength(2);
+    expect(spans[0].end).toBeCloseTo(2.5, 9);
+    expect(spans[1].start).toBeCloseTo(2.75, 9);
+  });
+
+  // The tolerance is quoted at a 1920 reference, so the same hand wobble is
+  // motion on a 1080p capture and jitter on a 4K one. Quoting it absolutely is
+  // the bug the focus radii already had once.
+  it("scales its stillness tolerance with the capture", () => {
+    const s: CursorSample[] = [];
+    for (let t = 0; t <= 4000; t += 250) s.push({ t, x: t % 500 === 0 ? 54 : 50, y: 50 });
+    expect(idleSpans(s, 1920, 1)).toHaveLength(0);
+    expect(idleSpans(s, 3840, 1)).toHaveLength(1);
+  });
+});
+
+describe("pointerAlphaAt", () => {
+  const spans = [{ start: 1, end: 5 }];
+
+  it("matches the Go golden", () => {
+    const want: [number, number][] = [
+      [0.5, 1],
+      [2.9, 1],
+      [3.0, 1],
+      [3.225, 0.5],
+      [3.45, 0],
+      [4.5, 0],
+      [5.0, 0],
+      [5.06, 0.5],
+      [5.12, 1],
+      [9.0, 1],
+    ];
+    for (const [t, a] of want) expect(pointerAlphaAt(spans, 2, t)).toBeCloseTo(a, 6);
+  });
+
+  it("comes back from where the fade actually got to", () => {
+    const short = [{ start: 0, end: 2.2 }];
+    const mid = pointerAlphaAt(short, 2, 2.2);
+    expect(mid).toBeCloseTo(1 - 0.2 / FADE_OUT, 6);
+    expect(pointerAlphaAt(short, 2, 2.2 + FADE_IN / 2)).toBeCloseTo(mid + (1 - mid) * 0.5, 6);
+  });
+});
+
+describe("drawCursorFX auto-hide", () => {
+  // A parked pointer with the heartbeat a real sidecar carries.
+  const parked = (): CursorSidecar =>
+    trackFor({
+      hidden: true,
+      samples: Array.from({ length: 41 }, (_, i) => ({ t: i * 250, x: 960, y: 540 })),
+    });
+
+  it("draws the pointer while it is still within the threshold", () => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { autoHide: 3 } }), parked(), FULL_BOX, 1, 1);
+    expect(calls.join(" ")).toContain("globalAlpha=1");
+  });
+
+  it("stops drawing it once the fade has finished", () => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { autoHide: 3 } }), parked(), FULL_BOX, 8, 1);
+    expect(calls.join(" ")).not.toContain("globalAlpha=");
+  });
+
+  // The highlight has to leave with the pointer. Fading one and not the other
+  // leaves an amber blob hovering over nothing.
+  it("takes the highlight with it", () => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { autoHide: 3 }, highlight: {} }), parked(), FULL_BOX, 8, 1);
+    expect(calls.join(" ")).not.toContain("createRadialGradient");
+  });
+
+  it("is off when nobody asked for it", () => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: {} }), parked(), FULL_BOX, 8, 1);
+    expect(calls.join(" ")).toContain("globalAlpha=1");
   });
 });

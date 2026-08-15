@@ -187,6 +187,11 @@ Automatically, as the clip hits the timeline:
    recorded into a 16:9 project would otherwise sit in black bars.
 2. **Zooms are found and written**, from where you clicked and where you paused.
 3. **Click rings** are switched on.
+4. **The cursor is set to fade out after 3s of stillness**, and to come straight
+   back the moment it moves. A tutorial parks its pointer for long stretches
+   while the narrator talks, and a cursor sitting in shot doing nothing keeps
+   the viewer waiting for it. Only applies when Studio draws the cursor — a
+   burned-in one cannot fade. Set **Hide when idle** to `never` to turn it off.
 
 All of it is one undo away, and every keyframe stays draggable. The cursor
 *highlight* — a soft disc that follows the pointer — is deliberately **not**

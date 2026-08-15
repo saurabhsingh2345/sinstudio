@@ -49,6 +49,8 @@ export interface CursorPointer {
   style?: string; // arrow | dot | ring
   color?: string;
   smoothing?: number; // 0..1
+  /** Seconds of stillness before the cursor fades out; 0 keeps it on screen. */
+  autoHide?: number;
 }
 export interface CursorClickSound {
   volume?: number; // 0..1

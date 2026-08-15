@@ -802,12 +802,19 @@ function CursorFXSection({ trackId, clip, ownsCursor }: { trackId: string; clip:
                 onChange={(v) => set({ pointer: { ...fx.pointer, smoothing: v / 100 } })}
                 fmt={(v) => (v === 0 ? "off" : `${v}%`)}
               />
+              <SliderRow
+                label="Hide when idle" value={fx.pointer.autoHide ?? 0} min={0} max={10} step={0.5}
+                onChange={(v) => set({ pointer: { ...fx.pointer, autoHide: v } })}
+                fmt={(v) => (v === 0 ? "never" : `${v}s`)}
+              />
               <ColorRow
                 label="Color" value={fx.pointer.color ?? "#ffffff"}
                 onChange={(v) => set({ pointer: { ...fx.pointer, color: v } })}
               />
               <div className="text-[10px] leading-relaxed text-muted-foreground">
                 Smoothing irons out hand shake. Clicks stay pinned to where they actually landed.
+                Hide when idle fades the cursor away while it sits unused, and brings it straight
+                back the moment it moves.
               </div>
             </div>
           )}

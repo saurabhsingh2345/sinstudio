@@ -688,6 +688,12 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				if seg.fadeDur > 0 {
 					fmt.Fprintf(&fc, ",fade=t=out:st=%.3f:d=%.3f:alpha=1", seg.fadeStart, seg.fadeDur)
 				}
+				// A named alpha gain for the auto-hide fade. It starts fully
+				// opaque, so a clip whose pointer never parks is untouched by
+				// it and the graph stays equivalent to the one without.
+				if seg.alphaName != "" {
+					fmt.Fprintf(&fc, ",colorchannelmixer@%s=aa=1", seg.alphaName)
+				}
 				fmt.Fprintf(&fc, "%s;", src)
 				out := fmt.Sprintf("[bc%d_%d]", i, si)
 				// format=auto is deliberately omitted when the overlay input

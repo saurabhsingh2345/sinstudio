@@ -171,6 +171,11 @@ type CursorPointer struct {
 	// anchored to where they actually landed: a smoothed path that drifts off
 	// the button being clicked is worse than a slightly shaky one.
 	Smoothing float64 `json:"smoothing,omitempty"`
+	// AutoHide fades the cursor out once it has sat still this many seconds,
+	// and brings it straight back when it moves. 0 leaves it on screen for the
+	// whole clip. Only the drawn pointer and its highlight fade — a burned-in
+	// cursor cannot, which is the same reason Pointer itself is gated.
+	AutoHide float64 `json:"autoHide,omitempty"`
 }
 
 // CursorClickSound adds an audible click at each press, mixed as one generated

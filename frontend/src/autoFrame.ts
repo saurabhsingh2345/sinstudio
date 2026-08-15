@@ -54,7 +54,12 @@ export function autoFrame(
   // Cursor emphasis when zoom was found or clicks are wanted.
   const cursor: NonNullable<Clip["cursor"]> = {};
   if (showClicks) cursor.clicks = {};
-  if (asset.cursorHidden) cursor.pointer = { smoothing: 0.5 };
+  // autoHide is defaulted on rather than left to the inspector, for the reason
+  // the auto-framing itself exists: a feature parked behind a collapsed panel
+  // six scrolls down is a feature the recording does not have. A tutorial parks
+  // its pointer constantly while the narrator talks, and 3s is long enough that
+  // a pause mid-demonstration never triggers it.
+  if (asset.cursorHidden) cursor.pointer = { smoothing: 0.5, autoHide: 3 };
   if (cursor.clicks || cursor.pointer) out.cursor = cursor;
 
   if (segments.length) {

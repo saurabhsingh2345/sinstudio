@@ -115,6 +115,77 @@ export function smoothSamples(samples: CursorSample[], intensity: number): Curso
   return out;
 }
 
+/*
+ * Auto-hide: fading out a pointer that has been parked.
+ *
+ * Mirrors backend/internal/render/cursoridle.go — the constants, the stillness
+ * tolerance and the asymmetric fades are all its numbers, and cursor-draw.test.ts
+ * asserts the same goldens TestPointerAlphaGolden does. Unlike the shapes, this
+ * one is not allowed to be approximate: a preview that shows a cursor the export
+ * hides is not a preview of the export.
+ */
+export const FADE_OUT = 0.45;
+export const FADE_IN = 0.12;
+const IDLE_PX = 3;
+const IDLE_REF = 1920;
+
+export interface IdleSpan {
+  start: number;
+  end: number;
+}
+
+/** Mirrors render.pointerIdleSpans. Times are source seconds. */
+export function idleSpans(
+  samples: CursorSample[],
+  videoW: number,
+  hideAfter: number
+): IdleSpan[] {
+  if (samples.length < 2 || hideAfter <= 0) return [];
+  const tol = videoW > 0 ? (IDLE_PX * videoW) / IDLE_REF : IDLE_PX;
+
+  const out: IdleSpan[] = [];
+  let anchor = samples[0];
+  let start = samples[0].t / 1000;
+  let down = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const s = samples[i];
+    const t = s.t / 1000;
+    const moved = Math.hypot(s.x - anchor.x, s.y - anchor.y) > tol;
+    // A press or a release is activity even at a standstill — a click that
+    // lands without nudging the mouse is the pointer being used.
+    const d = s.down ?? 0;
+    const clicked = d !== down;
+    down = d;
+    if (!moved && !clicked) continue;
+    if (t - start > hideAfter) out.push({ start, end: t });
+    anchor = s;
+    start = t;
+  }
+  const last = samples[samples.length - 1].t / 1000;
+  if (last - start > hideAfter) out.push({ start, end: last });
+  return out;
+}
+
+/** Mirrors render.pointerAlphaAt: the pointer's opacity multiplier at time t. */
+export function pointerAlphaAt(spans: IdleSpan[], hideAfter: number, t: number): number {
+  let a = 1;
+  for (const s of spans) {
+    if (t < s.start) break;
+    const hideAt = s.start + hideAfter;
+    if (t <= s.end) {
+      a = 1 - clamp01((t - hideAt) / FADE_OUT);
+      break;
+    }
+    // Coming back from wherever the fade-out actually got to, not from zero:
+    // a park that ends mid-fade would otherwise flash the cursor away first.
+    const reached = 1 - clamp01((s.end - hideAt) / FADE_OUT);
+    a = reached + (1 - reached) * clamp01((t - s.end) / FADE_IN);
+  }
+  return clamp01(a);
+}
+
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
 // The arrow outline from cursordraw.go, in a unit box with the tip at the origin.
 const ARROW: [number, number][] = [
   [0.0, 0.0],
@@ -167,6 +238,16 @@ export function drawCursorFX(
 
   const at = cursorAt(samples, srcT);
   if (!at) return;
+
+  // Auto-hide dims the pointer and the disc that follows it, together. Fading
+  // one without the other would leave an amber blob hovering over nothing.
+  // The spotlight is deliberately exempt: it is a dimming mask, so fading it
+  // would brighten the frame rather than remove anything.
+  const hideAfter = fx.pointer?.autoHide ?? 0;
+  const idleAlpha =
+    hideAfter > 0 && track.hidden
+      ? pointerAlphaAt(idleSpans(samples, track.video.width, hideAfter), hideAfter, srcT)
+      : 1;
 
   const vw = track.video.width || 1;
   const vh = track.video.height || 1;
@@ -243,9 +324,9 @@ export function drawCursorFX(
   }
 
   // 2. Highlight — a soft disc under the pointer.
-  if (fx.highlight) {
+  if (fx.highlight && idleAlpha > 0) {
     const r = ((fx.highlight.size ?? HL_DEFAULTS.size) / 2) * unit;
-    const op = fx.highlight.opacity ?? HL_DEFAULTS.opacity;
+    const op = (fx.highlight.opacity ?? HL_DEFAULTS.opacity) * idleAlpha;
     const col = fx.highlight.color ?? HL_DEFAULTS.color;
     const g = ctx.createRadialGradient(px, py, 0, px, py, r);
     g.addColorStop(0, withAlpha(col, op));
@@ -282,11 +363,11 @@ export function drawCursorFX(
   // 4. The pointer itself, on top — but only when Studio owns it. Over a
   //    recording with a burned-in cursor this would draw a second one, the
   //    same rule the renderer enforces.
-  if (fx.pointer && track.hidden) {
+  if (fx.pointer && track.hidden && idleAlpha > 0) {
     const size = (fx.pointer.size ?? PTR_DEFAULTS.size) * unit;
     const col = fx.pointer.color ?? PTR_DEFAULTS.color;
-    const op = fx.pointer.opacity ?? PTR_DEFAULTS.opacity;
-    ctx.globalAlpha = Math.max(0, Math.min(1, op));
+    const op = (fx.pointer.opacity ?? PTR_DEFAULTS.opacity) * idleAlpha;
+    ctx.globalAlpha = clamp01(op);
     ctx.fillStyle = col;
     ctx.strokeStyle = "rgba(0,0,0,0.9)";
     ctx.lineWidth = Math.max(1, size * 0.11);

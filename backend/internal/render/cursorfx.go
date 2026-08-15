@@ -75,6 +75,9 @@ type cursorSegment struct {
 	// do the cheapest thing here.
 	fadeStart float64
 	fadeDur   float64
+	// A named colourchannel mixer whose alpha gain sendcmd drives, for the
+	// auto-hide fade. Empty leaves the overlay at the alpha it was drawn with.
+	alphaName string
 }
 
 func hexColor(s, fallback string) color.NRGBA {
@@ -239,8 +242,32 @@ func buildCursorFX(
 	}
 	dur := end - start
 
+	// The auto-hide ramp is computed once, from the same (already smoothed)
+	// track every effect is placed against, and shared by the pointer and its
+	// highlight. A pointer that faded while its amber disc stayed put would
+	// look like a bug rather than a cursor leaving.
+	var alphaSteps []alphaStep
+	if p := fx.Pointer; p != nil && p.AutoHide > 0 && track.Hidden {
+		spans := pointerIdleSpans(track.Samples, track.Video.Width, p.AutoHide)
+		alphaSteps = pointerAlphaSteps(spans, p.AutoHide)
+	}
+
 	plan := &cursorPlan{}
 	var cmds []string
+	// alphaCommands times the ramp onto the timeline for one named filter.
+	// Source seconds go through sourceToTimeline like everything else, so a
+	// trimmed or sped-up clip fades where its content actually plays.
+	alphaCommands := func(name string) []string {
+		out := make([]string, 0, len(alphaSteps))
+		for _, s := range alphaSteps {
+			if s.T < v.in || s.T > v.out {
+				continue
+			}
+			out = append(out, fmt.Sprintf("%.3f colorchannelmixer@%s aa %.3f;",
+				sourceToTimeline(v, s.T), sendcmdEscape(name), s.A))
+		}
+		return out
+	}
 
 	// Spotlight is drawn first so the highlight and rings sit on top of the dim
 	// rather than under it.
@@ -293,6 +320,10 @@ func buildCursorFX(
 		seg.scaleName = name
 		seg.baseW, seg.baseH = size, size
 		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, dur, size/2, size/2, size, size)...)
+		if len(alphaSteps) > 0 {
+			seg.alphaName = name
+			cmds = append(cmds, alphaCommands(name)...)
+		}
 	}
 
 	// Click rings need no sendcmd: a click happens at one point, so each ring is
@@ -378,6 +409,10 @@ func buildCursorFX(
 		seg.scaleName = name
 		seg.baseW, seg.baseH = ptrW, ptrH
 		cmds = append(cmds, cursorCommands(v, track, name, canvasW, canvasH, dur, hotX, hotY, ptrW, ptrH)...)
+		if len(alphaSteps) > 0 {
+			seg.alphaName = name
+			cmds = append(cmds, alphaCommands(name)...)
+		}
 	}
 
 	plan.cmds = cmds
