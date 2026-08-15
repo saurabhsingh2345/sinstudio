@@ -5,6 +5,8 @@ import { cn } from "@/lib/utils";
 import { api } from "../../api";
 import { autoFrame } from "../../autoFrame";
 import { canvasForSource } from "../../canvasFit";
+import { planReframe } from "../../reframe";
+import { cursorTrackNow } from "../../cursorTracks";
 import {
   canMapToVideo,
   probeCursord,
@@ -288,7 +290,49 @@ export function RecordPanel({
               }
             }
           }
-          const summary = { trackCount: placed.length, autoZoomClips, hadCursor: !!hadCursor, primaryScreen };
+          /*
+           * Did this recording arrive in a frame it does not fit?
+           *
+           * Only reachable when the canvas was NOT adopted above — that only
+           * happens for the first clip in a project — so this is exactly the
+           * "recorded a window into an existing project" case. It used to be
+           * cropped away silently; now it letterboxes, and this is how you find
+           * out why and undo it in one click.
+           */
+          let shapeMismatch: PostRecordSummary["shapeMismatch"];
+          const shot = docAfter?.assets.find((a) => a.id === screenItem?.assetId);
+          if (shot && docAfter) {
+            const fitted = canvasForSource({ width: shot.width, height: shot.height }, docAfter.canvas);
+            if (fitted) {
+              shapeMismatch = {
+                ...fitted,
+                onMatch: () => {
+                  // Canvas and every clip's framing in ONE mutate, so the whole
+                  // thing is a single undo — reusing the aspect switch's
+                  // reframe, because this is the same operation with the shape
+                  // taken from a recording instead of from a menu.
+                  const cur = useStudio.getState().doc;
+                  if (!cur) return;
+                  const plan = planReframe(cur, fitted, (id) => cursorTrackNow(cur.id, id));
+                  useStudio.getState().mutate((d) => {
+                    d.canvas = { ...d.canvas, ...fitted };
+                    for (const u of plan.patches) {
+                      const c = d.tracks.find((t) => t.id === u.trackId)?.clips?.find((x) => x.id === u.clipId);
+                      if (c) Object.assign(c, u.patch);
+                    }
+                  });
+                  toast.info(`Canvas is now ${fitted.width}×${fitted.height}`);
+                },
+              };
+            }
+          }
+          const summary = {
+            trackCount: placed.length,
+            autoZoomClips,
+            hadCursor: !!hadCursor,
+            primaryScreen,
+            shapeMismatch,
+          };
           if (onEnterReview) onEnterReview(summary);
           else setPostRecord(summary);
         }
