@@ -23,6 +23,7 @@ export function CroppedMedia({
   width,
   height,
   mode,
+  focus,
   muted,
   onVideo,
   filter,
@@ -32,12 +33,14 @@ export function CroppedMedia({
   width: number;
   height: number;
   mode: "fit" | "fill" | "stretch";
+  /** Which part of an overflowing picture survives — see cropLayout. */
+  focus?: [number, number];
   muted?: boolean;
   onVideo?: (el: HTMLVideoElement | null) => void;
   filter?: string;
 }) {
   const src = { width: asset.width || width, height: asset.height || height };
-  const { window: win, media } = cropLayout(crop, src, width, height, mode);
+  const { window: win, media } = cropLayout(crop, src, width, height, mode, focus);
   const style: React.CSSProperties = {
     position: "absolute",
     ...media,

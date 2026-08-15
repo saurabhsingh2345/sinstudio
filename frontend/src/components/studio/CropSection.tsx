@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import { Crop as CropIcon, Maximize2, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -53,6 +54,18 @@ export function CropSection({ trackId, clip, asset }: { trackId: string; clip: C
   const croppedA = cropped ? cropped.width / cropped.height : 0;
   const barred =
     mode === "fit" && canvasA > 0 && croppedA > 0 && Math.abs(croppedA - canvasA) / canvasA > 0.005;
+
+  /*
+   * Which axis actually overflows when this clip fills.
+   *
+   * Filling scales the picture until it covers the frame, so exactly one axis
+   * spills over — the other is flush. Only the spilling one is worth dragging,
+   * and offering both would imply a freedom that does not exist.
+   */
+  const overflow =
+    croppedA > 0 && canvasA > 0 && Math.abs(croppedA - canvasA) / canvasA > 0.005
+      ? { x: croppedA > canvasA, y: croppedA < canvasA }
+      : null;
 
   const setCrop = (c: Crop) => updateClip(trackId, clip.id, { crop: isEmptyCrop(c) ? undefined : c });
   const setEdge = (key: keyof Crop, pct: number) =>
@@ -141,6 +154,22 @@ export function CropSection({ trackId, clip, asset }: { trackId: string; clip: C
       </div>
 
       {/*
+        A filled clip throws away whatever does not fit, and which part it
+        throws away is a choice. Shown only when the clip really does overflow —
+        a picture already the canvas's shape has nothing to choose between, and
+        a control that does nothing is worse than no control.
+      */}
+      {mode !== "fit" && overflow && (
+        <FillFocusPad
+          overflowX={overflow.x}
+          overflowY={overflow.y}
+          x={clip.fillFocusX ?? 0}
+          y={clip.fillFocusY ?? 0}
+          onChange={(x, y) => updateClip(trackId, clip.id, { fillFocusX: x, fillFocusY: y })}
+        />
+      )}
+
+      {/*
         The other half of "cut the top off": what is left is a different shape,
         so it letterboxes, and the clip that filled the frame a moment ago now
         sits in bars. Offered only when that is actually happening.
@@ -156,5 +185,97 @@ export function CropSection({ trackId, clip, asset }: { trackId: string; clip: C
         </Button>
       )}
     </Section>
+  );
+}
+
+/*
+Choosing which part of an overflowing picture survives.
+
+A slider per axis would be simpler and would lie: filling scales the picture
+until it covers the frame, so only one axis ever spills, and a control offering
+two implies a freedom that is not there. This offers exactly the axis that
+moved, as a track you drag along — the same gesture as dragging the picture
+itself, which is what this stands in for until the stage learns the gesture.
+
+Values are centre-relative (±0.5 an edge) so the zero value is the centred crop
+the clip already had, and the reset is a single assignment.
+*/
+function FillFocusPad({
+  overflowX,
+  overflowY,
+  x,
+  y,
+  onChange,
+}: {
+  overflowX: boolean;
+  overflowY: boolean;
+  x: number;
+  y: number;
+  onChange: (x: number, y: number) => void;
+}) {
+  const horizontal = overflowX;
+  const value = horizontal ? x : y;
+  const set = (v: number) => {
+    const c = Math.max(-0.5, Math.min(0.5, v));
+    onChange(horizontal ? c : 0, horizontal ? 0 : c);
+  };
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Pointer capture, so a drag that leaves the track keeps working — letting go
+  // of the picture the moment the cursor slips off it is the thing that makes a
+  // drag feel broken.
+  const drag = (e: React.PointerEvent) => {
+    const el = ref.current;
+    if (!el) return;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      const r = el.getBoundingClientRect();
+      const along = horizontal ? (ev.clientX - r.left) / r.width : (ev.clientY - r.top) / r.height;
+      set(Math.max(0, Math.min(1, along)) - 0.5);
+    };
+    move(e.nativeEvent);
+    const up = () => {
+      el.releasePointerCapture(e.pointerId);
+      el.removeEventListener("pointermove", move);
+      el.removeEventListener("pointerup", up);
+    };
+    el.addEventListener("pointermove", move);
+    el.addEventListener("pointerup", up);
+  };
+
+  const pct = (value + 0.5) * 100;
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
+          {horizontal ? "What stays in frame — left ↔ right" : "What stays in frame — top ↕ bottom"}
+        </span>
+        {value !== 0 && (
+          <button
+            type="button"
+            onClick={() => onChange(0, 0)}
+            className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground"
+          >
+            <RotateCcw className="h-3 w-3" /> Centre
+          </button>
+        )}
+      </div>
+      <div
+        ref={ref}
+        onPointerDown={drag}
+        className="relative h-7 cursor-ew-resize touch-none rounded-md border hairline bg-panel-3"
+        style={{ cursor: horizontal ? "ew-resize" : "ns-resize" }}
+      >
+        {/* The window on the picture: the part that survives. */}
+        <div
+          className="absolute rounded-sm bg-brand/30 ring-1 ring-brand"
+          style={
+            horizontal
+              ? { top: 2, bottom: 2, width: "34%", left: `calc(${pct}% - 17%)` }
+              : { left: 2, right: 2, height: "34%", top: `calc(${pct}% - 17%)` }
+          }
+        />
+      </div>
+    </div>
   );
 }

@@ -25,7 +25,7 @@ import { watermarkLayout, watermarkOpacity } from "../../watermark";
 import { trackBackgroundCSS } from "../../trackBackground";
 import { useStudio } from "../../state";
 import type { EditDoc, Redaction } from "../../types";
-import { clipPlayDur, clipSrcDur, clickTimelineAt, mediaUrl } from "../../types";
+import { clipPlayDur, clipSrcDur, clickTimelineAt, fillFocusFrac, mediaUrl } from "../../types";
 import { revealedText } from "../../titleAnim";
 import { getPeaks } from "../../peaks";
 import { getCursorTrack, cursorTrackNow } from "../../cursorTracks";
@@ -562,7 +562,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                     // Same two-level clip as CroppedMedia: the inner window IS
                     // the crop, and the shader draws the whole source inside it.
                     const src = asset.width > 0 ? { width: asset.width, height: asset.height } : { width: W, height: H };
-                    const { window: win, media } = cropLayout(clip.crop, src, box.vw, box.vh, mode);
+                    const { window: win, media } = cropLayout(clip.crop, src, box.vw, box.vh, mode, fillFocusFrac(clip));
                     return (
                       <div style={{ position: "absolute", ...win, overflow: "hidden" }}>
                         <ChromaVideo
@@ -584,6 +584,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                     width={box.vw}
                     height={box.vh}
                     mode={mode}
+                    focus={fillFocusFrac(clip)}
                     muted={muted}
                     onVideo={(el) => (videoRefs.current[clip.id] = el)}
                   />
@@ -652,6 +653,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                     width={box.vw}
                     height={box.vh}
                     mode={mode}
+                    focus={fillFocusFrac(clip)}
                     muted={muted}
                     onVideo={(el) => (videoRefs.current[clip.id] = el)}
                   />

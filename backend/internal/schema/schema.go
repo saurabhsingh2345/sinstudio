@@ -113,6 +113,15 @@ type Clip struct {
 	// stretched. Empty keeps the behaviour every document had before this
 	// existed — see FitAuto.
 	Fit string `json:"fit,omitempty"`
+	// FillFocusX/Y choose WHICH part of an overflowing picture survives when the
+	// clip fills the frame — the thing a centred crop decides for you and is
+	// wrong about whenever the subject is not in the middle.
+	//
+	// Relative to centre, ±0.5 being an edge, so the zero value is the centred
+	// crop every document had before this existed. The same choice Transform's
+	// anchor made, for the same reason.
+	FillFocusX float64 `json:"fillFocusX,omitempty"`
+	FillFocusY float64 `json:"fillFocusY,omitempty"`
 	// Chroma removes a background colour from this clip, so whatever sits below
 	// it on the timeline shows through. Applied before any scaling.
 	Chroma *ChromaKey `json:"chroma,omitempty"`
@@ -347,6 +356,23 @@ by how it was fitted to the canvas, and nothing else.
 */
 func FitCovers(fit string) bool {
 	return fit == FitCover || fit == FitStretch
+}
+
+// FillFocusFrac converts the centre-relative fill focus into the 0..1 fraction
+// both halves position an overflowing picture with: 0 keeps the left/top edge,
+// 1 keeps the right/bottom, 0.5 is centred.
+func (c Clip) FillFocusFrac() (x, y float64) {
+	clamp := func(v float64) float64 {
+		v += 0.5
+		if v < 0 {
+			return 0
+		}
+		if v > 1 {
+			return 1
+		}
+		return v
+	}
+	return clamp(c.FillFocusX), clamp(c.FillFocusY)
 }
 
 /*

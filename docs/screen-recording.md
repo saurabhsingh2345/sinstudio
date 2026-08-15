@@ -82,8 +82,16 @@ frame with what is left, and the panel offers it as one button ("Fill the frame
 | --- | --- |
 | **Auto** | Letterbox. Nothing is cropped that nobody asked to crop. |
 | **Fit** | Show all of it, transparent bars where the shapes differ. |
-| **Fill** | Cover the frame; anything past the edge is not shown. |
+| **Fill** | Cover the frame; anything past the edge is not shown. Which part survives is yours to drag — see below. |
 | **Stretch** | Distort to fill. Rarely right, occasionally exactly right. |
+
+When a clip fills, exactly one axis overflows and the rest is thrown away.
+Which part gets thrown away is a choice, and **What stays in frame** in the
+Crop & fit panel is where you make it: drag along the track to slide the window
+over the picture. Centred is the default, and it is only the right answer when
+the subject happens to be in the middle. The control appears only when the clip
+really does overflow — a picture already the canvas's shape has nothing to
+choose between.
 
 **Auto used to fill** whenever the camera was working the clip — and since every
 screen recording carries cursor effects, that quietly cropped a quarter off any

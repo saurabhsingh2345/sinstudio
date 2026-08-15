@@ -49,7 +49,8 @@ type visual struct {
 	start, end        float64
 	x, y              int
 	sw, sh            int
-	srcW, srcH        int // the source file's own pixels; 0 when unknown
+	srcW, srcH        int     // the source file's own pixels; 0 when unknown
+	focusX, focusY    float64 // which part of an overflowing picture survives, 0..1
 	opacity           float64
 	speed             float64
 	fadeIn, fadeOut   float64
@@ -458,7 +459,7 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 		cameraClip := v.cursorFX != nil || zoomClip
 		if v.device == nil && v.bubble == nil && v.srcW > 0 && v.srcH > 0 {
 			if v.backdrop == nil || cameraClip {
-				prefit = prefitFilter(v.fit, v.srcW, v.srcH, w, h)
+				prefit = prefitFilter(v.fit, v.srcW, v.srcH, w, h, v.focusX, v.focusY)
 			}
 		}
 		// The crop is against the source's ORIGINAL frame, so it uses the raw
@@ -1033,10 +1034,12 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 	// The crop is resolved here, once, so every later stage sees a source whose
 	// dimensions are the ones it will actually be handed — see crop.go.
 	cropW, cropH := croppedDims(src[0], src[1], c.Crop)
+	focusX, focusY := c.FillFocusFrac()
 	*visuals = append(*visuals, visual{
 		path: p, in: c.In, out: c.Out, start: c.Start, end: c.Start + span + hold,
 		x: x, y: y, sw: sw, sh: sh, srcW: cropW, srcH: cropH, opacity: op,
 		crop: c.Crop, fit: c.Fit, rawW: src[0], rawH: src[1],
+		focusX: focusX, focusY: focusY,
 		speed: c.Speed, fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
 		cx: cx, cy: cy, ax: ax, ay: ay,

@@ -128,20 +128,20 @@ func TestPrefitModes(t *testing.T) {
 	// A 4:3 source in a 16:9 canvas — the shapes genuinely disagree.
 	const sw, sh, w, h = 1440, 1080, 1920, 1080
 
-	fit := prefitFilter(schema.FitContain, sw, sh, w, h)
+	fit := prefitFilter(schema.FitContain, sw, sh, w, h, 0.5, 0.5)
 	if !strings.Contains(fit, "decrease") || !strings.Contains(fit, "pad=") {
 		t.Errorf("fit should letterbox: %q", fit)
 	}
-	fill := prefitFilter(schema.FitCover, sw, sh, w, h)
+	fill := prefitFilter(schema.FitCover, sw, sh, w, h, 0.5, 0.5)
 	if !strings.Contains(fill, "increase") || !strings.Contains(fill, "crop=1920:1080") {
 		t.Errorf("fill should cover and crop: %q", fill)
 	}
-	if got := prefitFilter(schema.FitStretch, sw, sh, w, h); got != "" {
+	if got := prefitFilter(schema.FitStretch, sw, sh, w, h, 0.5, 0.5); got != "" {
 		t.Errorf("stretch should add nothing, leaving the plain scale: %q", got)
 	}
 	// Shapes that already agree need no prefit in any mode.
 	for _, mode := range []string{schema.FitAuto, schema.FitContain, schema.FitCover} {
-		if got := prefitFilter(mode, 1920, 1080, w, h); got != "" {
+		if got := prefitFilter(mode, 1920, 1080, w, h, 0.5, 0.5); got != "" {
 			t.Errorf("%q prefitted a matching source: %q", mode, got)
 		}
 	}
@@ -160,16 +160,16 @@ to lose.
 func TestAutoFitLetterboxes(t *testing.T) {
 	const sw, sh, w, h = 1440, 1080, 1920, 1080
 	for _, name := range []string{"a plain clip", "a clip the camera works"} {
-		got := prefitFilter(schema.FitAuto, sw, sh, w, h)
+		got := prefitFilter(schema.FitAuto, sw, sh, w, h, 0.5, 0.5)
 		if !strings.Contains(got, "decrease") {
 			t.Errorf("%s should letterbox by default: %q", name, got)
 		}
 	}
 	// An explicit choice still wins, in both directions.
-	if got := prefitFilter(schema.FitCover, sw, sh, w, h); !strings.Contains(got, "increase") {
+	if got := prefitFilter(schema.FitCover, sw, sh, w, h, 0.5, 0.5); !strings.Contains(got, "increase") {
 		t.Errorf("explicit fill was ignored: %q", got)
 	}
-	if got := prefitFilter(schema.FitContain, sw, sh, w, h); !strings.Contains(got, "decrease") {
+	if got := prefitFilter(schema.FitContain, sw, sh, w, h, 0.5, 0.5); !strings.Contains(got, "decrease") {
 		t.Errorf("explicit fit was ignored: %q", got)
 	}
 }
@@ -188,12 +188,12 @@ func TestCropChangesWhatThePrefitFits(t *testing.T) {
 	if cw != 960 || ch != 1080 {
 		t.Fatalf("croppedDims = %dx%d, want 960x1080", cw, ch)
 	}
-	seg := prefitFilter(schema.FitContain, cw, ch, 1920, 1080)
+	seg := prefitFilter(schema.FitContain, cw, ch, 1920, 1080, 0.5, 0.5)
 	if !strings.Contains(seg, "pad=1920:1080") {
 		t.Errorf("the cropped shape was not letterboxed into the canvas: %q", seg)
 	}
 	// Without the crop the source already matched the canvas and needed nothing.
-	if got := prefitFilter(schema.FitContain, 1920, 1080, 1920, 1080); got != "" {
+	if got := prefitFilter(schema.FitContain, 1920, 1080, 1920, 1080, 0.5, 0.5); got != "" {
 		t.Errorf("uncropped source should need no prefit: %q", got)
 	}
 }

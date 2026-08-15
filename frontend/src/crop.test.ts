@@ -179,3 +179,42 @@ describe("cropToAspect", () => {
     expect(isEmptyCrop(cropToAspect({ width: 1918, height: 1080 }, 16 / 9))).toBe(true);
   });
 });
+
+/*
+The fill focus, which decides what a filled clip throws away.
+
+The numbers here are the exporter's: fitted by height, a 900-wide source stays
+900 in a 640 frame, so 260px overflow. At focus 0 the window starts at the left
+edge, at 1 it ends at the right, at 0.5 it is centred — exactly ffmpeg's
+crop=(iw-W)*f, which is what keeps the preview showing the part the export keeps.
+*/
+describe("cropLayout fill focus", () => {
+  const src = { width: 900, height: 360 };
+
+  const leftOf = (focus: [number, number]) =>
+    cropLayout(undefined, src, 640, 360, "fill", focus).window.left;
+
+  it("hangs the overflow where the focus says", () => {
+    expect(leftOf([0, 0.5])).toBe(0); // keep the left edge
+    expect(leftOf([1, 0.5])).toBe(-260); // keep the right edge
+    expect(leftOf([0.5, 0.5])).toBe(-130); // centred
+  });
+
+  it("defaults to centred, which is what it always did", () => {
+    expect(cropLayout(undefined, src, 640, 360, "fill").window.left).toBe(-130);
+  });
+
+  it("clamps a focus that has run off the end", () => {
+    expect(leftOf([-3, 0.5])).toBe(0);
+    expect(leftOf([9, 0.5])).toBe(-260);
+  });
+
+  // A letterboxed picture has no overflow to choose between, and offsetting it
+  // would slide the picture around inside its own bars — a different feature,
+  // and not one anyone asked for.
+  it("ignores the focus when the clip letterboxes", () => {
+    const tall = { width: 360, height: 900 };
+    const centred = cropLayout(undefined, tall, 640, 360, "fit").window.left;
+    expect(cropLayout(undefined, tall, 640, 360, "fit", [0, 0]).window.left).toBe(centred);
+  });
+});

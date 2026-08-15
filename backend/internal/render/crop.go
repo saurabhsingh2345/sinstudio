@@ -98,7 +98,7 @@ frame) is enforced properly by the pan clamp in clipBoxAt.
 Returns a segment with a trailing comma, or "" when the shapes already agree and
 the whole question is moot.
 */
-func prefitFilter(fit string, srcW, srcH, w, h int) string {
+func prefitFilter(fit string, srcW, srcH, w, h int, focusX, focusY float64) string {
 	if srcW <= 0 || srcH <= 0 {
 		return ""
 	}
@@ -117,9 +117,14 @@ func prefitFilter(fit string, srcW, srcH, w, h int) string {
 		return ""
 	}
 	if cover {
+		// The crop's origin is the fill focus: 0 keeps the left edge, 1 the
+		// right, and the default 0.5 is the centred crop this always did. A
+		// bare crop=W:H centres, which is only the right answer when the
+		// subject happens to be in the middle.
 		return fmt.Sprintf(
-			"scale=%d:%d:force_original_aspect_ratio=increase:flags=bicubic,crop=%d:%d,format=rgba,",
-			w, h, w, h)
+			"scale=%d:%d:force_original_aspect_ratio=increase:flags=bicubic,"+
+				"crop=%d:%d:(iw-%d)*%.4f:(ih-%d)*%.4f,format=rgba,",
+			w, h, w, h, w, focusX, h, focusY)
 	}
 	return fmt.Sprintf(
 		"scale=%d:%d:force_original_aspect_ratio=decrease:flags=bicubic,format=rgba,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black@0,",

@@ -158,6 +158,18 @@ export interface Crop {
  */
 export type FitMode = "" | "fit" | "fill" | "stretch";
 
+/**
+ * Which part of an overflowing picture survives when a clip fills the frame.
+ *
+ * Relative to centre, ±0.5 being an edge, so the zero value is the centred crop
+ * every document had before this existed — the same choice the transform's
+ * anchor made. Mirrors schema.Clip.FillFocusX/Y.
+ */
+export const fillFocusFrac = (c: { fillFocusX?: number; fillFocusY?: number }): [number, number] => {
+  const f = (v: number | undefined) => Math.max(0, Math.min(1, (v ?? 0) + 0.5));
+  return [f(c.fillFocusX), f(c.fillFocusY)];
+};
+
 // DeviceFrame: a drawn phone/laptop/browser the clip's picture sits inside.
 // Mirrors backend/internal/schema DeviceFrame — keep the two in step.
 export type DeviceKind = "browser" | "phone" | "tablet" | "laptop";
@@ -279,6 +291,9 @@ export interface Clip {
   redactions?: Redaction[]; // blurred/pixelated regions of this clip's picture (fractions of the UNCROPPED source)
   crop?: Crop; // edges trimmed off this clip's picture, before it is fitted to the canvas
   fit?: FitMode; // how what's left meets the canvas: letterbox, fill, or stretch
+  /** Which part of an overflowing picture survives — see fillFocusFrac. */
+  fillFocusX?: number;
+  fillFocusY?: number;
   chroma?: ChromaKey; // when set, this colour is keyed out of the clip
   device?: DeviceFrame; // when set, the picture sits inside a drawn device
   /** Temporal blur on camera moves (scale/x/y keyframes). 0 = off, 0..1 strength. */

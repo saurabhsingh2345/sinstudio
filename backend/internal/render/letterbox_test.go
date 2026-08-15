@@ -136,3 +136,75 @@ func TestExplicitFillStillCoversTheFrame(t *testing.T) {
 		t.Errorf("an explicitly filled clip left %d background pixels", n)
 	}
 }
+
+/*
+Which part of an overflowing picture survives is a choice, and it is made here.
+
+A filled clip crops to the middle, which is the right answer only when the
+subject happens to be in the middle — and on a screen recording it usually is
+not. The proof has to be in pixels: a source with a distinctly coloured left
+third, middle third and right third, filled into a narrower frame, and then the
+question of which third came out.
+*/
+func TestFillFocusChoosesWhatSurvives(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	dir := t.TempDir()
+
+	// 900x360 in three 300-wide bands: red | grey | blue.
+	src := filepath.Join(dir, "bands.mp4")
+	cmd := exec.Command("ffmpeg", "-y", "-loglevel", "error",
+		"-f", "lavfi", "-i", "color=c=red:s=300x360:r=24:d=3",
+		"-f", "lavfi", "-i", "color=c=0x808080:s=300x360:r=24:d=3",
+		"-f", "lavfi", "-i", "color=c=blue:s=300x360:r=24:d=3",
+		"-filter_complex", "[0:v][1:v][2:v]hstack=inputs=3[v]",
+		"-map", "[v]", "-frames:v", "72", "-pix_fmt", "yuv420p", src)
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("build source: %v\n%s", err, b)
+	}
+
+	// A 640x360 frame is 260px narrower than the 900-wide source once fitted by
+	// height, so there is real overflow to choose from.
+	frameFor := func(focusX float64) string {
+		doc := &schema.EditDoc{
+			SchemaRev: schema.FitSchemaRev,
+			Canvas:    schema.Canvas{Width: 640, Height: 360, FPS: 24},
+			Assets:    []schema.Asset{{ID: "a", Kind: "video", Width: 900, Height: 360, Duration: 3}},
+			Tracks: []schema.Track{{ID: "v", Kind: schema.TrackVideo, Clips: []schema.Clip{{
+				ID: "c", AssetID: "a", Start: 0, In: 0, Out: 3,
+				Transform:  schema.Transform{Scale: 1, Opacity: 1},
+				Fit:        schema.FitCover,
+				FillFocusX: focusX,
+			}}}},
+		}
+		return renderFrame(t, doc, src, dir, 1.0)
+	}
+
+	/*
+	 * The numbers are exact, so they are asserted exactly.
+	 *
+	 * Fitted by height the source stays 900 wide, so a 640 frame crops 260px.
+	 * At focus 0 the window is x=0..640 and holds all 300px of red; centred it
+	 * is 130..770 and holds 170; hard right it is 260..900 and still holds 40,
+	 * because the red band reaches x=300. That last sliver is why "no red at
+	 * all" is the wrong assertion — an earlier version made it and failed
+	 * against perfectly correct output.
+	 */
+	const rows = 360
+	for _, c := range []struct {
+		name   string
+		focus  float64
+		wantPx int
+	}{
+		{"hard left", -0.5, 300 * rows},
+		{"centred", 0, 170 * rows},
+		{"hard right", 0.5, 40 * rows},
+	} {
+		_, _, got := redCentroid(t, frameFor(c.focus))
+		// A band edge blurs by a pixel or two through the encoder.
+		if diff := got - c.wantPx; diff > 3*rows || diff < -3*rows {
+			t.Errorf("%s kept %d red px, want about %d", c.name, got, c.wantPx)
+		}
+	}
+}
