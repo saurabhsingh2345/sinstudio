@@ -8,15 +8,15 @@ import (
 )
 
 var (
-	user32               = syscall.NewLazyDLL("user32.dll")
-	getCursorPos         = user32.NewProc("GetCursorPos")
-	getAsyncKeyState     = user32.NewProc("GetAsyncKeyState")
-	getSystemMetrics     = user32.NewProc("GetSystemMetrics")
+	user32           = syscall.NewLazyDLL("user32.dll")
+	getCursorPos     = user32.NewProc("GetCursorPos")
+	getAsyncKeyState = user32.NewProc("GetAsyncKeyState")
+	getSystemMetrics = user32.NewProc("GetSystemMetrics")
 )
 
 const (
-	vkLButton = 0x01
-	vkRButton = 0x02
+	vkLButton  = 0x01
+	vkRButton  = 0x02
 	smCxScreen = 0
 	smCyScreen = 1
 )

@@ -164,6 +164,36 @@ Window geometry is macOS-only for now. Elsewhere `cursord` reports
 `surfaces: false` and Studio keeps the old rule: whole-screen shares get cursor
 effects, window and tab shares record fine without them.
 
+### Cursor shapes
+
+`cursord` also reports *which* system cursor is showing — arrow, I-beam,
+pointing hand, crosshair, resize — and Studio draws that shape rather than an
+arrow throughout. A tutorial of a web app is mostly links and text fields, and an
+arrow sitting over both says something false about the interface.
+
+The shapes are drawn, not bundled as art: a PNG is fixed-resolution and its
+hotspot is not a number the code knows. Each one carries its own hotspot, so the
+cursor sits on the pixel it is pointing at whatever shape it is.
+
+A shape held for less than about an eighth of a second never appears, and two
+stretches of the same shape close together become one. Dragging across a row of
+links crosses in and out of the hand cursor several times a second, and following
+that honestly is a strobe.
+
+macOS only for now, like window geometry. Elsewhere `cursord` reports
+`kinds: false` and every moment is drawn as an arrow — the readiness panel says
+so rather than leaving you to notice. **Rebuild `cursord` to get this**; an
+installed binary from before it existed reports nothing and behaves exactly as
+it always did.
+
+Choosing **Dot** or **Ring** as the pointer style opts out: those are a
+deliberate stylisation, and turning one into an I-beam over every text field
+would be ignoring what was asked for.
+
+Note that **Size** now means the cursor's height**.** It previously meant a unit
+the arrow was 1.12 of, so an existing project's cursor draws about a tenth
+smaller than before at the same setting.
+
 ### Studio draws the cursor
 
 With this on, the capture is asked to exclude the real cursor and Studio draws

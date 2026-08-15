@@ -24,6 +24,12 @@ export interface CursorHealth {
    * as before.
    */
   surfaces?: boolean;
+  /**
+   * Whether this helper can report which system cursor is showing. Same
+   * contract as surfaces: absent on older binaries, so every use is a
+   * truthiness test and the fallback is the arrow throughout.
+   */
+  kinds?: boolean;
   screen: { width: number; height: number };
 }
 
@@ -32,6 +38,9 @@ export interface CursorSample {
   x: number;
   y: number;
   down?: number; // 1 = left, 2 = right (bitmask)
+  /** Which system cursor was showing — see CURSOR_SHAPES in cursor-draw.ts.
+   *  Absent means the recorder could not tell, and everything draws the arrow. */
+  k?: number;
 }
 
 /** A display or a window cursord can see, with its rectangle on the screen. */
@@ -60,6 +69,8 @@ export interface CursorRecording {
   screen: { width: number; height: number };
   samples: CursorSample[];
   clicks: boolean;
+  /** Cursor shapes could be read. Absent on helpers built before that existed. */
+  kinds?: boolean;
   /** Set when Studio told the helper what was being captured. */
   surface?: CursorSurface;
   /** That surface's rectangle over time. Empty when none was attached. */
@@ -75,6 +86,9 @@ export interface CursorSidecar {
   clicks: boolean;
   /** The OS cursor was kept out of the capture, so the renderer draws it. */
   hidden?: boolean;
+  /** Cursor SHAPES could be read. False or absent means every sample's k is 0
+   *  because nothing was looking, not because the pointer was an arrow. */
+  kinds?: boolean;
   samples: CursorSample[];
 }
 
@@ -262,9 +276,19 @@ export function toSidecar(
     if (x < 0 || y < 0 || x > video.width || y > video.height) continue;
     const out: CursorSample = { t: Math.round(t), x, y };
     if (s.down) out.down = s.down;
+    // The shape rides along untouched — it is the one thing here that needs no
+    // coordinate conversion, because it says nothing about where anything is.
+    if (s.k) out.k = s.k;
     samples.push(out);
   }
-  return { version: 1, video, clicks: rec.clicks, hidden: cursorHidden, samples };
+  return {
+    version: 1,
+    video,
+    clicks: rec.clicks,
+    kinds: rec.kinds,
+    hidden: cursorHidden,
+    samples,
+  };
 }
 
 /**

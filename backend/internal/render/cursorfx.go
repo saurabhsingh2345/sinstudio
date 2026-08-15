@@ -403,39 +403,21 @@ func buildCursorFX(
 		if size <= 0 {
 			size = defPointerSize
 		}
-		pp := filepath.Join(dir, fmt.Sprintf("cur-%d-ptr.png", idx))
 		// Room for the smear to bleed into, only when there is a smear. Padding
 		// unconditionally would enlarge every pointer overlay for nothing.
 		pad := 0
 		if p.MotionBlur > 0 {
 			pad = int(math.Round(float64(size) * pointerBlurPad))
 		}
-		ptrW, ptrH, hotX, hotY, err := writePointerPNG(pp, p.Style, size, pad, hexColor(p.Color, defPointerColor), p.Opacity)
-		if err != nil {
-			return nil, err
-		}
-		name := fmt.Sprintf("ptr%d", idx)
-		plan.segments = append(plan.segments, cursorSegment{
-			png:    pp,
-			name:   name,
-			x:      fmt.Sprintf("%d", -hotX),
-			y:      fmt.Sprintf("%d", -hotY),
-			enable: fmt.Sprintf("between(t,%.3f,%.3f)", start, end),
-		})
-		seg := &plan.segments[len(plan.segments)-1]
-		seg.scaleName = name
-		seg.baseW, seg.baseH = ptrW, ptrH
 		// The dip is the pointer's alone — the highlight is a glow under it, and
 		// a glow that pulses with every press reads as a flicker. The track is
-		// densified only for this call, so the extra control points cannot reach
-		// the click detection every other effect keys off.
-		ptrTrack, dip := track, (func(float64) float64)(nil)
+		// densified only for the pointer, so the extra control points cannot
+		// reach the click detection every other effect keys off.
+		ptrSamples, dip := track.Samples, (func(float64) float64)(nil)
 		if p.ClickDip > 0 {
 			clicks := track.ClickTimes()
 			dip = func(t float64) float64 { return pointerClickScale(clicks, t, p.ClickDip) }
-			dense := *track
-			dense.Samples = densifyForClicks(track.Samples, clicks)
-			ptrTrack = &dense
+			ptrSamples = densifyForClicks(track.Samples, clicks)
 		}
 		var blur func(vx, vy, size float64) (float64, float64)
 		if p.MotionBlur > 0 {
@@ -443,13 +425,53 @@ func buildCursorFX(
 				return pointerBlurSigma(vx, vy, p.MotionBlur, size, fps)
 			}
 		}
-		cmds = append(cmds, cursorCommands(v, ptrTrack, name, canvasW, canvasH, dip, hotX, hotY, ptrW, ptrH, blur)...)
-		if blur != nil {
-			seg.blurName = name
+
+		// One overlay per shape that actually occurs. An overlay's input is a
+		// stream fixed when the graph is built, so a cursor that changes shape
+		// cannot be one overlay — but a take spent entirely on an arrow (or one
+		// recorded by a cursord that cannot report shapes) yields exactly one
+		// span and therefore exactly the single overlay this has always built.
+		// A stylised pointer opts out: asking for a dot and getting an I-beam
+		// over every text field would be ignoring what was asked for.
+		spans := cursorKindSpans(ptrSamples, v.in, v.out)
+		kinds := kindsPresent(spans)
+		if p.Style == "dot" || p.Style == "ring" {
+			kinds = []uint8{kindArrow}
 		}
-		if len(alphaSteps) > 0 {
-			seg.alphaName = name
-			cmds = append(cmds, alphaCommands(name)...)
+		for ki, kind := range kinds {
+			pp := filepath.Join(dir, fmt.Sprintf("cur-%d-ptr%d.png", idx, ki))
+			ptrW, ptrH, hotX, hotY, err := writePointerPNG(
+				pp, p.Style, kind, size, pad, hexColor(p.Color, defPointerColor), p.Opacity)
+			if err != nil {
+				return nil, err
+			}
+			name := fmt.Sprintf("ptr%dk%d", idx, ki)
+			enable := fmt.Sprintf("between(t,%.3f,%.3f)", start, end)
+			shapeSamples := ptrSamples
+			if len(kinds) > 1 {
+				enable = enableFor(spans, kind, func(t float64) float64 { return sourceToTimeline(v, t) })
+				shapeSamples = samplesIn(ptrSamples, spans, kind)
+			}
+			plan.segments = append(plan.segments, cursorSegment{
+				png:    pp,
+				name:   name,
+				x:      fmt.Sprintf("%d", -hotX),
+				y:      fmt.Sprintf("%d", -hotY),
+				enable: enable,
+			})
+			seg := &plan.segments[len(plan.segments)-1]
+			seg.scaleName = name
+			seg.baseW, seg.baseH = ptrW, ptrH
+			shapeTrack := *track
+			shapeTrack.Samples = shapeSamples
+			cmds = append(cmds, cursorCommands(v, &shapeTrack, name, canvasW, canvasH, dip, hotX, hotY, ptrW, ptrH, blur)...)
+			if blur != nil {
+				seg.blurName = name
+			}
+			if len(alphaSteps) > 0 {
+				seg.alphaName = name
+				cmds = append(cmds, alphaCommands(name)...)
+			}
 		}
 	}
 

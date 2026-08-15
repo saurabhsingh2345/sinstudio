@@ -12,6 +12,15 @@ import {
   pointerClickScale,
   pointerBlurSigma,
   loopReturnPath,
+  CURSOR_SHAPES,
+  shapeFor,
+  kindAt,
+  KIND_ARROW,
+  KIND_TEXT,
+  KIND_HAND,
+  KIND_CROSS,
+  KIND_RESIZE_H,
+  KIND_RESIZE_V,
 } from "./cursor-draw";
 import { clicksInStep } from "../../clickAudio";
 import type { CursorSample, CursorSidecar } from "../../cursor";
@@ -629,5 +638,114 @@ describe("loopReturnPath", () => {
     expect(loopReturnPath(s, 0, 0, 3)).toEqual(s);
     expect(loopReturnPath(s, 1, 3, 3)).toEqual(s);
     expect(loopReturnPath(s, 1, 3, 1)).toEqual(s);
+  });
+});
+
+// The system cursor shapes. The checksums are the same ones
+// TestCursorShapesGolden asserts in Go — without that pair the preview and the
+// export draw different cursors, which is the one thing a preview may not do.
+describe("cursor shapes", () => {
+  it("matches the Go golden", () => {
+    const want: [number, number, number][] = [
+      [KIND_ARROW, 7, 7.69],
+      [KIND_TEXT, 12, 9.0],
+      [KIND_HAND, 16, 13.98],
+      [KIND_CROSS, 12, 12.0],
+      [KIND_RESIZE_H, 10, 8.0],
+      [KIND_RESIZE_V, 10, 8.0],
+    ];
+    for (const [kind, points, checksum] of want) {
+      const s = CURSOR_SHAPES[kind];
+      expect(s.path).toHaveLength(points);
+      expect(s.path.reduce((a, [x, y]) => a + x + y, 0)).toBeCloseTo(checksum, 4);
+    }
+  });
+
+  // A hotspot outside its own shape points the cursor at nothing.
+  it("keeps every hotspot inside its own box", () => {
+    for (const s of Object.values(CURSOR_SHAPES)) {
+      expect(s.hotX).toBeGreaterThanOrEqual(0);
+      expect(s.hotX).toBeLessThanOrEqual(s.w);
+      expect(s.hotY).toBeGreaterThanOrEqual(0);
+      expect(s.hotY).toBeLessThanOrEqual(s.h);
+      for (const [x, y] of s.path) {
+        expect(x).toBeLessThanOrEqual(s.w + 0.01);
+        expect(y).toBeLessThanOrEqual(s.h + 0.01);
+      }
+    }
+  });
+
+  it("falls back to the arrow for anything it cannot name", () => {
+    expect(shapeFor(undefined)).toBe(CURSOR_SHAPES[KIND_ARROW]);
+    expect(shapeFor(0)).toBe(CURSOR_SHAPES[KIND_ARROW]);
+    expect(shapeFor(99)).toBe(CURSOR_SHAPES[KIND_ARROW]);
+  });
+});
+
+describe("kindAt", () => {
+  const s: CursorSample[] = [
+    { t: 0, x: 0, y: 0 },
+    { t: 1000, x: 0, y: 0, k: KIND_HAND },
+    { t: 2000, x: 0, y: 0, k: KIND_TEXT },
+  ];
+
+  it("holds the nearest preceding shape", () => {
+    expect(kindAt(s, 0.5)).toBe(KIND_ARROW);
+    expect(kindAt(s, 1.5)).toBe(KIND_HAND);
+    expect(kindAt(s, 9)).toBe(KIND_TEXT);
+  });
+
+  // A recording from a helper that cannot report shapes is all zeros, and must
+  // read as an arrow throughout rather than as "no cursor".
+  it("reads an unreported shape as the arrow", () => {
+    expect(kindAt([{ t: 0, x: 0, y: 0 }], 5)).toBe(KIND_ARROW);
+    expect(kindAt([], 5)).toBe(KIND_ARROW);
+  });
+});
+
+describe("drawCursorFX shapes", () => {
+  const shaped = (k: number): CursorSidecar =>
+    trackFor({
+      hidden: true,
+      samples: [
+        { t: 0, x: 960, y: 540, k },
+        { t: 3000, x: 960, y: 540, k },
+      ],
+    });
+
+  const pointsFor = (k: number, style?: string) => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { size: 100, style } }), shaped(k), FULL_BOX, 0.5, 1);
+    return calls.filter((c) => c.startsWith("moveTo(") || c.startsWith("lineTo("));
+  };
+
+  it("draws each shape with its own outline", () => {
+    expect(pointsFor(KIND_ARROW)).toHaveLength(7);
+    expect(pointsFor(KIND_TEXT)).toHaveLength(12);
+    expect(pointsFor(KIND_HAND)).toHaveLength(16);
+    expect(pointsFor(KIND_CROSS)).toHaveLength(12);
+  });
+
+  // A stylised pointer opts out, exactly as the exporter does.
+  it("leaves an explicitly chosen dot alone", () => {
+    expect(pointsFor(KIND_TEXT, "dot")).toHaveLength(0);
+  });
+
+  // Every shape is drawn from its hotspot, so the cursor sits on the pixel it
+  // is pointing at whatever shape it happens to be.
+  it("puts every shape's hotspot on the pointer", () => {
+    for (const k of [KIND_ARROW, KIND_TEXT, KIND_HAND, KIND_CROSS, KIND_RESIZE_H, KIND_RESIZE_V]) {
+      const pts = pointsFor(k).map((c) => c.slice(c.indexOf("(") + 1, -1).split(",").map(Number));
+      const shape = CURSOR_SHAPES[k];
+      const scale = 100 / shape.h;
+      // The hotspot sits at (960,540) and the shape extends around it by
+      // exactly what its own path says — which is the thing that would break if
+      // the drawing scaled the polygon without shifting it onto its hotspot,
+      // the shape of the bug this guards.
+      const wantX = 960 + (Math.min(...shape.path.map((p) => p[0])) - shape.hotX) * scale;
+      const wantY = 540 + (Math.min(...shape.path.map((p) => p[1])) - shape.hotY) * scale;
+      expect(Math.abs(Math.min(...pts.map((p) => p[0])) - wantX)).toBeLessThan(1.5);
+      expect(Math.abs(Math.min(...pts.map((p) => p[1])) - wantY)).toBeLessThan(1.5);
+    }
   });
 });

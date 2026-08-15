@@ -34,6 +34,91 @@ var arrowPath = [][2]float64{
 	{0.72, 0.66},
 }
 
+/*
+The other system cursors, as single polygons in the same unit box.
+
+Every one is ONE closed outline, because that is what the existing machinery
+draws: rasterize fills a polygon, and the outline is that fill dilated in eight
+directions. A hand made of a palm plus five finger shapes would need a compositor
+and would produce seams where the parts meet. Drawn rather than bundled as art,
+for the reason the device frames are: a PNG is fixed-resolution and its hotspot
+is not a number the code knows.
+
+hotX/hotY is the point that sits on the recorded coordinate, in the same unit
+box — the arrow's tip, an I-beam's middle, the hand's fingertip. Getting it
+wrong offsets the cursor from everything it is pointing at, which is worse than
+drawing the wrong shape.
+
+These are duplicated in cursor-draw.ts and pinned by a shared checksum
+(TestCursorShapesGolden / cursor-draw.test.ts), the same discipline as
+arrowHead and keysLayout.
+*/
+type cursorShape struct {
+	path       [][2]float64
+	hotX, hotY float64
+	w, h       float64 // extent of the unit box, for sizing the image
+}
+
+// Cursor kind codes. Mirrors cursord's kind_darwin.go and the frontend's
+// CursorKind. 0 (unknown) is deliberately absent: it resolves to the arrow,
+// because a cursor we cannot name is still a cursor and drawing nothing is the
+// one unacceptable answer.
+const (
+	kindArrow   uint8 = 1
+	kindText    uint8 = 2
+	kindHand    uint8 = 3
+	kindCross   uint8 = 4
+	kindResizeH uint8 = 5
+	kindResizeV uint8 = 6
+)
+
+var cursorShapes = map[uint8]cursorShape{
+	kindArrow: {path: arrowPath, hotX: 0, hotY: 0, w: 0.80, h: 1.12},
+	// A serifed I, so it reads as a text cursor at 20 pixels rather than as a
+	// plain bar, which at that size is indistinguishable from a window edge.
+	kindText: {path: [][2]float64{
+		{0.00, 0.00}, {0.50, 0.00}, {0.50, 0.12}, {0.34, 0.12},
+		{0.34, 0.88}, {0.50, 0.88}, {0.50, 1.00}, {0.00, 1.00},
+		{0.00, 0.88}, {0.16, 0.88}, {0.16, 0.12}, {0.00, 0.12},
+	}, hotX: 0.25, hotY: 0.50, w: 0.50, h: 1.00},
+	// A pointing hand: index finger up, three knuckles stepping down, thumb on
+	// the left. The steps matter — a mitten silhouette reads as a blob.
+	kindHand: {path: [][2]float64{
+		{0.16, 0.00}, {0.30, 0.00}, {0.30, 0.42}, {0.38, 0.34},
+		{0.46, 0.34}, {0.46, 0.46}, {0.52, 0.40}, {0.60, 0.40},
+		{0.60, 0.50}, {0.66, 0.46}, {0.74, 0.46}, {0.74, 1.00},
+		{0.20, 1.00}, {0.06, 0.72}, {0.06, 0.56}, {0.16, 0.52},
+	}, hotX: 0.23, hotY: 0.00, w: 0.74, h: 1.00},
+	kindCross: {path: [][2]float64{
+		{0.44, 0.00}, {0.56, 0.00}, {0.56, 0.44}, {1.00, 0.44},
+		{1.00, 0.56}, {0.56, 0.56}, {0.56, 1.00}, {0.44, 1.00},
+		{0.44, 0.56}, {0.00, 0.56}, {0.00, 0.44}, {0.44, 0.44},
+	}, hotX: 0.50, hotY: 0.50, w: 1.00, h: 1.00},
+	kindResizeH: {path: [][2]float64{
+		{0.00, 0.30}, {0.22, 0.06}, {0.22, 0.22}, {0.78, 0.22},
+		{0.78, 0.06}, {1.00, 0.30}, {0.78, 0.54}, {0.78, 0.38},
+		{0.22, 0.38}, {0.22, 0.54},
+	}, hotX: 0.50, hotY: 0.30, w: 1.00, h: 0.60},
+	// The horizontal one on its side. Written out rather than derived at run
+	// time so the frontend can hold the identical numbers instead of having to
+	// reproduce a transposition.
+	kindResizeV: {path: [][2]float64{
+		{0.30, 0.00}, {0.06, 0.22}, {0.22, 0.22}, {0.22, 0.78},
+		{0.06, 0.78}, {0.30, 1.00}, {0.54, 0.78}, {0.38, 0.78},
+		{0.38, 0.22}, {0.54, 0.22},
+	}, hotX: 0.30, hotY: 0.50, w: 0.60, h: 1.00},
+}
+
+// shapeFor resolves a sample's kind to something drawable. Anything unknown —
+// an old cursord, a platform that cannot report shapes, an app with its own
+// cursor art — lands on the arrow.
+func shapeFor(kind uint8) cursorShape {
+	if s, ok := cursorShapes[kind]; ok {
+		return s
+	}
+	return cursorShapes[kindArrow]
+}
+
 // rasterize fills a polygon into an alpha mask with anti-aliased edges.
 func rasterize(w, h int, pts [][2]float64, scale, offX, offY float64) *image.Alpha {
 	r := vector.NewRasterizer(w, h)
@@ -54,7 +139,11 @@ func rasterize(w, h int, pts [][2]float64, scale, offX, offY float64) *image.Alp
 // moves the hotspot with it, so a padded cursor still sits on its own
 // coordinate; getting that wrong offsets the pointer by the padding, which is
 // far more visible than any blur.
-func writePointerPNG(path, style string, size, pad int, c color.NRGBA, opacity float64) (imgW, imgH, hotX, hotY int, err error) {
+// kind selects which system cursor to draw, and only applies to the default
+// "arrow" style: picking "dot" or "ring" is asking for a stylised pointer, and
+// silently turning it into an I-beam over every text field would be ignoring
+// what was asked for.
+func writePointerPNG(path, style string, kind uint8, size, pad int, c color.NRGBA, opacity float64) (imgW, imgH, hotX, hotY int, err error) {
 	if size < 8 {
 		size = 8
 	}
@@ -98,16 +187,22 @@ func writePointerPNG(path, style string, size, pad int, c color.NRGBA, opacity f
 		return box, box, size/2 + pad, size/2 + pad, encodePNG(path, img)
 	}
 
-	// Arrow. The outline is the fill dilated in every direction rather than a
-	// scaled-up copy of the shape: scaling a polygon moves it away from its own
+	// A drawn shape. The outline is the fill dilated in every direction rather
+	// than a scaled-up copy: scaling a polygon moves it away from its own
 	// origin, so the "outline" ends up beside the fill instead of around it.
 	// Same 8-direction trick the caption renderer uses for text.
-	scale := float64(size)
+	//
+	// The shape is sized so that `size` is its HEIGHT in every case. Sizing by
+	// the unit box instead would make a crosshair (square) and an I-beam (half
+	// as wide as tall) read as wildly different weights at the same setting.
+	shape := shapeFor(kind)
+	scale := float64(size) / shape.h
 	stroke := math.Max(1.5, scale*0.055)
-	w := int(scale*0.8+stroke*2) + 2 + pad*2
-	h := int(scale*1.12+stroke*2) + 2 + pad*2
+	inset := stroke + float64(pad)
+	w := int(scale*shape.w+stroke*2) + 2 + pad*2
+	h := int(scale*shape.h+stroke*2) + 2 + pad*2
 
-	fill := rasterize(w, h, arrowPath, scale, stroke+float64(pad), stroke+float64(pad))
+	fill := rasterize(w, h, shape.path, scale, inset, inset)
 
 	// Dilate: a pixel is outline if any pixel within `stroke` is fill.
 	st := int(math.Ceil(stroke))
@@ -150,9 +245,10 @@ func writePointerPNG(path, style string, size, pad int, c color.NRGBA, opacity f
 			img.SetNRGBA(x, y, color.NRGBA{uint8(rr), uint8(gg), uint8(bb), uint8(clampF(a, 0, 1) * 255)})
 		}
 	}
-	// The tip is the fill's origin, which the stroke inset and the padding
-	// pushed in.
-	return w, h, st + pad, st + pad, encodePNG(path, img)
+	// The hotspot is the shape's own, moved by the stroke inset and the padding.
+	return w, h,
+		int(shape.hotX*scale + inset), int(shape.hotY*scale + inset),
+		encodePNG(path, img)
 }
 
 // smoothPath irons jitter out of a recorded pointer path.

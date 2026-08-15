@@ -24,6 +24,10 @@ type Sample struct {
 	X    int   `json:"x"`
 	Y    int   `json:"y"`
 	Down uint8 `json:"down,omitempty"`
+	// K is which system cursor was showing — see kind_darwin.go for the codes.
+	// Absent (0) means "not known", which every consumer treats as the default
+	// arrow rather than as a shape in its own right.
+	K uint8 `json:"k,omitempty"`
 }
 
 // Screen is the display the coordinates are expressed in. Sent with every
@@ -41,6 +45,10 @@ type Recording struct {
 	StoppedAt int64    `json:"stoppedAt"`
 	Screen    Screen   `json:"screen"`
 	Samples   []Sample `json:"samples"`
+	// Kinds reports whether cursor SHAPES could be read, for the same reason
+	// Clicks exists: a stream of zeros is indistinguishable from "the pointer
+	// was an arrow the whole time", and those are very different claims.
+	Kinds bool `json:"kinds"`
 	// Clicks reports whether button state could actually be read. Positions are
 	// useful on their own, so a platform that can't see buttons still records —
 	// it says so rather than silently emitting a stream of zeros that looks
@@ -68,6 +76,12 @@ const sampleHz = 60
 // whole time rather than drifting slowly.
 const heartbeat = 250 * time.Millisecond
 
+// kindHz is how often the cursor's shape is re-read. A shape change follows the
+// pointer crossing into a different control, which is a hand movement — 10Hz is
+// already finer than that, and the read costs an image render and a hash, so it
+// is not one to do sixty times a second.
+const kindHz = 10
+
 // boundsHz is how often the tracked surface's rectangle is re-read. A window
 // is moved by a hand, not by a program, so 15Hz is already finer than anything
 // a person can do to it — and unlike the pointer read, this one crosses into
@@ -82,6 +96,7 @@ var (
 	readScreen  = screenSize
 	readRect    = lookupRect
 	readList    = listSurfaces
+	readKind    = cursorKind
 )
 
 // Tracker owns the sampling loop and the session buffer.
@@ -119,6 +134,7 @@ func (tr *Tracker) Start() Recording {
 		Screen:    Screen{Width: w, Height: h},
 		Samples:   make([]Sample, 0, 4096),
 		Clicks:    buttonsSupported(),
+		Kinds:     kindsSupported(),
 	}
 	tr.surfaceID = ""
 	tr.running = true
@@ -211,6 +227,7 @@ func (tr *Tracker) loop(stop <-chan struct{}, done chan<- struct{}) {
 
 	var last Sample
 	var have bool
+	var kind uint8
 	ticks := 0
 	for {
 		select {
@@ -221,14 +238,21 @@ func (tr *Tracker) loop(stop <-chan struct{}, done chan<- struct{}) {
 			if ticks%(sampleHz/boundsHz) == 0 {
 				tr.sampleBounds()
 			}
+			// The shape is read on its own slower beat and stamped onto every
+			// sample in between. Reading it per sample would mean sixty image
+			// renders a second to answer a question that changes at the speed of
+			// a hand.
+			if ticks%(sampleHz/kindHz) == 0 {
+				kind = readKind()
+			}
 			x, y := readCursor()
-			s := Sample{T: time.Now().UnixMilli(), X: x, Y: y, Down: readButtons()}
+			s := Sample{T: time.Now().UnixMilli(), X: x, Y: y, Down: readButtons(), K: kind}
 			// Drop samples that say nothing new. A still pointer would otherwise
 			// write 60 identical rows a second, and a long tutorial is mostly a
 			// still pointer — this is the difference between a ~100KB sidecar and
 			// a multi-megabyte one, with no loss: the gaps are exactly the spans
 			// where nothing changed.
-			if have && s.X == last.X && s.Y == last.Y && s.Down == last.Down &&
+			if have && s.X == last.X && s.Y == last.Y && s.Down == last.Down && s.K == last.K &&
 				time.Duration(s.T-last.T)*time.Millisecond < heartbeat {
 				continue
 			}

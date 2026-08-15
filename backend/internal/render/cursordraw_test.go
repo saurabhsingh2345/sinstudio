@@ -26,14 +26,14 @@ func TestPointerIsNeverDrawnOverABakedInCursor(t *testing.T) {
 	// hidden=false: the capture already has a cursor.
 	writeTrackHidden(t, src, 640, 360, samplePath(), false)
 	args := compileFor(t, cursorDoc(fx), src, dir)
-	if strings.Contains(args, "-ptr.png") {
+	if strings.Contains(args, "-ptr0.png") {
 		t.Error("drew a pointer over a recording that already contains one")
 	}
 
 	// hidden=true: the capture has none, so we owe it a cursor.
 	writeTrackHidden(t, src, 640, 360, samplePath(), true)
 	args = compileFor(t, cursorDoc(fx), src, dir)
-	if !strings.Contains(args, "-ptr.png") {
+	if !strings.Contains(args, "-ptr0.png") {
 		t.Error("no pointer drawn for a recording captured without one")
 	}
 	if !strings.Contains(args, "overlay@ptr0") {
@@ -70,7 +70,7 @@ func TestPointerStylesRender(t *testing.T) {
 		t.Run("style="+style, func(t *testing.T) {
 			dir := t.TempDir()
 			p := filepath.Join(dir, "ptr.png")
-			_, _, hx, hy, err := writePointerPNG(p, style, 40, 0, color.NRGBA{255, 255, 255, 255}, 1)
+			_, _, hx, hy, err := writePointerPNG(p, style, kindArrow, 40, 0, color.NRGBA{255, 255, 255, 255}, 1)
 			if err != nil {
 				t.Fatalf("draw: %v", err)
 			}

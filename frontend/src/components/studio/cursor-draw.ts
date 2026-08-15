@@ -305,6 +305,98 @@ const ARROW: [number, number][] = [
   [0.72, 0.66],
 ];
 
+/*
+ * The system cursors, as single polygons — the same numbers as
+ * render.cursorShapes, pinned by the same checksum (TestCursorShapesGolden /
+ * "cursor shapes" below).
+ *
+ * hotX/hotY is the point that sits on the recorded coordinate. Every shape is
+ * drawn from its hotspot, so the preview needs no offset arithmetic and a
+ * resized cursor stays on what it is pointing at for free.
+ */
+export const KIND_ARROW = 1;
+export const KIND_TEXT = 2;
+export const KIND_HAND = 3;
+export const KIND_CROSS = 4;
+export const KIND_RESIZE_H = 5;
+export const KIND_RESIZE_V = 6;
+
+export interface CursorShape {
+  path: [number, number][];
+  hotX: number;
+  hotY: number;
+  w: number;
+  h: number;
+}
+
+export const CURSOR_SHAPES: Record<number, CursorShape> = {
+  [KIND_ARROW]: { path: ARROW, hotX: 0, hotY: 0, w: 0.8, h: 1.12 },
+  [KIND_TEXT]: {
+    path: [
+      [0.0, 0.0], [0.5, 0.0], [0.5, 0.12], [0.34, 0.12],
+      [0.34, 0.88], [0.5, 0.88], [0.5, 1.0], [0.0, 1.0],
+      [0.0, 0.88], [0.16, 0.88], [0.16, 0.12], [0.0, 0.12],
+    ],
+    hotX: 0.25, hotY: 0.5, w: 0.5, h: 1.0,
+  },
+  [KIND_HAND]: {
+    path: [
+      [0.16, 0.0], [0.3, 0.0], [0.3, 0.42], [0.38, 0.34],
+      [0.46, 0.34], [0.46, 0.46], [0.52, 0.4], [0.6, 0.4],
+      [0.6, 0.5], [0.66, 0.46], [0.74, 0.46], [0.74, 1.0],
+      [0.2, 1.0], [0.06, 0.72], [0.06, 0.56], [0.16, 0.52],
+    ],
+    hotX: 0.23, hotY: 0.0, w: 0.74, h: 1.0,
+  },
+  [KIND_CROSS]: {
+    path: [
+      [0.44, 0.0], [0.56, 0.0], [0.56, 0.44], [1.0, 0.44],
+      [1.0, 0.56], [0.56, 0.56], [0.56, 1.0], [0.44, 1.0],
+      [0.44, 0.56], [0.0, 0.56], [0.0, 0.44], [0.44, 0.44],
+    ],
+    hotX: 0.5, hotY: 0.5, w: 1.0, h: 1.0,
+  },
+  [KIND_RESIZE_H]: {
+    path: [
+      [0.0, 0.3], [0.22, 0.06], [0.22, 0.22], [0.78, 0.22],
+      [0.78, 0.06], [1.0, 0.3], [0.78, 0.54], [0.78, 0.38],
+      [0.22, 0.38], [0.22, 0.54],
+    ],
+    hotX: 0.5, hotY: 0.3, w: 1.0, h: 0.6,
+  },
+  [KIND_RESIZE_V]: {
+    path: [
+      [0.3, 0.0], [0.06, 0.22], [0.22, 0.22], [0.22, 0.78],
+      [0.06, 0.78], [0.3, 1.0], [0.54, 0.78], [0.38, 0.78],
+      [0.38, 0.22], [0.54, 0.22],
+    ],
+    hotX: 0.3, hotY: 0.5, w: 0.6, h: 1.0,
+  },
+};
+
+/** Mirrors render.shapeFor: anything unnameable is drawn as an arrow. */
+export const shapeFor = (kind: number | undefined): CursorShape =>
+  CURSOR_SHAPES[kind ?? 0] ?? CURSOR_SHAPES[KIND_ARROW];
+
+/**
+ * Which shape was showing at a source time.
+ *
+ * Deliberately reads the raw nearest-preceding sample rather than reproducing
+ * the exporter's span smoothing. The smoothing exists to stop the EXPORT
+ * rebuilding its overlay set around a flicker; scrubbing a preview past a
+ * one-frame shape change costs nothing, and matching the exporter here would
+ * mean carrying its whole span machinery into the draw loop.
+ */
+export function kindAt(samples: CursorSample[], tSec: number): number {
+  const ms = tSec * 1000;
+  let k = KIND_ARROW;
+  for (const s of samples) {
+    if (s.t > ms) break;
+    k = s.k || KIND_ARROW;
+  }
+  return k;
+}
+
 export interface CursorBox {
   /** The clip's drawn rectangle on the stage, in stage px. */
   left: number;
@@ -496,6 +588,11 @@ export function drawCursorFX(
     const op = (fx.pointer.opacity ?? PTR_DEFAULTS.opacity) * idleAlpha;
     const style = fx.pointer.style ?? PTR_DEFAULTS.style;
 
+    // Which system cursor was showing. A stylised pointer opts out — asking
+    // for a dot and getting an I-beam over every text field would be ignoring
+    // what was asked for, and the exporter makes the same exception.
+    const drawn = shapeFor(style === "dot" || style === "ring" ? KIND_ARROW : kindAt(samples, srcT));
+
     const shape = (ox: number, oy: number) => {
       ctx.fillStyle = col;
       ctx.strokeStyle = "rgba(0,0,0,0.9)";
@@ -513,10 +610,14 @@ export function drawCursorFX(
           ctx.stroke();
         }
       } else {
+        // `size` is the shape's HEIGHT, as in the exporter, so a crosshair and
+        // an I-beam read as the same weight at the same setting. Drawn from
+        // the hotspot, which keeps every shape on its own coordinate.
+        const k = size / drawn.h;
         ctx.beginPath();
-        ARROW.forEach(([ax, ay], i) => {
-          const x = px + ox + ax * size;
-          const y = py + oy + ay * size;
+        drawn.path.forEach(([ax, ay], i) => {
+          const x = px + ox + (ax - drawn.hotX) * k;
+          const y = py + oy + (ay - drawn.hotY) * k;
           if (i === 0) ctx.moveTo(x, y);
           else ctx.lineTo(x, y);
         });

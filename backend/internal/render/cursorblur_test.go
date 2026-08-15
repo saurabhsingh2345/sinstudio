@@ -96,13 +96,13 @@ func TestBlurPaddingMovesTheHotspotWithIt(t *testing.T) {
 	for _, style := range []string{"arrow", "dot"} {
 		t.Run(style, func(t *testing.T) {
 			plain := filepath.Join(dir, style+"-plain.png")
-			w0, h0, hx0, hy0, err := writePointerPNG(plain, style, 44, 0, hexColor("#ffffff", "#ffffff"), 1)
+			w0, h0, hx0, hy0, err := writePointerPNG(plain, style, kindArrow, 44, 0, hexColor("#ffffff", "#ffffff"), 1)
 			if err != nil {
 				t.Fatal(err)
 			}
 			padded := filepath.Join(dir, style+"-pad.png")
 			pad := 10
-			w1, h1, hx1, hy1, err := writePointerPNG(padded, style, 44, pad, hexColor("#ffffff", "#ffffff"), 1)
+			w1, h1, hx1, hy1, err := writePointerPNG(padded, style, kindArrow, 44, pad, hexColor("#ffffff", "#ffffff"), 1)
 			if err != nil {
 				t.Fatal(err)
 			}
