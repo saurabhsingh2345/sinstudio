@@ -28,7 +28,7 @@ interface Draft {
 const STEPS = ["Template", "Project", "Canvas", "Timeline", "Tracks"] as const;
 
 const BG_OPTIONS: { id: BgType; title: string; sub: string; swatch: string }[] = [
-  { id: "solid", title: "Solid color", sub: "A clean, single-color canvas", swatch: "#111827" },
+  { id: "solid", title: "Solid color", sub: "A clean, single-color canvas", swatch: "#000000" },
   { id: "gradient", title: "Gradient", sub: "Blend two colors top to bottom", swatch: "linear-gradient(180deg,#6366f1,#3ddc97)" },
 ];
 
