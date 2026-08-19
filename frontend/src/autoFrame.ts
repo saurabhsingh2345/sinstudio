@@ -2,6 +2,7 @@ import type { CursorSidecar } from "./cursor";
 import { SMART_FOCUS_DEFAULTS, smartFocus, type SmartFocusOptions } from "./smartFocus";
 import { VIRTUAL_CAMERA_OPTS } from "./virtualCamera";
 import type { Asset, Clip } from "./types";
+import { fillsFrame } from "./crop";
 
 /*
 What happens to a screen recording the moment it lands on the timeline.
@@ -33,7 +34,7 @@ export interface AutoFrame {
  */
 export function autoFrame(
   asset: Pick<Asset, "hasCursor" | "cursorHidden">,
-  clip: Pick<Clip, "keyframes">,
+  clip: Pick<Clip, "keyframes" | "fit">,
   track: Pick<CursorSidecar, "samples" | "video"> | null | undefined,
   duration: number,
   canvas: { width: number; height: number },
@@ -46,7 +47,19 @@ export function autoFrame(
   if (!asset.hasCursor || !track || !track.samples?.length) return null;
   if (duration <= 0) return null;
 
-  const { keyframes, segments } = smartFocus(track as never, duration, canvas, opts);
+  /*
+   * The camera's viewport is the clip's PICTURE, not the canvas.
+   *
+   * A letterboxed clip's picture is smaller than the frame, so both the
+   * coordinate mapping and the pan limit have to be its content rectangle —
+   * otherwise the camera treats the bars as somewhere it may go, and frames
+   * them. This used to be hardcoded true for screen recordings, which was
+   * right only while every screen recording filled the canvas.
+   */
+  const { keyframes, segments } = smartFocus(track as never, duration, canvas, {
+    ...opts,
+    cameraViewport: fillsFrame(clip.fit),
+  });
 
   const patch: Clip = {} as Clip;
   const out: Partial<Clip> = patch;
@@ -54,7 +67,12 @@ export function autoFrame(
   // Cursor emphasis when zoom was found or clicks are wanted.
   const cursor: NonNullable<Clip["cursor"]> = {};
   if (showClicks) cursor.clicks = {};
-  if (asset.cursorHidden) cursor.pointer = { smoothing: 0.5 };
+  // autoHide is defaulted on rather than left to the inspector, for the reason
+  // the auto-framing itself exists: a feature parked behind a collapsed panel
+  // six scrolls down is a feature the recording does not have. A tutorial parks
+  // its pointer constantly while the narrator talks, and 3s is long enough that
+  // a pause mid-demonstration never triggers it.
+  if (asset.cursorHidden) cursor.pointer = { smoothing: 0.5, autoHide: 3, clickDip: 1, motionBlur: 0.6 };
   if (cursor.clicks || cursor.pointer) out.cursor = cursor;
 
   if (segments.length) {

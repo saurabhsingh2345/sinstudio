@@ -802,12 +802,38 @@ function CursorFXSection({ trackId, clip, ownsCursor }: { trackId: string; clip:
                 onChange={(v) => set({ pointer: { ...fx.pointer, smoothing: v / 100 } })}
                 fmt={(v) => (v === 0 ? "off" : `${v}%`)}
               />
+              <SliderRow
+                label="Motion blur" value={Math.round((fx.pointer.motionBlur ?? 0) * 100)} min={0} max={100} step={5}
+                onChange={(v) => set({ pointer: { ...fx.pointer, motionBlur: v / 100 } })}
+                fmt={(v) => (v === 0 ? "off" : `${v}%`)}
+              />
+              <SliderRow
+                label="Press on click" value={Math.round((fx.pointer.clickDip ?? 0) * 100)} min={0} max={100} step={5}
+                onChange={(v) => set({ pointer: { ...fx.pointer, clickDip: v / 100 } })}
+                fmt={(v) => (v === 0 ? "off" : `${v}%`)}
+              />
+              <SliderRow
+                label="Hide when idle" value={fx.pointer.autoHide ?? 0} min={0} max={10} step={0.5}
+                onChange={(v) => set({ pointer: { ...fx.pointer, autoHide: v } })}
+                fmt={(v) => (v === 0 ? "never" : `${v}s`)}
+              />
+              <SliderRow
+                label="Return for looping" value={fx.pointer.loopReturn ?? 0} min={0} max={4} step={0.25}
+                onChange={(v) => set({ pointer: { ...fx.pointer, loopReturn: v } })}
+                fmt={(v) => (v === 0 ? "off" : `${v}s`)}
+              />
               <ColorRow
                 label="Color" value={fx.pointer.color ?? "#ffffff"}
                 onChange={(v) => set({ pointer: { ...fx.pointer, color: v } })}
               />
               <div className="text-[10px] leading-relaxed text-muted-foreground">
                 Smoothing irons out hand shake. Clicks stay pinned to where they actually landed.
+                Motion blur smears the cursor along its own travel on a fast move — the clip's
+                Motion blur cannot, since the cursor is drawn after it. Press on click gives the
+                cursor itself at each press, which is what reads as a click. Hide when idle fades
+                it away while it sits unused, and brings it straight back the moment it moves.
+                Return for looping walks the cursor home over the last seconds, so a demo that
+                autoplays on repeat has no jump — it never glides through a click.
               </div>
             </div>
           )}

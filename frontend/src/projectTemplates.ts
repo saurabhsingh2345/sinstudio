@@ -22,18 +22,32 @@ export interface ProjectTemplate {
   draft: ProjectTemplateDraft;
 }
 
+/*
+ * A template's background is the canvas BEHIND every clip, and it is not
+ * decoration: it is what letterbox bars are filled with, what shows through a
+ * gap in the lane, and what a fade at the head or tail of the timeline fades
+ * to. The screen-recording and tutorial templates used to ship dark navy and a
+ * bright indigo→sky gradient, so a screen recording sat in blue bars and every
+ * fade was a wash of blue — the editor's own house colour reading as a glitch
+ * in the user's video. Both are neutral now, the way every editor's canvas is;
+ * the colour pickers in the wizard and the Inspector are still right there for
+ * anyone who wants one.
+ *
+ * Social vertical keeps its gradient on purpose: a 16:9 recording on a 9:16
+ * canvas is mostly background, and that one is a styled backdrop somebody chose.
+ */
 export const PROJECT_TEMPLATES: ProjectTemplate[] = [
   {
     id: "screen-recording",
     name: "Screen recording",
     description: "16:9 canvas, one video lane — record and polish",
-    swatch: "linear-gradient(135deg, #0f172a, #1e293b)",
+    swatch: "linear-gradient(135deg, #000000, #121214)",
     draft: {
       name: "Screen recording",
       aspect: "16:9",
       bgType: "solid",
-      bgColor: "#0f172a",
-      bgColor2: "#1e293b",
+      bgColor: "#000000",
+      bgColor2: "#121214",
       fps: 30,
       segments: 1,
       segmentSeconds: 30,
@@ -46,13 +60,13 @@ export const PROJECT_TEMPLATES: ProjectTemplate[] = [
     id: "tutorial",
     name: "Tutorial",
     description: "Two video lanes + captions for walkthroughs",
-    swatch: "linear-gradient(135deg, #4f46e5, #0ea5e9)",
+    swatch: "linear-gradient(135deg, #000000, #17171a)",
     draft: {
       name: "Tutorial",
       aspect: "16:9",
-      bgType: "gradient",
-      bgColor: "#4f46e5",
-      bgColor2: "#0ea5e9",
+      bgType: "solid",
+      bgColor: "#000000",
+      bgColor2: "#17171a",
       fps: 30,
       segments: 1,
       segmentSeconds: 15,

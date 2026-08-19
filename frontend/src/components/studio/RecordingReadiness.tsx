@@ -79,6 +79,16 @@ export function buildRecordingReadiness(
           status: source === "screen" ? "ok" : "warn",
         });
       }
+      // Said out loud rather than left to be noticed: without it every text
+      // field and every link is recorded with an arrow over it, and the video
+      // looks subtly wrong in a way nobody thinks to blame on the recorder.
+      if (!cursord.kinds && opts.hideCursor) {
+        items.push({
+          label: "Cursor shapes",
+          detail: "This cursord cannot tell an I-beam from an arrow — rebuild it to draw both",
+          status: "warn",
+        });
+      }
     } else {
       items.push({
         label: "Cursor helper",

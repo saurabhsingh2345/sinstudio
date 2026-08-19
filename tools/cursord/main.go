@@ -133,8 +133,12 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		// this, and falls back to whole-screen-only where it is false — so an old
 		// binary (which omits the field entirely) keeps working unchanged.
 		"surfaces": supportsSurfaces(),
-		"running":  tracker.Running(),
-		"screen":   Screen{Width: sw, Height: sh},
+		// Whether the shape of the cursor can be read. Same contract as
+		// surfaces: an older binary omits the field, and Studio then draws its
+		// default pointer throughout rather than pretending to know better.
+		"kinds":   kindsSupported(),
+		"running": tracker.Running(),
+		"screen":  Screen{Width: sw, Height: sh},
 	})
 }
 

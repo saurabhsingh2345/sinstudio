@@ -25,23 +25,46 @@ import { watermarkLayout, watermarkOpacity } from "../../watermark";
 import { trackBackgroundCSS } from "../../trackBackground";
 import { useStudio } from "../../state";
 import type { EditDoc, Redaction } from "../../types";
-import { clipPlayDur, clipSrcDur, clickTimelineAt, mediaUrl } from "../../types";
+import { clipPlayDur, clipSrcDur, clickTimelineAt, fillFocusFrac, mediaUrl } from "../../types";
 import { revealedText } from "../../titleAnim";
 import { getPeaks } from "../../peaks";
 import { getCursorTrack, cursorTrackNow } from "../../cursorTracks";
 import { clickTimes, drawCursorFX } from "./cursor-draw";
 import { playClicksBetween } from "../../clickAudio";
-import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel } from "./preview-engine";
+import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel, upcomingVisuals } from "./preview-engine";
 import { cropLayout, fillsFrame, fitMode, isEmptyCrop, sourceSize } from "../../crop";
 import { CropOverlay, CropToolbar } from "./CropOverlay";
 import { RedactOverlay, RedactToolbar } from "./RedactOverlay";
 import { clampRedaction } from "../../redaction";
 import { CroppedMedia } from "./CroppedMedia";
 import { isZoomActive } from "../../zoomPan";
-import { isCameraClip } from "../../virtualCamera";
+import { cameraWorks, isCameraClip } from "../../virtualCamera";
 import type { Selection } from "./selection";
 import { findClip } from "./selection";
 import { captionTrack, clipEnd, fmtTC, type AspectKey } from "./bridge";
+
+/**
+ * How far ahead of its cut a clip's media is mounted and seeked, in seconds.
+ *
+ * Long enough that a local file has fetched and decoded its first frame at
+ * ordinary playback speed, short enough that a lane of many short clips is not
+ * a wall of simultaneous <video> elements.
+ */
+const PREROLL_AHEAD = 2;
+
+/** Seek a media element, waiting for metadata if it has not arrived yet. */
+function seekWhenReady(v: HTMLVideoElement, t: number) {
+  const go = () => {
+    try {
+      v.currentTime = t;
+    } catch {
+      // A source that refuses the seek is one the render will complain about;
+      // the preview just leaves it where it is.
+    }
+  };
+  if (v.readyState >= 1) go();
+  else v.addEventListener("loadedmetadata", go, { once: true });
+}
 
 // One button on the stage toolbar. Labelled, not icon-only: an unexplained
 // glyph floating over the picture is a thing people never press.
@@ -150,7 +173,32 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
   const soloActive = doc.tracks.some((t) => t.solo);
   const visuals = activeVisuals(doc.tracks, playhead);
   const audios = activeAudios(doc.tracks, playhead, soloActive);
+  /*
+   * Clips primed ahead of their cut.
+   *
+   * A <video> created at the instant its clip goes on screen has fetched
+   * nothing, so for the first frames of every scene the browser paints whatever
+   * it can find — which is what made adding a second clip look like a glitch.
+   * Mounting the element early, invisible, and seeking it to its in-point means
+   * the frame is already decoded and correct when the playhead arrives.
+   *
+   * They are mounted in the SAME list as the live clips, keyed by clip id, so
+   * going live moves the existing node instead of replacing it. Rendering them
+   * in a separate container would hand React a different parent and a fresh
+   * element at the cut — priming nothing at some cost.
+   *
+   * Only clips with media: a title or an annotation is a div and has nothing to
+   * load.
+   */
+  const preroll = upcomingVisuals(doc.tracks, playhead, PREROLL_AHEAD).filter(
+    ({ clip }) => clip.assetId && !clip.title && !clip.annotation
+  );
+  const stageVisuals = [
+    ...visuals.map((v) => ({ ...v, priming: false })),
+    ...preroll.map((v) => ({ ...v, priming: true })),
+  ];
   const visualsKey = visuals.map((x) => x.clip.id).join(",");
+  const prerollKey = preroll.map((x) => x.clip.id).join(",");
   const audiosKey = audios.map((x) => x.clip.id).join(",");
 
   // Prefetch waveform peaks for the audible clips so the level meter reads real
@@ -197,8 +245,19 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
       if (playing && v.paused) v.play().catch(() => {});
       if (!playing && !v.paused) v.pause();
     }
+    // Primed clips: parked, silent, and showing the frame their cut will open
+    // on. Seeking through loadedmetadata rather than assigning currentTime
+    // outright, because an element this fresh has no duration to seek within
+    // yet — and the whole point is that the seek has landed before the cut.
+    for (const { clip } of preroll) {
+      const v = videoRefs.current[clip.id];
+      if (!v) continue;
+      v.muted = true;
+      if (!v.paused) v.pause();
+      if (Math.abs(v.currentTime - clip.in) > 0.05) seekWhenReady(v, clip.in);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playhead, playing, soloActive, visualsKey]);
+  }, [playhead, playing, soloActive, visualsKey, prerollKey]);
 
   // sync audio-track elements (music) to the playhead
   useEffect(() => {
@@ -278,13 +337,13 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
       const track = cursorTrackNow(doc.id, clip.assetId);
       if (!track) continue;
       const asset = doc.assets.find((a) => a.id === clip.assetId);
-      const camera = isCameraClip(clip, asset);
+      const camera = cameraWorks(clip);
       const videoSize = asset ? { width: asset.width || W, height: asset.height || H } : undefined;
       const box = clipBox(clip, playhead, stage.w, stage.h, W, H, videoSize, camera);
       const localT = playhead - clip.start;
       const v = videoRefs.current[clip.id];
       const mediaT = v && v.readyState >= 2 ? v.currentTime : undefined;
-      drawCursorFX(ctx, clip, track, box, localT, stage.w / W, asset, camera, mediaT);
+      drawCursorFX(ctx, clip, track, box, localT, stage.w / W, asset, camera, mediaT, doc.canvas.fps);
     }
 
     const cue = captionTrack(doc)?.cues?.find((c) => playhead >= c.start && playhead < c.end);
@@ -414,7 +473,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
           selAsset.width > 0 ? { width: selAsset.width, height: selAsset.height } : { width: W, height: H },
           selBox.vw,
           selBox.vh,
-          fitMode(redacting.fit, isCameraClip(redacting, selAsset) || isZoomActive(redacting, playhead))
+          fitMode(redacting.fit)
         )
       : null;
   const redactions = redacting?.redactions ?? [];
@@ -456,21 +515,33 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
               canvasH={H}
               bg={bg}
             />
-            {visuals.map(({ track, clip }) => {
+            {stageVisuals.map(({ track, clip, priming }) => {
               const asset = doc.assets.find((a) => a.id === clip.assetId);
+              // Selects the overflow-clipped structure below, and nothing else.
+              // A clip the camera can push past the canvas edge needs a wrapper
+              // that hides what leaves the frame; that is a question about the
+              // DOM, not about fitting, which is why it keeps its own predicate.
               const camera = isCameraClip(clip, asset);
               // The clip's picture size is its source's, minus any crop — the
               // single answer every framing decision below depends on.
               const videoSize = sourceSize(asset, clip) ?? (asset ? { width: W, height: H } : undefined);
-              const zoomed = isZoomActive(clip, playhead);
               // A picture that fills the canvas has no letterbox bar to keep a
-              // pan away from, so it clamps against the canvas like a camera
-              // clip does. Mirrors the `filled` term in kfvalue.go — and, like
-              // it, is a property of the clip rather than of the moment, so the
-              // clamp cannot change under a zoom that is already running.
-              const covering = camera || fillsFrame(clip.fit, camera);
+              // pan away from, so it clamps against the canvas; otherwise the
+              // clamp is the content rectangle. Mirrors schema.FitCovers.
+              //
+              // Both of these are properties of the CLIP. `mode` used to be
+              // computed from whether the clip was zoomed past 1.02 at this
+              // instant, so a clip zoomed only in its second half letterboxed
+              // at the start of a scrub and was cropped by the middle of it —
+              // the framing changed under the playhead while the export, which
+              // asks about the whole clip, did neither.
+              const covering = fillsFrame(clip.fit);
               const box = clipBox(clip, playhead, stage.w, stage.h, W, H, videoSize, covering);
-              const mode = fitMode(clip.fit, camera || zoomed);
+              // A primed clip is here to load, not to be seen. Zeroing the box's
+              // opacity hides it through every branch below at once, and it is a
+              // fresh object per frame, so nothing else reads the change.
+              if (priming) box.opacity = 0;
+              const mode = fitMode(clip.fit);
               if (clip.annotation) {
                 return (
                   <div
@@ -554,7 +625,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                     // Same two-level clip as CroppedMedia: the inner window IS
                     // the crop, and the shader draws the whole source inside it.
                     const src = asset.width > 0 ? { width: asset.width, height: asset.height } : { width: W, height: H };
-                    const { window: win, media } = cropLayout(clip.crop, src, box.vw, box.vh, mode);
+                    const { window: win, media } = cropLayout(clip.crop, src, box.vw, box.vh, mode, fillFocusFrac(clip));
                     return (
                       <div style={{ position: "absolute", ...win, overflow: "hidden" }}>
                         <ChromaVideo
@@ -576,6 +647,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                     width={box.vw}
                     height={box.vh}
                     mode={mode}
+                    focus={fillFocusFrac(clip)}
                     muted={muted}
                     onVideo={(el) => (videoRefs.current[clip.id] = el)}
                   />
@@ -644,6 +716,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                     width={box.vw}
                     height={box.vh}
                     mode={mode}
+                    focus={fillFocusFrac(clip)}
                     muted={muted}
                     onVideo={(el) => (videoRefs.current[clip.id] = el)}
                   />

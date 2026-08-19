@@ -74,6 +74,8 @@ type docBody struct {
 	Canvas  schema.Canvas   `json:"canvas"`
 	Tracks  []schema.Track  `json:"tracks"`
 	Markers []schema.Marker `json:"markers,omitempty"`
+	// Persisted so a one-time document upgrade is applied once and never again.
+	SchemaRev int `json:"schemaRev,omitempty"`
 }
 
 // New connects to Postgres, applies the schema, and returns a Store whose media
@@ -234,7 +236,20 @@ func (s *Store) CreateProject(ctx context.Context, name string) (*schema.EditDoc
 
 // GetProject reads an edit document by id, assembling the editor-owned body with
 // the project's live assets.
+//
+// Every document is brought forward on the way out (see schema.MigrateFit), so
+// no reader anywhere has to know what a default used to mean. It is idempotent,
+// so this costs a walk on an already-current document and nothing else.
 func (s *Store) GetProject(ctx context.Context, id string) (*schema.EditDoc, error) {
+	doc, err := s.getProject(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	schema.MigrateFit(doc)
+	return doc, nil
+}
+
+func (s *Store) getProject(ctx context.Context, id string) (*schema.EditDoc, error) {
 	if s.local {
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -264,14 +279,15 @@ func (s *Store) GetProject(ctx context.Context, id string) (*schema.EditDoc, err
 		return nil, err
 	}
 	return &schema.EditDoc{
-		ID:      id,
-		Name:    name,
-		Version: int(revision),
-		Canvas:  b.Canvas,
-		Tracks:  b.Tracks,
-		Assets:  assets,
-		Markers: b.Markers,
-		Updated: updated.UTC().Format(time.RFC3339),
+		ID:        id,
+		Name:      name,
+		Version:   int(revision),
+		Canvas:    b.Canvas,
+		Tracks:    b.Tracks,
+		Assets:    assets,
+		Markers:   b.Markers,
+		SchemaRev: b.SchemaRev,
+		Updated:   updated.UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -312,9 +328,17 @@ func (s *Store) SaveProject(ctx context.Context, doc *schema.EditDoc, baseRevisi
 	if s.local {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		doc.SchemaRev = schema.FitSchemaRev
 		return s.saveProjectLocal(doc, baseRevision)
 	}
-	body, err := json.Marshal(docBody{Canvas: doc.Canvas, Tracks: doc.Tracks, Markers: doc.Markers})
+	// Stamped here rather than trusted from the client: a frontend that drops
+	// the field on the way through would otherwise leave the document eligible
+	// for a migration it has already had, and the next zoom added to a
+	// letterboxed clip would silently crop it.
+	doc.SchemaRev = schema.FitSchemaRev
+	body, err := json.Marshal(docBody{
+		Canvas: doc.Canvas, Tracks: doc.Tracks, Markers: doc.Markers, SchemaRev: doc.SchemaRev,
+	})
 	if err != nil {
 		return 0, err
 	}

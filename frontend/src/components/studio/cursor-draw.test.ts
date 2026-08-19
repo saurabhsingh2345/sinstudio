@@ -1,5 +1,27 @@
 import { describe, it, expect } from "vitest";
-import { cursorAt, clickTimes, drawCursorFX, smoothSamples, withAlpha } from "./cursor-draw";
+import {
+  cursorAt,
+  clickTimes,
+  drawCursorFX,
+  smoothSamples,
+  withAlpha,
+  idleSpans,
+  pointerAlphaAt,
+  FADE_IN,
+  FADE_OUT,
+  pointerClickScale,
+  pointerBlurSigma,
+  loopReturnPath,
+  CURSOR_SHAPES,
+  shapeFor,
+  kindAt,
+  KIND_ARROW,
+  KIND_TEXT,
+  KIND_HAND,
+  KIND_CROSS,
+  KIND_RESIZE_H,
+  KIND_RESIZE_V,
+} from "./cursor-draw";
 import { clicksInStep } from "../../clickAudio";
 import type { CursorSample, CursorSidecar } from "../../cursor";
 import type { Clip } from "../../types";
@@ -294,5 +316,436 @@ describe("clicksInStep", () => {
   it("is half-open, so a click never fires twice on consecutive ticks", () => {
     expect(clicksInStep(times, 0.9, 1.0)).toEqual([1.0]);
     expect(clicksInStep(times, 1.0, 1.1)).toEqual([]);
+  });
+});
+
+/*
+ * Auto-hide. These are the same numbers TestPointerAlphaGolden asserts in Go —
+ * the pair is the whole point. Everything else in this file may be approximate;
+ * a fade the preview and the export disagree about is a preview of a different
+ * video.
+ */
+describe("idleSpans", () => {
+  it("finds nothing while the pointer is moving", () => {
+    const s: CursorSample[] = [0, 1, 2, 3, 4].map((i) => ({ t: i * 100, x: i * 40, y: 0 }));
+    expect(idleSpans(s, 1920, 1)).toEqual([]);
+  });
+
+  it("spans from the last movement to the next one", () => {
+    const s: CursorSample[] = [{ t: 0, x: 0, y: 0 }, { t: 100, x: 100, y: 0 }];
+    for (let t = 200; t <= 3000; t += 250) s.push({ t, x: 100, y: 0 });
+    s.push({ t: 3100, x: 400, y: 200 });
+    expect(idleSpans(s, 1920, 1)).toEqual([{ start: 0.1, end: 3.1 }]);
+  });
+
+  it("treats a click as activity even at a standstill", () => {
+    const s: CursorSample[] = [];
+    for (let t = 0; t <= 5000; t += 250) s.push({ t, x: 50, y: 50, down: t === 2500 ? 1 : 0 });
+    const spans = idleSpans(s, 1920, 1);
+    expect(spans).toHaveLength(2);
+    expect(spans[0].end).toBeCloseTo(2.5, 9);
+    expect(spans[1].start).toBeCloseTo(2.75, 9);
+  });
+
+  // The tolerance is quoted at a 1920 reference, so the same hand wobble is
+  // motion on a 1080p capture and jitter on a 4K one. Quoting it absolutely is
+  // the bug the focus radii already had once.
+  it("scales its stillness tolerance with the capture", () => {
+    const s: CursorSample[] = [];
+    for (let t = 0; t <= 4000; t += 250) s.push({ t, x: t % 500 === 0 ? 54 : 50, y: 50 });
+    expect(idleSpans(s, 1920, 1)).toHaveLength(0);
+    expect(idleSpans(s, 3840, 1)).toHaveLength(1);
+  });
+});
+
+describe("pointerAlphaAt", () => {
+  const spans = [{ start: 1, end: 5 }];
+
+  it("matches the Go golden", () => {
+    const want: [number, number][] = [
+      [0.5, 1],
+      [2.9, 1],
+      [3.0, 1],
+      [3.225, 0.5],
+      [3.45, 0],
+      [4.5, 0],
+      [5.0, 0],
+      [5.06, 0.5],
+      [5.12, 1],
+      [9.0, 1],
+    ];
+    for (const [t, a] of want) expect(pointerAlphaAt(spans, 2, t)).toBeCloseTo(a, 6);
+  });
+
+  it("comes back from where the fade actually got to", () => {
+    const short = [{ start: 0, end: 2.2 }];
+    const mid = pointerAlphaAt(short, 2, 2.2);
+    expect(mid).toBeCloseTo(1 - 0.2 / FADE_OUT, 6);
+    expect(pointerAlphaAt(short, 2, 2.2 + FADE_IN / 2)).toBeCloseTo(mid + (1 - mid) * 0.5, 6);
+  });
+});
+
+describe("drawCursorFX auto-hide", () => {
+  // A parked pointer with the heartbeat a real sidecar carries.
+  const parked = (): CursorSidecar =>
+    trackFor({
+      hidden: true,
+      samples: Array.from({ length: 41 }, (_, i) => ({ t: i * 250, x: 960, y: 540 })),
+    });
+
+  it("draws the pointer while it is still within the threshold", () => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { autoHide: 3 } }), parked(), FULL_BOX, 1, 1);
+    expect(calls.join(" ")).toContain("globalAlpha=1");
+  });
+
+  it("stops drawing it once the fade has finished", () => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { autoHide: 3 } }), parked(), FULL_BOX, 8, 1);
+    expect(calls.join(" ")).not.toContain("globalAlpha=");
+  });
+
+  // The highlight has to leave with the pointer. Fading one and not the other
+  // leaves an amber blob hovering over nothing.
+  it("takes the highlight with it", () => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { autoHide: 3 }, highlight: {} }), parked(), FULL_BOX, 8, 1);
+    expect(calls.join(" ")).not.toContain("createRadialGradient");
+  });
+
+  it("is off when nobody asked for it", () => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: {} }), parked(), FULL_BOX, 8, 1);
+    expect(calls.join(" ")).toContain("globalAlpha=1");
+  });
+});
+
+// The press. Same goldens as TestClickDipGolden — a dip the preview shows at
+// one depth and the export at another is two different videos.
+describe("pointerClickScale", () => {
+  it("matches the Go golden", () => {
+    const want: [number, number][] = [
+      [0.5, 1],
+      [1.0, 1],
+      [1.06, 0.72],
+      [0.99, 1],
+      [1.32, 1],
+      [5.0, 1],
+    ];
+    for (const [t, s] of want) expect(pointerClickScale([1.0], t, 1)).toBeCloseTo(s, 6);
+  });
+
+  it("is off when nobody asked", () => {
+    expect(pointerClickScale([1], 1.06, 0)).toBe(1);
+    expect(pointerClickScale([], 1.06, 1)).toBe(1);
+  });
+
+  it("scales with strength", () => {
+    const full = pointerClickScale([1], 1.06, 1);
+    const half = pointerClickScale([1], 1.06, 0.5);
+    expect(1 - half).toBeCloseTo((1 - full) / 2, 9);
+  });
+
+  // The overshoot is the point — it is what makes the press feel sprung rather
+  // than merely animated, and sampling the endpoints alone would miss it.
+  it("springs back past its own size", () => {
+    let peak = 0;
+    for (let t = 1; t < 1.4; t += 0.005) peak = Math.max(peak, pointerClickScale([1], t, 1));
+    expect(peak).toBeGreaterThan(1.0001);
+    expect(peak).toBeLessThan(1.06);
+  });
+});
+
+describe("drawCursorFX click dip", () => {
+  const clicked = (): CursorSidecar =>
+    trackFor({
+      hidden: true,
+      samples: [
+        { t: 0, x: 960, y: 540 },
+        { t: 1000, x: 960, y: 540, down: 1 },
+        { t: 1100, x: 960, y: 540 },
+        { t: 3000, x: 960, y: 540 },
+      ],
+    });
+
+  // The dot style is drawn about its centre, so a dip must change the radius
+  // and leave the centre exactly where it was — the pixel that was clicked.
+  const radiusAt = (t: number) => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { style: "dot", size: 100, clickDip: 1 } }), clicked(), FULL_BOX, t, 1);
+    const arc = calls.find((c) => c.startsWith("arc("));
+    const [x, y, r] = arc!.slice(4, -1).split(",").map(Number);
+    return { x, y, r };
+  };
+
+  it("shrinks the cursor on the press and restores it", () => {
+    const before = radiusAt(0.5);
+    const pressed = radiusAt(1.06);
+    const after = radiusAt(1.5);
+    expect(pressed.r).toBeLessThan(before.r);
+    expect(after.r).toBe(before.r);
+  });
+
+  it("dips about the hotspot, so the cursor does not leave what it clicked", () => {
+    const before = radiusAt(0.5);
+    const pressed = radiusAt(1.06);
+    expect(pressed.x).toBe(before.x);
+    expect(pressed.y).toBe(before.y);
+  });
+
+  it("leaves a cursor with no dip configured alone", () => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { style: "dot", size: 100 } }), clicked(), FULL_BOX, 1.06, 1);
+    expect(calls.join(" ")).toContain("arc(960,540,50");
+  });
+});
+
+// Motion blur. The sigmas are the shared number — same goldens as
+// TestPointerBlurGolden — so a flick smears by the same extent in both halves,
+// even though the export draws a real gaussian and the preview lays down
+// ghosts.
+describe("pointerBlurSigma", () => {
+  it("matches the Go golden", () => {
+    const size = 44;
+    const fps = 30;
+    const cases: [number, number, number, [number, number]][] = [
+      [0, 0, 1, [0, 0]],
+      [30, 0, 1, [0, 0]],
+      [900, 0, 1, [8.8, 0]],
+      [0, 900, 1, [0, 8.8]],
+      [900, 900, 1, [8.8, 8.8]],
+      [900, 0, 0.5, [4.4, 0]],
+      [900, 900, 0, [0, 0]],
+    ];
+    for (const [vx, vy, amount, [wx, wy]] of cases) {
+      const [gx, gy] = pointerBlurSigma(vx, vy, amount, size, fps);
+      expect(gx).toBeCloseTo(wx, 1);
+      expect(gy).toBeCloseTo(wy, 1);
+    }
+  });
+
+  it("smears less at a higher frame rate, because it models one exposure", () => {
+    const [a30] = pointerBlurSigma(400, 0, 1, 200, 30);
+    const [a60] = pointerBlurSigma(400, 0, 1, 200, 60);
+    expect(a30).toBeGreaterThan(a60);
+    expect(a60).toBeGreaterThan(0);
+  });
+
+  it("caps at a fraction of the cursor, which scales with it", () => {
+    const [small] = pointerBlurSigma(1e6, 0, 1, 44, 30);
+    const [big] = pointerBlurSigma(1e6, 0, 1, 88, 30);
+    expect(small).toBeCloseTo(44 * 0.2, 9);
+    expect(big).toBeCloseTo(2 * small, 9);
+  });
+
+  it("degenerates safely", () => {
+    expect(pointerBlurSigma(900, 900, 0, 44, 30)).toEqual([0, 0]);
+    expect(pointerBlurSigma(900, 900, 1, 0, 30)).toEqual([0, 0]);
+    expect(pointerBlurSigma(900, 900, 1, 44, 0)).toEqual([0, 0]);
+  });
+});
+
+describe("drawCursorFX motion blur", () => {
+  // Still for a second, then flung 1200px across the recording in one second.
+  const flick = (): CursorSidecar =>
+    trackFor({
+      hidden: true,
+      samples: [
+        { t: 0, x: 100, y: 540 },
+        { t: 1000, x: 100, y: 540 },
+        { t: 2000, x: 1300, y: 540 },
+      ],
+    });
+
+  const arcsAt = (t: number, motionBlur: number) => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(
+      ctx,
+      clipFor({ pointer: { style: "dot", size: 60, motionBlur } }),
+      flick(), FULL_BOX, t, 1, undefined, false, undefined, 30
+    );
+    return calls.filter((c) => c.startsWith("arc("));
+  };
+
+  it("lays a smear along the travel while the cursor is moving", () => {
+    expect(arcsAt(1.5, 1).length).toBeGreaterThan(1);
+  });
+
+  it("draws one crisp cursor while it is at rest", () => {
+    expect(arcsAt(0.5, 1)).toHaveLength(1);
+  });
+
+  it("draws one crisp cursor when the blur is off, however fast it moves", () => {
+    expect(arcsAt(1.5, 0)).toHaveLength(1);
+  });
+
+  // A horizontal flick must smear horizontally. An isotropic blur would spread
+  // it in every direction, which says the opposite about the movement.
+  it("smears along the direction of travel, not around it", () => {
+    const arcs = arcsAt(1.5, 1).map((c) => c.slice(4, -1).split(",").map(Number));
+    const xs = arcs.map((a) => a[0]);
+    const ys = arcs.map((a) => a[1]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeGreaterThan(2);
+    expect(Math.max(...ys) - Math.min(...ys)).toBe(0);
+  });
+});
+
+// The loop return. Mirrors cursorloop_test.go case for case.
+describe("loopReturnPath", () => {
+  const walkAway = (): CursorSample[] =>
+    Array.from({ length: 31 }, (_, i) => ({ t: i * 100, x: i * 10, y: i * 5 }));
+
+  it("lands exactly where it started", () => {
+    const got = loopReturnPath(walkAway(), 1, 0, 3);
+    expect(got[got.length - 1]).toMatchObject({ x: 0, y: 0 });
+  });
+
+  it("leaves everything before the window alone", () => {
+    const s = walkAway();
+    const got = loopReturnPath(s, 1, 0, 3);
+    for (let i = 0; i < s.length; i++) {
+      if (s[i].t / 1000 > 2) continue;
+      expect(got[i]).toEqual(s[i]);
+    }
+  });
+
+  // The glide is a fiction, and one that drags the pointer off the button it is
+  // pressing is worse than the jump it fixes.
+  it("never moves the cursor through a click", () => {
+    const s: CursorSample[] = Array.from({ length: 31 }, (_, i) => ({
+      t: i * 100,
+      x: i === 0 ? 0 : 400,
+      y: i === 0 ? 0 : 400,
+      down: i === 25 ? 1 : 0,
+    }));
+    const got = loopReturnPath(s, 2, 0, 3);
+    for (let i = 0; i < s.length; i++) {
+      if (!s[i].down) continue;
+      expect(got[i].x).toBe(s[i].x);
+      expect(got[i].y).toBe(s[i].y);
+    }
+    // Shortened, not abandoned — it still gets home.
+    expect(got[got.length - 1]).toMatchObject({ x: 0, y: 0 });
+  });
+
+  it("loops at the clip's out point, not the track's end", () => {
+    const got = loopReturnPath(walkAway(), 1, 0.5, 2.0);
+    expect(cursorAt(got, 2.0)).toEqual(cursorAt(got, 0.5));
+  });
+
+  it("is a no-op when off or nonsensical", () => {
+    const s = walkAway();
+    expect(loopReturnPath(s, 0, 0, 3)).toEqual(s);
+    expect(loopReturnPath(s, 1, 3, 3)).toEqual(s);
+    expect(loopReturnPath(s, 1, 3, 1)).toEqual(s);
+  });
+});
+
+// The system cursor shapes. The checksums are the same ones
+// TestCursorShapesGolden asserts in Go — without that pair the preview and the
+// export draw different cursors, which is the one thing a preview may not do.
+describe("cursor shapes", () => {
+  it("matches the Go golden", () => {
+    const want: [number, number, number][] = [
+      [KIND_ARROW, 7, 7.69],
+      [KIND_TEXT, 12, 9.0],
+      [KIND_HAND, 16, 13.98],
+      [KIND_CROSS, 12, 12.0],
+      [KIND_RESIZE_H, 10, 8.0],
+      [KIND_RESIZE_V, 10, 8.0],
+    ];
+    for (const [kind, points, checksum] of want) {
+      const s = CURSOR_SHAPES[kind];
+      expect(s.path).toHaveLength(points);
+      expect(s.path.reduce((a, [x, y]) => a + x + y, 0)).toBeCloseTo(checksum, 4);
+    }
+  });
+
+  // A hotspot outside its own shape points the cursor at nothing.
+  it("keeps every hotspot inside its own box", () => {
+    for (const s of Object.values(CURSOR_SHAPES)) {
+      expect(s.hotX).toBeGreaterThanOrEqual(0);
+      expect(s.hotX).toBeLessThanOrEqual(s.w);
+      expect(s.hotY).toBeGreaterThanOrEqual(0);
+      expect(s.hotY).toBeLessThanOrEqual(s.h);
+      for (const [x, y] of s.path) {
+        expect(x).toBeLessThanOrEqual(s.w + 0.01);
+        expect(y).toBeLessThanOrEqual(s.h + 0.01);
+      }
+    }
+  });
+
+  it("falls back to the arrow for anything it cannot name", () => {
+    expect(shapeFor(undefined)).toBe(CURSOR_SHAPES[KIND_ARROW]);
+    expect(shapeFor(0)).toBe(CURSOR_SHAPES[KIND_ARROW]);
+    expect(shapeFor(99)).toBe(CURSOR_SHAPES[KIND_ARROW]);
+  });
+});
+
+describe("kindAt", () => {
+  const s: CursorSample[] = [
+    { t: 0, x: 0, y: 0 },
+    { t: 1000, x: 0, y: 0, k: KIND_HAND },
+    { t: 2000, x: 0, y: 0, k: KIND_TEXT },
+  ];
+
+  it("holds the nearest preceding shape", () => {
+    expect(kindAt(s, 0.5)).toBe(KIND_ARROW);
+    expect(kindAt(s, 1.5)).toBe(KIND_HAND);
+    expect(kindAt(s, 9)).toBe(KIND_TEXT);
+  });
+
+  // A recording from a helper that cannot report shapes is all zeros, and must
+  // read as an arrow throughout rather than as "no cursor".
+  it("reads an unreported shape as the arrow", () => {
+    expect(kindAt([{ t: 0, x: 0, y: 0 }], 5)).toBe(KIND_ARROW);
+    expect(kindAt([], 5)).toBe(KIND_ARROW);
+  });
+});
+
+describe("drawCursorFX shapes", () => {
+  const shaped = (k: number): CursorSidecar =>
+    trackFor({
+      hidden: true,
+      samples: [
+        { t: 0, x: 960, y: 540, k },
+        { t: 3000, x: 960, y: 540, k },
+      ],
+    });
+
+  const pointsFor = (k: number, style?: string) => {
+    const { ctx, calls } = stubCtx();
+    drawCursorFX(ctx, clipFor({ pointer: { size: 100, style } }), shaped(k), FULL_BOX, 0.5, 1);
+    return calls.filter((c) => c.startsWith("moveTo(") || c.startsWith("lineTo("));
+  };
+
+  it("draws each shape with its own outline", () => {
+    expect(pointsFor(KIND_ARROW)).toHaveLength(7);
+    expect(pointsFor(KIND_TEXT)).toHaveLength(12);
+    expect(pointsFor(KIND_HAND)).toHaveLength(16);
+    expect(pointsFor(KIND_CROSS)).toHaveLength(12);
+  });
+
+  // A stylised pointer opts out, exactly as the exporter does.
+  it("leaves an explicitly chosen dot alone", () => {
+    expect(pointsFor(KIND_TEXT, "dot")).toHaveLength(0);
+  });
+
+  // Every shape is drawn from its hotspot, so the cursor sits on the pixel it
+  // is pointing at whatever shape it happens to be.
+  it("puts every shape's hotspot on the pointer", () => {
+    for (const k of [KIND_ARROW, KIND_TEXT, KIND_HAND, KIND_CROSS, KIND_RESIZE_H, KIND_RESIZE_V]) {
+      const pts = pointsFor(k).map((c) => c.slice(c.indexOf("(") + 1, -1).split(",").map(Number));
+      const shape = CURSOR_SHAPES[k];
+      const scale = 100 / shape.h;
+      // The hotspot sits at (960,540) and the shape extends around it by
+      // exactly what its own path says — which is the thing that would break if
+      // the drawing scaled the polygon without shifting it onto its hotspot,
+      // the shape of the bug this guards.
+      const wantX = 960 + (Math.min(...shape.path.map((p) => p[0])) - shape.hotX) * scale;
+      const wantY = 540 + (Math.min(...shape.path.map((p) => p[1])) - shape.hotY) * scale;
+      expect(Math.abs(Math.min(...pts.map((p) => p[0])) - wantX)).toBeLessThan(1.5);
+      expect(Math.abs(Math.min(...pts.map((p) => p[1])) - wantY)).toBeLessThan(1.5);
+    }
   });
 });

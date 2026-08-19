@@ -49,6 +49,16 @@ export interface CursorPointer {
   style?: string; // arrow | dot | ring
   color?: string;
   smoothing?: number; // 0..1
+  /** Seconds of stillness before the cursor fades out; 0 keeps it on screen. */
+  autoHide?: number;
+  /** How far the cursor presses in at each click, 0..1. 0 leaves it rigid. */
+  clickDip?: number;
+  /** Smear the cursor along its travel when it moves fast, 0..1. Distinct from
+   *  Clip.motionBlur, which blurs the picture and leaves the cursor sharp. */
+  motionBlur?: number;
+  /** Glide the cursor back to where it started over this many seconds at the
+   *  end, so a looping demo has no jump cut. 0 leaves it where it finished. */
+  loopReturn?: number;
 }
 export interface CursorClickSound {
   volume?: number; // 0..1
@@ -147,6 +157,18 @@ export interface Crop {
  * picture slides its own transparent bar through frame.
  */
 export type FitMode = "" | "fit" | "fill" | "stretch";
+
+/**
+ * Which part of an overflowing picture survives when a clip fills the frame.
+ *
+ * Relative to centre, ±0.5 being an edge, so the zero value is the centred crop
+ * every document had before this existed — the same choice the transform's
+ * anchor made. Mirrors schema.Clip.FillFocusX/Y.
+ */
+export const fillFocusFrac = (c: { fillFocusX?: number; fillFocusY?: number }): [number, number] => {
+  const f = (v: number | undefined) => Math.max(0, Math.min(1, (v ?? 0) + 0.5));
+  return [f(c.fillFocusX), f(c.fillFocusY)];
+};
 
 // DeviceFrame: a drawn phone/laptop/browser the clip's picture sits inside.
 // Mirrors backend/internal/schema DeviceFrame — keep the two in step.
@@ -269,6 +291,9 @@ export interface Clip {
   redactions?: Redaction[]; // blurred/pixelated regions of this clip's picture (fractions of the UNCROPPED source)
   crop?: Crop; // edges trimmed off this clip's picture, before it is fitted to the canvas
   fit?: FitMode; // how what's left meets the canvas: letterbox, fill, or stretch
+  /** Which part of an overflowing picture survives — see fillFocusFrac. */
+  fillFocusX?: number;
+  fillFocusY?: number;
   chroma?: ChromaKey; // when set, this colour is keyed out of the clip
   device?: DeviceFrame; // when set, the picture sits inside a drawn device
   /** Temporal blur on camera moves (scale/x/y keyframes). 0 = off, 0..1 strength. */
@@ -402,6 +427,10 @@ export interface EditDoc {
   markers?: Marker[];
   watermark?: Watermark; // project-wide corner logo on every export
   updated?: string;
+  /** Which one-time document upgrades have been applied — see schema.MigrateFit.
+   *  Read-only here: the backend stamps it on save, so the editor only has to
+   *  carry it through rather than maintain it. */
+  schemaRev?: number;
 }
 
 export interface ParamSpec {

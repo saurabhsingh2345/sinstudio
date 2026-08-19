@@ -23,6 +23,7 @@ export function CroppedMedia({
   width,
   height,
   mode,
+  focus,
   muted,
   onVideo,
   filter,
@@ -32,12 +33,14 @@ export function CroppedMedia({
   width: number;
   height: number;
   mode: "fit" | "fill" | "stretch";
+  /** Which part of an overflowing picture survives — see cropLayout. */
+  focus?: [number, number];
   muted?: boolean;
   onVideo?: (el: HTMLVideoElement | null) => void;
   filter?: string;
 }) {
   const src = { width: asset.width || width, height: asset.height || height };
-  const { window: win, media } = cropLayout(crop, src, width, height, mode);
+  const { window: win, media } = cropLayout(crop, src, width, height, mode, focus);
   const style: React.CSSProperties = {
     position: "absolute",
     ...media,
@@ -46,6 +49,12 @@ export function CroppedMedia({
     // stretch mode, where the two axes are deliberately scaled apart.
     objectFit: "fill",
     maxWidth: "none",
+    // The picture is never an interaction target: it has no controls and no
+    // handlers, and everything on the stage you can actually grab — the
+    // selection box, the crop and redaction overlays — is painted above the
+    // clips. Left alive it swallowed clicks meant for whatever was behind it,
+    // and a clip primed for an upcoming cut sits over the live one.
+    pointerEvents: "none",
     filter,
   };
   return (
@@ -60,10 +69,25 @@ export function CroppedMedia({
           <video
             ref={onVideo}
             src={mediaUrl(asset.path, asset.createdAt)}
-            // The thumbnail stands in until the first frame decodes; without it
-            // a freshly-opened project is a black rectangle for as long as the
-            // media takes to load, which reads as a broken recording.
-            poster={asset.thumbnail ? mediaUrl(asset.thumbnail, asset.createdAt) : undefined}
+            /*
+             * No `poster`.
+             *
+             * It used to be the asset's thumbnail, to stand in until the first
+             * frame decoded — but that thumbnail is the frame from the MIDDLE of
+             * the source file (see importAsset: at = duration/2), and it has
+             * nothing to do with where this clip is trimmed to. A browser paints
+             * the poster whenever the element has no frame for its current
+             * position, which is the case for the whole of every mount, so every
+             * cut to a new clip flashed a still from somewhere else in the
+             * recording before the real picture arrived: the stray screenshots
+             * between scenes. The stand-in was a worse lie than a moment of the
+             * canvas, and with the preview priming clips before they are due
+             * (see upcomingVisuals) there is no moment left to fill.
+             *
+             * preload=auto for the same reason — fetch and decode as soon as the
+             * element exists rather than waiting to be played.
+             */
+            preload="auto"
             muted={muted}
             playsInline
             style={style}

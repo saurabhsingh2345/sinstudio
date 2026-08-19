@@ -90,16 +90,15 @@ func cropCursor(t *cursor.Track, c *schema.Crop) *cursor.Track {
 /*
 prefitFilter fits a source of one shape into a canvas of another.
 
-Three ways to do it, and the default is not one of them — it is a decision about
-which of the other two, because a clip the camera is working (cursor effects or
-zoom keyframes) must never letterbox. A push-in towards the edge of a letterboxed
-picture would slide the transparent bar into frame, and what you see is the
-recording appearing to come loose from its own background.
+Three ways to do it, and which one is the clip's own choice — see FitAuto, which
+now letterboxes rather than guessing from whether the camera is working the clip.
+The guard that guess existed for (a push-in sliding the transparent bar into
+frame) is enforced properly by the pan clamp in clipBoxAt.
 
 Returns a segment with a trailing comma, or "" when the shapes already agree and
 the whole question is moot.
 */
-func prefitFilter(fit string, srcW, srcH, w, h int, cameraClip bool) string {
+func prefitFilter(fit string, srcW, srcH, w, h int, focusX, focusY float64) string {
 	if srcW <= 0 || srcH <= 0 {
 		return ""
 	}
@@ -108,7 +107,7 @@ func prefitFilter(fit string, srcW, srcH, w, h int, cameraClip bool) string {
 		// canvas box, which is exactly what stretch means.
 		return ""
 	}
-	cover := fit == schema.FitCover || (fit == schema.FitAuto && cameraClip)
+	cover := schema.FitCovers(fit)
 	srcA := float64(srcW) / float64(srcH)
 	canA := float64(w) / float64(h)
 	// The half-percent tolerance mirrors canvasForSource: capture pipelines
@@ -118,9 +117,14 @@ func prefitFilter(fit string, srcW, srcH, w, h int, cameraClip bool) string {
 		return ""
 	}
 	if cover {
+		// The crop's origin is the fill focus: 0 keeps the left edge, 1 the
+		// right, and the default 0.5 is the centred crop this always did. A
+		// bare crop=W:H centres, which is only the right answer when the
+		// subject happens to be in the middle.
 		return fmt.Sprintf(
-			"scale=%d:%d:force_original_aspect_ratio=increase:flags=bicubic,crop=%d:%d,format=rgba,",
-			w, h, w, h)
+			"scale=%d:%d:force_original_aspect_ratio=increase:flags=bicubic,"+
+				"crop=%d:%d:(iw-%d)*%.4f:(ih-%d)*%.4f,format=rgba,",
+			w, h, w, h, w, focusX, h, focusY)
 	}
 	return fmt.Sprintf(
 		"scale=%d:%d:force_original_aspect_ratio=decrease:flags=bicubic,format=rgba,pad=%d:%d:(ow-iw)/2:(oh-ih)/2:color=black@0,",

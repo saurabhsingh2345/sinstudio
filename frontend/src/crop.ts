@@ -103,19 +103,30 @@ export function sourceSize(
 /**
  * Which way this clip meets the canvas, with the default resolved.
  *
- * Mirrors prefitFilter's rule: an unset fit letterboxes, except on a clip the
- * camera is working, which fills — because pushing into a letterboxed picture
- * slides its own transparent bar through frame.
+ * Mirrors prefitFilter and schema.FitCovers: an unset fit letterboxes, full
+ * stop. It used to fill on any clip the camera was working, and since every
+ * screen recording carries cursor effects that quietly cropped a quarter off
+ * any recording whose shape did not match the canvas.
+ *
+ * The half that made the old rule look necessary — a push-in sliding the
+ * transparent bar through frame — is handled by clamping the camera to the
+ * CONTENT rectangle instead, which is what fillsFrame selects below.
  */
-export function fitMode(fit: FitMode | undefined, cameraClip: boolean): "fit" | "fill" | "stretch" {
-  if (fit === "fit" || fit === "fill" || fit === "stretch") return fit;
-  return cameraClip ? "fill" : "fit";
+export function fitMode(fit: FitMode | undefined): "fit" | "fill" | "stretch" {
+  return fit === "fill" || fit === "stretch" ? fit : "fit";
 }
 
-/** Does this clip's picture cover the whole canvas? Then a pan clamps to the
- *  canvas rather than to a content rectangle that has no bars to protect. */
-export function fillsFrame(fit: FitMode | undefined, cameraClip: boolean): boolean {
-  return fitMode(fit, cameraClip) !== "fit";
+/**
+ * Does this clip's picture cover the whole canvas?
+ *
+ * Then a pan clamps to the canvas; otherwise it clamps to the content, so the
+ * camera stops at the edge of the picture rather than framing the bar beside
+ * it. This is the question every framing decision here actually asks, and it
+ * is answered by how the picture was fitted and by nothing else — see
+ * schema.FitCovers for the four different answers it used to get.
+ */
+export function fillsFrame(fit: FitMode | undefined): boolean {
+  return fitMode(fit) !== "fit";
 }
 
 export interface Rect {
@@ -159,7 +170,10 @@ export function cropLayout(
   src: { width: number; height: number },
   boxW: number,
   boxH: number,
-  mode: "fit" | "fill" | "stretch"
+  mode: "fit" | "fill" | "stretch",
+  /** Which part of an overflowing picture survives, 0..1 per axis. Centred by
+   *  default, which is what a bare crop does and what this always did. */
+  focus: [number, number] = [0.5, 0.5]
 ): CropLayout {
   const whole = { left: 0, top: 0, width: boxW, height: boxH };
   if (!(src.width > 0) || !(src.height > 0) || !(boxW > 0) || !(boxH > 0)) {
@@ -176,12 +190,26 @@ export function cropLayout(
     sx = k;
     sy = k;
   }
-  // Centre the surviving rectangle in the box — which is what the exporter's
-  // pad=(ow-iw)/2 does — then hang the full source off it by the crop's origin.
+  /*
+   * Place the surviving rectangle in the box, then hang the full source off it
+   * by the crop's origin.
+   *
+   * Letterboxed, the rectangle is smaller than the box and is centred — what
+   * the exporter's pad=(ow-iw)/2 does. Filled, it is LARGER, and where the
+   * overflow falls is the fill focus: 0 keeps the left edge, 1 the right, 0.5
+   * the middle. Exactly the exporter's crop=(iw-W)*f, so the two agree on which
+   * part of the picture the viewer is looking at.
+   */
+  const fill = mode !== "fit";
+  const fx = fill ? Math.max(0, Math.min(1, focus[0])) : 0.5;
+  const fy = fill ? Math.max(0, Math.min(1, focus[1])) : 0.5;
   return {
     window: {
-      left: (boxW - r.w * sx) / 2,
-      top: (boxH - r.h * sy) / 2,
+      // `|| 0` for the same reason the media offsets below use it: a focus of
+      // exactly 0 produces negative zero, which is invisible in a style and
+      // noisy in a test and a diff.
+      left: (boxW - r.w * sx) * fx || 0,
+      top: (boxH - r.h * sy) * fy || 0,
       width: r.w * sx,
       height: r.h * sy,
     },

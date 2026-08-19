@@ -113,6 +113,15 @@ type Clip struct {
 	// stretched. Empty keeps the behaviour every document had before this
 	// existed — see FitAuto.
 	Fit string `json:"fit,omitempty"`
+	// FillFocusX/Y choose WHICH part of an overflowing picture survives when the
+	// clip fills the frame — the thing a centred crop decides for you and is
+	// wrong about whenever the subject is not in the middle.
+	//
+	// Relative to centre, ±0.5 being an edge, so the zero value is the centred
+	// crop every document had before this existed. The same choice Transform's
+	// anchor made, for the same reason.
+	FillFocusX float64 `json:"fillFocusX,omitempty"`
+	FillFocusY float64 `json:"fillFocusY,omitempty"`
 	// Chroma removes a background colour from this clip, so whatever sits below
 	// it on the timeline shows through. Applied before any scaling.
 	Chroma *ChromaKey `json:"chroma,omitempty"`
@@ -171,6 +180,22 @@ type CursorPointer struct {
 	// anchored to where they actually landed: a smoothed path that drifts off
 	// the button being clicked is worse than a slightly shaky one.
 	Smoothing float64 `json:"smoothing,omitempty"`
+	// ClickDip presses the cursor itself in at each click, 0..1. The rings say
+	// where a click landed; this is what makes it look like a press happened.
+	ClickDip float64 `json:"clickDip,omitempty"`
+	// LoopReturn glides the cursor back to where it started over this many
+	// seconds at the end of the clip, so a looping demo has no jump cut. The
+	// glide never runs through a click — see loopReturnPath.
+	LoopReturn float64 `json:"loopReturn,omitempty"`
+	// MotionBlur smears the cursor along its own travel when it moves fast,
+	// 0..1. Distinct from Clip.MotionBlur, which blurs the picture on camera
+	// moves and leaves the cursor — composited afterwards — perfectly sharp.
+	MotionBlur float64 `json:"motionBlur,omitempty"`
+	// AutoHide fades the cursor out once it has sat still this many seconds,
+	// and brings it straight back when it moves. 0 leaves it on screen for the
+	// whole clip. Only the drawn pointer and its highlight fade — a burned-in
+	// cursor cannot, which is the same reason Pointer itself is gated.
+	AutoHide float64 `json:"autoHide,omitempty"`
 }
 
 // CursorClickSound adds an audible click at each press, mixed as one generated
@@ -290,9 +315,16 @@ func (r Redaction) Timed(playDur float64) bool {
 // Fit modes: how a clip's picture is fitted to the canvas before its own
 // transform moves and scales it.
 const (
-	// FitAuto keeps the historical behaviour: letterbox, except on a clip the
-	// camera is working (cursor effects or zoom keyframes), which fills instead
-	// so a push-in never reveals the bar beside the picture.
+	// FitAuto letterboxes. Nothing is cropped that nobody asked to crop.
+	//
+	// It used to fill instead on any clip the camera was working, so that a
+	// push-in could never reveal the bar beside the picture. That guard is now
+	// redundant: a pan is clamped to the CONTENT rectangle rather than to the
+	// canvas (see clipBoxAt), so the camera cannot reach the bar in the first
+	// place. What the old rule cost was a quarter of a window recording,
+	// silently, because every recording carries cursor effects by default —
+	// and a crop you did not ask for and cannot see is the worst of the three
+	// possible answers.
 	FitAuto = ""
 	// FitContain shows all of the picture, with transparent bars where the
 	// shapes disagree.
@@ -306,6 +338,42 @@ const (
 	// a bug in the other two.
 	FitStretch = "stretch"
 )
+
+/*
+FitCovers reports whether a clip's picture reaches every edge of the canvas.
+
+This is the ONE question the framing code actually asks, and it used to be asked
+in four places with four different answers. The prefit asked whether the clip
+had cursor effects; the pan clamp asked that plus whether it had zoom keyframes;
+the cursor's coordinate mapping asked whether it was zoomed past 1.02 AT THIS
+INSTANT; and the preview asked whether the asset had a pointer track and the
+clip had no chroma. So a chroma-keyed recording letterboxed on screen and was
+cropped on export, a clip zoomed only in its second half changed shape as you
+scrubbed past the middle, and turning cursor effects off moved the picture.
+
+None of those were the question. Whether a picture covers the canvas is decided
+by how it was fitted to the canvas, and nothing else.
+*/
+func FitCovers(fit string) bool {
+	return fit == FitCover || fit == FitStretch
+}
+
+// FillFocusFrac converts the centre-relative fill focus into the 0..1 fraction
+// both halves position an overflowing picture with: 0 keeps the left/top edge,
+// 1 keeps the right/bottom, 0.5 is centred.
+func (c Clip) FillFocusFrac() (x, y float64) {
+	clamp := func(v float64) float64 {
+		v += 0.5
+		if v < 0 {
+			return 0
+		}
+		if v > 1 {
+			return 1
+		}
+		return v
+	}
+	return clamp(c.FillFocusX), clamp(c.FillFocusY)
+}
 
 /*
 Crop trims edges off a clip's own picture.
@@ -607,16 +675,16 @@ const (
 // Track is one horizontal lane. Video/overlay/audio tracks hold Clips; caption
 // tracks hold Cues; background tracks hold either a full-frame Clip or a color.
 type Track struct {
-	ID              string       `json:"id"`
-	Kind            string       `json:"kind"`
-	Name            string       `json:"name,omitempty"`
-	Clips           []Clip       `json:"clips,omitempty"`
-	Cues            []CaptionCue `json:"cues,omitempty"`
+	ID               string       `json:"id"`
+	Kind             string       `json:"kind"`
+	Name             string       `json:"name,omitempty"`
+	Clips            []Clip       `json:"clips,omitempty"`
+	Cues             []CaptionCue `json:"cues,omitempty"`
 	BackgroundColor  string       `json:"backgroundColor,omitempty"`
 	BackgroundColor2 string       `json:"backgroundColor2,omitempty"` // top→bottom gradient end; empty = solid
-	Muted           bool         `json:"muted,omitempty"`
-	Hidden          bool         `json:"hidden,omitempty"`
-	Solo            bool         `json:"solo,omitempty"`
+	Muted            bool         `json:"muted,omitempty"`
+	Hidden           bool         `json:"hidden,omitempty"`
+	Solo             bool         `json:"solo,omitempty"`
 	// Duck marks an audio track as a music/bed lane: its level is automatically
 	// compressed (sidechained) under the voice — every non-ducked audio source.
 	Duck bool `json:"duck,omitempty"`
@@ -671,6 +739,11 @@ type EditDoc struct {
 	// Watermark overlays a brand mark on every frame of every export.
 	Watermark *Watermark `json:"watermark,omitempty"`
 	Updated   string     `json:"updated,omitempty"`
+	// SchemaRev records which document upgrades have already been applied, so a
+	// one-time migration stays one-time. Absent (0) means a document written
+	// before any of them — see MigrateFit. The store stamps this on write; a
+	// client that drops the field cannot cause a document to be migrated twice.
+	SchemaRev int `json:"schemaRev,omitempty"`
 }
 
 // Watermark is a project-wide corner logo. Project-wide on purpose: a brand

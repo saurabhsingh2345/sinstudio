@@ -41,6 +41,10 @@ type Sample struct {
 	X    int   `json:"x"`
 	Y    int   `json:"y"`
 	Down uint8 `json:"down,omitempty"`
+	// K is which system cursor was showing — arrow, I-beam, hand and so on;
+	// see render.cursorShapes for the codes. Absent (0) means the recorder
+	// could not tell, and every consumer draws the arrow for it.
+	K uint8 `json:"k,omitempty"`
 }
 
 // Track is the sidecar document.

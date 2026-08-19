@@ -8,6 +8,53 @@ export interface PostRecordSummary {
   hadCursor: boolean;
   /** Primary screen recording clip — for one-click style presets. */
   primaryScreen?: { trackId: string; clipId: string; assetId: string };
+  /**
+   * Set when the recording is a different shape from the project, which is what
+   * happens the moment you record a window into a project that started as a
+   * whole screen. The canvas only adopts the FIRST clip, so this one arrives in
+   * a frame it does not fit, and gets letterboxed.
+   *
+   * Offered rather than done: reshaping a canvas with a timeline already built
+   * against it moves everything already placed, and the last recording is not
+   * automatically the one the project should be shaped around. But saying
+   * nothing leaves someone looking at bars with no idea what put them there.
+   */
+  shapeMismatch?: { width: number; height: number; onMatch: () => void };
+}
+
+export interface ChecklistItem {
+  done: boolean;
+  text: string;
+}
+
+/**
+ * What the checklist says, as data.
+ *
+ * Out of the component so it can be tested: this is where the shape-mismatch
+ * line either appears or does not, and that line is the only warning anyone
+ * gets that a recording arrived in a frame it does not fit.
+ */
+export function checklistItems(summary: PostRecordSummary): ChecklistItem[] {
+  return [
+    { done: true, text: `${summary.trackCount} track${summary.trackCount === 1 ? "" : "s"} placed on the timeline` },
+    summary.hadCursor
+      ? {
+          done: summary.autoZoomClips > 0,
+          text:
+            summary.autoZoomClips > 0
+              ? `Auto-zoom on ${summary.autoZoomClips} clip${summary.autoZoomClips === 1 ? "" : "s"} — drag keyframes to tweak`
+              : "Cursor tracked — no zooms fit this clip length",
+        }
+      : null,
+    summary.shapeMismatch
+      ? {
+          done: false,
+          text: `This recording is a different shape from the project, so it has bars — match the canvas to it?`,
+        }
+      : null,
+    { done: false, text: "Pick a style preset below for instant polish" },
+    { done: false, text: "Transcribe for captions — Captions tab or import with audio" },
+  ].filter(Boolean) as ChecklistItem[];
 }
 
 export function PostRecordChecklist({
@@ -19,20 +66,7 @@ export function PostRecordChecklist({
   onDismiss: () => void;
   onOpenExport?: () => void;
 }) {
-  const items = [
-    { done: true, text: `${summary.trackCount} track${summary.trackCount === 1 ? "" : "s"} placed on the timeline` },
-    summary.hadCursor
-      ? {
-          done: summary.autoZoomClips > 0,
-          text:
-            summary.autoZoomClips > 0
-              ? `Auto-zoom on ${summary.autoZoomClips} clip${summary.autoZoomClips === 1 ? "" : "s"} — drag keyframes to tweak`
-              : "Cursor tracked — no zooms fit this clip length",
-        }
-      : null,
-    { done: false, text: "Pick a style preset below for instant polish" },
-    { done: false, text: "Transcribe for captions — Captions tab or import with audio" },
-  ].filter(Boolean) as { done: boolean; text: string }[];
+  const items = checklistItems(summary);
 
   return (
     <div className="rounded-lg border border-signal/30 bg-signal-soft/30 p-2.5">
@@ -53,6 +87,16 @@ export function PostRecordChecklist({
           </li>
         ))}
       </ul>
+      {summary.shapeMismatch && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="mb-2 h-7 w-full text-[11px]"
+          onClick={summary.shapeMismatch.onMatch}
+        >
+          Match canvas to this recording ({summary.shapeMismatch.width}×{summary.shapeMismatch.height})
+        </Button>
+      )}
       {summary.primaryScreen && (
         <div className="mb-2">
           <StylePresetQuickPick

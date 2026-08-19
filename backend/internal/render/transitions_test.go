@@ -11,9 +11,13 @@ import (
 	"studio/internal/schema"
 )
 
-// TestCompileTransitionsRuns builds a two-clip timeline that exercises every
-// transition kind (slide on both axes + fade/dissolve) and confirms the
-// compiled filtergraph is one ffmpeg actually accepts and renders.
+// TestCompileTransitionsRuns builds a timeline that exercises every transition
+// kind (slide on both axes + fade/dissolve) and confirms the compiled
+// filtergraph is one ffmpeg actually accepts and renders.
+//
+// c3 sits after a gap so that a dissolve OUT still reaches the alpha-fade path:
+// at a joint it is resolved into the next clip's dissolve in instead (see
+// crossfade.go), and c1's is.
 func TestCompileTransitionsRuns(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg not on PATH")
@@ -42,6 +46,12 @@ func TestCompileTransitionsRuns(t *testing.T) {
 					Transform:     schema.Transform{Scale: 0.6, Opacity: 1},
 					TransitionIn:  &schema.Transition{Type: "fade", Duration: 0.5},
 					TransitionOut: &schema.Transition{Type: "slide-bottom", Duration: 0.5},
+				},
+				{
+					ID: "c3", AssetID: "a", Start: 7, In: 0, Out: 2,
+					Transform:     schema.Transform{Scale: 1, Opacity: 1},
+					TransitionIn:  &schema.Transition{Type: "slide-top", Duration: 0.5},
+					TransitionOut: &schema.Transition{Type: "dissolve", Duration: 0.5},
 				},
 			},
 		}},

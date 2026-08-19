@@ -80,10 +80,32 @@ frame with what is left, and the panel offers it as one button ("Fill the frame
 
 | Fit | What it does |
 | --- | --- |
-| **Auto** | Letterbox, or fill when the camera is working this clip. The behaviour every clip had before fits were settable. |
+| **Auto** | Letterbox. Nothing is cropped that nobody asked to crop. |
 | **Fit** | Show all of it, transparent bars where the shapes differ. |
-| **Fill** | Cover the frame; anything past the edge is not shown. |
+| **Fill** | Cover the frame; anything past the edge is not shown. Which part survives is yours to drag — see below. |
 | **Stretch** | Distort to fill. Rarely right, occasionally exactly right. |
+
+When a clip fills, exactly one axis overflows and the rest is thrown away.
+Which part gets thrown away is a choice, and **What stays in frame** in the
+Crop & fit panel is where you make it: drag along the track to slide the window
+over the picture. Centred is the default, and it is only the right answer when
+the subject happens to be in the middle. The control appears only when the clip
+really does overflow — a picture already the canvas's shape has nothing to
+choose between.
+
+**Auto used to fill** whenever the camera was working the clip — and since every
+screen recording carries cursor effects, that quietly cropped a quarter off any
+recording whose shape did not match the canvas. It was there so that a push-in on
+a letterboxed picture could never slide the transparent bar into frame; that is
+handled properly now by clamping the camera to the picture rather than to the
+frame. Projects made before the change keep the framing they had: the fit each
+clip was effectively getting is written onto it once, so nothing moves underfoot.
+
+One consequence worth knowing. On a letterboxed clip the camera can only follow
+your pointer once the zoom is deep enough for the picture to cover the frame —
+below that, any pan would just show more bar on one side, so the push-in stays
+centred. The way to get a following camera on a mismatched recording is to stop
+it being mismatched: match the canvas to the recording.
 
 A crop changes what the clip's picture *is*, so everything downstream is told
 the new shape: the letterbox, the pan clamp that keeps a zoom inside the
@@ -164,6 +186,36 @@ Window geometry is macOS-only for now. Elsewhere `cursord` reports
 `surfaces: false` and Studio keeps the old rule: whole-screen shares get cursor
 effects, window and tab shares record fine without them.
 
+### Cursor shapes
+
+`cursord` also reports *which* system cursor is showing — arrow, I-beam,
+pointing hand, crosshair, resize — and Studio draws that shape rather than an
+arrow throughout. A tutorial of a web app is mostly links and text fields, and an
+arrow sitting over both says something false about the interface.
+
+The shapes are drawn, not bundled as art: a PNG is fixed-resolution and its
+hotspot is not a number the code knows. Each one carries its own hotspot, so the
+cursor sits on the pixel it is pointing at whatever shape it is.
+
+A shape held for less than about an eighth of a second never appears, and two
+stretches of the same shape close together become one. Dragging across a row of
+links crosses in and out of the hand cursor several times a second, and following
+that honestly is a strobe.
+
+macOS only for now, like window geometry. Elsewhere `cursord` reports
+`kinds: false` and every moment is drawn as an arrow — the readiness panel says
+so rather than leaving you to notice. **Rebuild `cursord` to get this**; an
+installed binary from before it existed reports nothing and behaves exactly as
+it always did.
+
+Choosing **Dot** or **Ring** as the pointer style opts out: those are a
+deliberate stylisation, and turning one into an I-beam over every text field
+would be ignoring what was asked for.
+
+Note that **Size** now means the cursor's height**.** It previously meant a unit
+the arrow was 1.12 of, so an existing project's cursor draws about a tenth
+smaller than before at the same setting.
+
 ### Studio draws the cursor
 
 With this on, the capture is asked to exclude the real cursor and Studio draws
@@ -178,6 +230,26 @@ position produces a video with no cursor at all.
 
 ---
 
+## Switching to vertical
+
+The aspect menu in the top bar reframes the project, it does not merely resize
+the frame. Changing the canvas alone drops a 16:9 recording into a 1080×1920
+letterbox with two thirds of the picture missing — "vertical" is a decision
+about what stays in frame, not a canvas size.
+
+So anything that would letterbox is filled instead, and every clip with a
+pointer track has its camera **recomputed** for the new shape: the same pass
+that ran when the recording landed, asked again with a different answer
+available. A 9:16 frame has far less width to spare, so what it finds is a
+genuinely different camera rather than the landscape one stretched.
+
+The whole switch is one undo, and the toast says how many clips it touched.
+Webcam bubbles and device frames are left alone — both already fit the picture
+into something of their own, and filling would crop the thing they are built
+around.
+
+---
+
 ## What happens when a recording lands
 
 Automatically, as the clip hits the timeline:
@@ -187,6 +259,16 @@ Automatically, as the clip hits the timeline:
    recorded into a 16:9 project would otherwise sit in black bars.
 2. **Zooms are found and written**, from where you clicked and where you paused.
 3. **Click rings** are switched on.
+4. **The cursor is smeared along its travel on fast moves.** The clip's own
+   Motion blur cannot do this: the cursor is composited after it, so the picture
+   smears while the pointer stays razor-sharp, which is backwards.
+5. **The cursor presses in at each click.** The rings say where a click landed;
+   the cursor giving is what reads as a press having happened.
+6. **The cursor is set to fade out after 3s of stillness**, and to come straight
+   back the moment it moves. A tutorial parks its pointer for long stretches
+   while the narrator talks, and a cursor sitting in shot doing nothing keeps
+   the viewer waiting for it. Only applies when Studio draws the cursor — a
+   burned-in one cannot fade. Set **Hide when idle** to `never` to turn it off.
 
 All of it is one undo away, and every keyframe stays draggable. The cursor
 *highlight* — a soft disc that follows the pointer — is deliberately **not**

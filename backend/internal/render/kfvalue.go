@@ -104,9 +104,9 @@ func clipBoxAt(v *visual, w, h int, t float64) (left, top, cw, ch float64) {
 		// edge of a letterboxed clip stops at the picture rather than filling
 		// the frame with the transparent bar beside it. A clip that fills the
 		// canvas has no such bar — the content IS the canvas — which is why a
-		// camera clip and an explicitly filled one clamp the same way.
-		filled := v.fit == schema.FitCover || v.fit == schema.FitStretch
-		if v.cursorFX != nil || clipHasZoomKeyframes(v.keyframes) || filled {
+		// picture that fills the canvas has no such bar — the content IS the
+		// canvas — so it clamps against the canvas instead.
+		if schema.FitCovers(v.fit) {
 			offX = clampPanOffset(offX, float64(w), scale, 0, float64(w))
 			offY = clampPanOffset(offY, float64(h), scale, 0, float64(h))
 		} else {
