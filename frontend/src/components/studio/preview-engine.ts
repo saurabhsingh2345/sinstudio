@@ -2,11 +2,14 @@
 // from the original Preview.tsx so the new PreviewStage renders frames that match
 // the exported render. Keep in sync with backend/internal/render.
 import { anchorFrac, clipPlayDur, type Clip, type Track } from "../../types";
+import { clipCover, crossClip, DEF_CROSS_DUR, planCrossfades } from "../../crossfade";
 import { ease } from "../../ease";
 import { peaksNow } from "../../peaks";
 import { clampPanOffset, contentBox } from "../../zoomPan";
 
-export const DEF_TRANS = 0.5; // matches render's defTransDur
+// One default for an unset transition length, shared with the joint rule that
+// resolves transitions against their neighbours.
+export const DEF_TRANS = DEF_CROSS_DUR;
 
 export const clamp01 = (u: number) => Math.max(0, Math.min(1, u));
 export const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
@@ -119,33 +122,58 @@ export function cssFilter(e: Clip["effects"], stageH: number, H: number): string
   return parts.length ? parts.join(" ") : undefined;
 }
 
-// Visual clips active at time t, ordered bottom->top (bg, video, overlay).
-//
-// The full stacking rule, and the one the export implements in render.go's
-// track sort + byZ: track kind, then the track's position in the document,
-// then the clip's z within its track (see clipZ.ts), then array order. Every
-// tiebreak is explicit here rather than leaning on sort stability — the
-// previous version sorted by kind alone and let stability carry the rest,
-// which would have made z unreachable the moment it existed.
-export function activeVisuals(tracks: Track[], t: number) {
-  const order: Record<string, number> = { background: 0, video: 1, overlay: 2 };
-  const out: { track: Track; clip: Clip; ti: number; ci: number }[] = [];
+// The stacking rule, and the one the export implements in render.go's track
+// sort + byZ: track kind, then the track's position in the document, then the
+// clip's z within its track (see clipZ.ts), then array order. Every tiebreak is
+// explicit here rather than leaning on sort stability — the previous version
+// sorted by kind alone and let stability carry the rest, which would have made
+// z unreachable the moment it existed.
+const KIND_ORDER: Record<string, number> = { background: 0, video: 1, overlay: 2 };
+
+type StackEntry = { track: Track; clip: Clip; ti: number; ci: number };
+
+// Every enabled clip on a visual lane, tagged with its place in the stack.
+function visualStack(tracks: Track[]): StackEntry[] {
+  const out: StackEntry[] = [];
   tracks.forEach((tr, ti) => {
-    if (tr.hidden || !(tr.kind in order)) return;
+    if (tr.hidden || !(tr.kind in KIND_ORDER)) return;
     (tr.clips || []).forEach((c, ci) => {
-      if (c.disabled) return;
-      const end = c.start + clipPlayDur(c);
-      if (t >= c.start && t < end) out.push({ track: tr, clip: c, ti, ci });
+      if (!c.disabled) out.push({ track: tr, clip: c, ti, ci });
     });
   });
-  out.sort(
+  return out.sort(
     (a, b) =>
-      order[a.track.kind] - order[b.track.kind] ||
+      KIND_ORDER[a.track.kind] - KIND_ORDER[b.track.kind] ||
       a.ti - b.ti ||
       (a.clip.z ?? 0) - (b.clip.z ?? 0) ||
       a.ci - b.ci
   );
-  return out.map(({ track, clip }) => ({ track, clip }));
+}
+
+// Visual clips active at time t, ordered bottom->top (bg, video, overlay).
+//
+// "Active" includes a clip's cover tail — the moment past its own end where its
+// last frame is held under the next clip's transition, so a cut dissolves scene
+// to scene instead of through the canvas colour. See crossfade.ts; the clips
+// come back with their transitions already resolved against their neighbours,
+// which is why nothing downstream has to know a joint from a lone fade.
+export function activeVisuals(tracks: Track[], t: number) {
+  const cross = planCrossfades(tracks);
+  return visualStack(tracks)
+    .filter(({ clip }) => t >= clip.start && t < clip.start + clipPlayDur(clip) + clipCover(clip, cross))
+    .map(({ track, clip }) => ({ track, clip: crossClip(clip, cross) }));
+}
+
+// Visual clips whose picture is not up yet but is due within `ahead` seconds.
+//
+// The preview mounts these alongside the live ones, invisible, purely so their
+// <video> has fetched and seeked to its in-point before the cut reaches it. A
+// video element created at the instant its clip goes on screen has no frame to
+// show and paints whatever it can — which is what made every cut flash.
+export function upcomingVisuals(tracks: Track[], t: number, ahead: number) {
+  return visualStack(tracks)
+    .filter(({ clip }) => clip.start > t && clip.start <= t + ahead)
+    .map(({ track, clip }) => ({ track, clip }));
 }
 
 // Audio-track clips audible at time t, honoring mute/hide/solo.

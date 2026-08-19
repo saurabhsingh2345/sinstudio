@@ -63,6 +63,7 @@ type visual struct {
 	lut               string  // absolute path to a .cube LUT, or "" for none
 	still             bool    // input is a looped still image (title), not a trimmed video
 	hold              float64 // seconds of frozen last frame appended after the source span
+	cover             float64 // more of the same, carrying the next clip's transition
 	cursorFX          *schema.CursorFX
 	cursorPath        string      // media path, for finding the .cursor.json sidecar
 	cursor            *cursorPlan // compiled emphasis overlays, nil if none
@@ -196,6 +197,12 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 	// annotations must not share a numbering or they overwrite each other.
 	annoIdx := 0
 
+	// What each clip's transitions are a transition TO — resolved against the
+	// neighbour it is joined to rather than against the background. See
+	// crossfade.go; without this a cut between two scenes dissolved through the
+	// canvas colour instead of into the next scene.
+	cross := planCrossfades(doc.Tracks)
+
 	// Source dimensions, for fitting a clip whose shape isn't the canvas's.
 	srcDims := map[string][2]int{}
 	// A still asset (PNG/JPG) has exactly one frame, so it has to be LOOPED for
@@ -225,26 +232,28 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 				if c.Disabled {
 					continue
 				}
-				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID], stillAsset[c.AssetID])
+				c, cover := cross.resolve(c)
+				addClip(&visuals, &audios, c, resolve, w, h, true, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID], stillAsset[c.AssetID], cover)
 			}
 		case schema.TrackVideo, schema.TrackOverlay:
 			for _, c := range byZ(t.Clips) {
 				if c.Disabled {
 					continue
 				}
+				c, cover := cross.resolve(c)
 				if c.Title != nil {
-					if err := addTitleClip(&visuals, c, w, h, srtDir, titleIdx); err == nil {
+					if err := addTitleClip(&visuals, c, w, h, srtDir, titleIdx, cover); err == nil {
 						titleIdx++
 					}
 					continue
 				}
 				if c.Annotation != nil {
-					if err := addAnnotationClip(&visuals, c, w, h, srtDir, annoIdx); err == nil {
+					if err := addAnnotationClip(&visuals, c, w, h, srtDir, annoIdx, cover); err == nil {
 						annoIdx++
 					}
 					continue
 				}
-				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID], stillAsset[c.AssetID])
+				addClip(&visuals, &audios, c, resolve, w, h, false, t.Muted, t.Duck, opts.LUTDir, srcDims[c.AssetID], stillAsset[c.AssetID], cover)
 			}
 		case schema.TrackAudio:
 			if t.Muted {
@@ -592,9 +601,12 @@ func Compile(doc *schema.EditDoc, resolve AssetResolver, outPath, srtDir string,
 			fmt.Fprintf(&fc, ",%s%s%s,format=rgba", cropSeg, prefit, scaleSeg)
 		}
 		// Hold: clone the last frame for `hold` more seconds so the clip covers
-		// trailing audio with a freeze-frame instead of cutting to background.
-		if !v.still && v.hold > 0 {
-			fmt.Fprintf(&fc, ",tpad=stop_mode=clone:stop_duration=%.3f", v.hold)
+		// trailing audio with a freeze-frame instead of cutting to background —
+		// plus the cover the next clip's transition dissolves out of, which is
+		// the same freeze asked for by a different part of the document. Stills
+		// need neither: their input is already generated for end-start.
+		if freeze := v.hold + v.cover; !v.still && freeze > 0 {
+			fmt.Fprintf(&fc, ",tpad=stop_mode=clone:stop_duration=%.3f", freeze)
 		}
 		// Rotation about the clip's center. format=rgba first so the corners exposed
 		// by the rotation are transparent (c=none), not black. Positioning below
@@ -988,7 +1000,12 @@ func byZ(clips []schema.Clip) []schema.Clip {
 	return out
 }
 
-func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool, lutDir string, src [2]int, still bool) {
+// cover is seconds of frozen last frame the clip's PICTURE holds past its own
+// end so that the next clip's transition lands on this scene instead of on the
+// canvas colour (see crossfade.go). It never touches the audio, which cuts on
+// time, and it always sits inside the successor's span, so it cannot lengthen
+// the render.
+func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetResolver, w, h int, isBG, muted, duck bool, lutDir string, src [2]int, still bool, cover float64) {
 	p, ok := resolve(c.AssetID)
 	if !ok {
 		return
@@ -1036,7 +1053,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 	cropW, cropH := croppedDims(src[0], src[1], c.Crop)
 	focusX, focusY := c.FillFocusFrac()
 	*visuals = append(*visuals, visual{
-		path: p, in: c.In, out: c.Out, start: c.Start, end: c.Start + span + hold,
+		path: p, in: c.In, out: c.Out, start: c.Start, end: c.Start + span + hold + cover,
 		x: x, y: y, sw: sw, sh: sh, srcW: cropW, srcH: cropH, opacity: op,
 		crop: c.Crop, fit: c.Fit, rawW: src[0], rawH: src[1],
 		focusX: focusX, focusY: focusY,
@@ -1044,7 +1061,7 @@ func addClip(visuals *[]visual, audios *[]audio, c schema.Clip, resolve AssetRes
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
 		cx: cx, cy: cy, ax: ax, ay: ay,
 		rot: c.Transform.Rotation, keyframes: c.Keyframes, effects: c.Effects, lut: lut,
-		hold: hold, cursorFX: c.Cursor, cursorPath: p, motionBlur: c.MotionBlur,
+		hold: hold, cover: cover, cursorFX: c.Cursor, cursorPath: p, motionBlur: c.MotionBlur,
 		redactions: validRedactions(c.Redactions),
 		chroma:     c.Chroma, device: c.Device, backdrop: c.Backdrop, bubble: c.Bubble,
 		still: still,
@@ -1378,7 +1395,7 @@ func stillSpan(c schema.Clip) float64 {
 // addAnnotationClip composites one callout. The raster is the only thing that
 // differs from a title, so it inherits transforms, keyframes, transitions,
 // fades, effects and z-order without touching the filtergraph.
-func addAnnotationClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int) error {
+func addAnnotationClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int, cover float64) error {
 	png := filepath.Join(srtDir, fmt.Sprintf("anno-%d.png", idx))
 	if err := renderAnnotationPNG(*c.Annotation, w, h, png); err != nil {
 		return err
@@ -1386,7 +1403,7 @@ func addAnnotationClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string
 	b := stillBoxFor(c, w, h)
 	span := stillSpan(c)
 	*visuals = append(*visuals, visual{
-		path: png, start: c.Start, end: c.Start + span,
+		path: png, start: c.Start, end: c.Start + span + cover,
 		x: b.x, y: b.y, sw: b.sw, sh: b.sh, opacity: b.opacity,
 		fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 		transIn: c.TransitionIn, transOut: c.TransitionOut,
@@ -1397,7 +1414,7 @@ func addAnnotationClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string
 	return nil
 }
 
-func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int) error {
+func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx int, cover float64) error {
 	span := stillSpan(c)
 	b := stillBoxFor(c, w, h)
 	x, y, sw, sh, cx, cy, ax, ay, op := b.x, b.y, b.sw, b.sh, b.cx, b.cy, b.ax, b.ay, b.opacity
@@ -1409,7 +1426,7 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 			return err
 		}
 		*visuals = append(*visuals, visual{
-			path: png, start: c.Start, end: c.Start + span,
+			path: png, start: c.Start, end: c.Start + span + cover,
 			x: x, y: y, sw: sw, sh: sh, opacity: op,
 			fadeIn: c.FadeIn, fadeOut: c.FadeOut,
 			transIn: c.TransitionIn, transOut: c.TransitionOut,
@@ -1441,7 +1458,9 @@ func addTitleClip(visuals *[]visual, c schema.Clip, w, h int, srtDir string, idx
 			fadeIn = c.FadeIn
 		}
 		if k == n-1 {
-			end = c.Start + span // full text holds to the end
+			// Full text holds to the end, and past it for as long as the next
+			// clip's transition needs a scene to dissolve out of.
+			end = c.Start + span + cover
 			fadeOut = c.FadeOut
 		}
 		*visuals = append(*visuals, visual{
