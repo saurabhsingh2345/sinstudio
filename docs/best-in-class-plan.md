@@ -3,6 +3,14 @@
 A plan. Written 2026-07-27, from a survey of the code + `docs/roadmap-status.md`.
 Not verified by running the app.
 
+> **Amended 2026-08-21 — read [`studio-as-a-product.md`](./studio-as-a-product.md)
+> first.** Two things below are now overtaken: the audience decision has
+> transferred to a separate product (the recorder and auto-polish were spun out
+> as Prism, `~/Desktop/screenStudioclone/plan.md`), and Phase B — "one render
+> graph, two runtimes" — is now on Prism's schedule, which Studio inherits.
+> Everything else here still holds, particularly §2's reasoning, §4's
+> cross-cutting bars, and the auto-framing discoverability lesson.
+
 **Audience — decided 2026-07-27, this is the axis everything else hangs off:**
 teams making tutorials, internal docs, and product videos. Camtasia + Loom +
 Frame.io, not CapCut. The recorder is the moat; collaboration and distribution

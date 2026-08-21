@@ -33,7 +33,7 @@ studio/
   frontend/   React editor (timeline, preview, assets, transcript, inspector)
   plugins/    generator manifests, loaded at runtime  (see plugins/README.md)
   tools/      cursord — the optional local pointer helper the recorder uses
-  docs/       screen-recording.md
+  docs/       screen-recording.md, best-in-class-plan.md, studio-as-a-product.md
   media/      per-project media: assets, thumbs, renders, luts  (gitignored)
 ```
 
