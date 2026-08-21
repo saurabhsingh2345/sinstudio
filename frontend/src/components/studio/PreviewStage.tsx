@@ -34,6 +34,9 @@ import { playClicksBetween } from "../../clickAudio";
 import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel, upcomingVisuals } from "./preview-engine";
 import { cropLayout, fillsFrame, fitMode, isEmptyCrop, sourceSize } from "../../crop";
 import { CropOverlay, CropToolbar } from "./CropOverlay";
+import { barsAgainst, canvasForClip } from "../../matchCanvas";
+import { applyCanvas } from "../../setCanvas";
+import { toast } from "../../toast";
 import { RedactOverlay, RedactToolbar } from "./RedactOverlay";
 import { clampRedaction } from "../../redaction";
 import { CroppedMedia } from "./CroppedMedia";
@@ -106,6 +109,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
   const setPlayhead = useStudio((s) => s.setPlayhead);
   const addCue = useStudio((s) => s.addCue);
   const updateClip = useStudio((s) => s.updateClip);
+  const mutate = useStudio((s) => s.mutate);
   const beginTransient = useStudio((s) => s.beginTransient);
   const commitTransient = useStudio((s) => s.commitTransient);
   const croppingClip = useStudio((s) => s.croppingClip);
@@ -1014,11 +1018,23 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                 crop={cropping.crop}
                 fit={cropping.fit}
                 canvasAspect={ratio}
+                matchTo={
+                  barsAgainst(selAsset, cropping, doc.canvas) !== "none"
+                    ? canvasForClip(selAsset, cropping, doc.canvas.fps)
+                    : null
+                }
                 onBegin={beginTransient}
                 onChange={(crop) =>
                   updateClip(selTrackId, cropping.id, { crop: isEmptyCrop(crop) ? undefined : crop })
                 }
                 onFit={(fit) => updateClip(selTrackId, cropping.id, { fit })}
+                onMatchCanvas={() => {
+                  const next = canvasForClip(selAsset, cropping, doc.canvas.fps);
+                  if (!next) return;
+                  void applyCanvas(doc, next, mutate, { matchedClipId: cropping.id }).then((sum) =>
+                    toast.success(`Canvas is now ${next.width}×${next.height}${sum ? ` — ${sum}` : ""}`)
+                  );
+                }}
                 onCommit={commitTransient}
                 onDone={() => setCroppingClip(null)}
               />
