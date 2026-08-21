@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { BACKDROP_DEFAULTS, backdropCSS, backdropLayout } from "./backdrop";
+import { BACKDROP_DEFAULTS, BACKDROP_NONE, backdropCSS, backdropLayout, backdropShadow, backdropShown, backdropStored } from "./backdrop";
 
 // These numbers are the contract with render/backdrop.go —
 // TestBackdropLayoutGolden asserts the identical values from the Go
@@ -47,5 +47,56 @@ describe("backdropCSS", () => {
   it("is a flat colour without color2, a gradient with it", () => {
     expect(backdropCSS({ color1: "#112233" })).toBe("#112233");
     expect(backdropCSS({ color1: "#112233", color2: "#445566" })).toBe("linear-gradient(180deg, #112233, #445566)");
+  });
+});
+
+/*
+ * The zero that used to be impossible.
+ *
+ * 0 means "unset" in schema.Backdrop and both renderers substitute the default
+ * for it, so a slider writing 0 got 6% padding back. A negative value is the
+ * documented "really none" and both sides clamp it to zero — these assert the
+ * panel's two halves of that contract, and that the layout actually obeys it.
+ */
+describe("zero padding, corners and shadow", () => {
+  it("shows the default for absent and for the unset zero", () => {
+    expect(backdropShown(undefined, BACKDROP_DEFAULTS.inset)).toBe(BACKDROP_DEFAULTS.inset);
+    expect(backdropShown(0, BACKDROP_DEFAULTS.inset)).toBe(BACKDROP_DEFAULTS.inset);
+  });
+
+  it("shows a negative sentinel as zero", () => {
+    expect(backdropShown(BACKDROP_NONE, BACKDROP_DEFAULTS.inset)).toBe(0);
+    expect(backdropShown(-0.5, BACKDROP_DEFAULTS.shadow)).toBe(0);
+  });
+
+  it("passes real values through", () => {
+    expect(backdropShown(0.2, BACKDROP_DEFAULTS.inset)).toBe(0.2);
+  });
+
+  it("stores the sentinel for a slider at zero, and the value otherwise", () => {
+    expect(backdropStored(0)).toBe(BACKDROP_NONE);
+    expect(backdropStored(0.2)).toBe(0.2);
+  });
+
+  it("round-trips a zero the panel can display", () => {
+    expect(backdropShown(backdropStored(0), BACKDROP_DEFAULTS.inset)).toBe(0);
+  });
+
+  it("actually lays the picture out flush to the frame", () => {
+    // The point of the whole sentinel: no padding means no padding.
+    const g = backdropLayout({ inset: BACKDROP_NONE }, 1920, 1080, 1920, 1080);
+    expect(g).toMatchObject({ x: 0, y: 0, w: 1920, h: 1080 });
+  });
+
+  it("still defaults when inset is the unset zero", () => {
+    const g = backdropLayout({ inset: 0 }, 1920, 1080, 1920, 1080);
+    expect(g.w).toBeLessThan(1920); // 6% pulled in from each edge
+  });
+
+  it("resolves shadow like renderBackdropPNG does", () => {
+    expect(backdropShadow({})).toBe(BACKDROP_DEFAULTS.shadow);
+    expect(backdropShadow({ shadow: 0 })).toBe(BACKDROP_DEFAULTS.shadow);
+    expect(backdropShadow({ shadow: BACKDROP_NONE })).toBe(0);
+    expect(backdropShadow({ shadow: 0.3 })).toBeCloseTo(0.3);
   });
 });

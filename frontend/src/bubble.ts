@@ -30,6 +30,13 @@ const even = (v: number) => {
   return n < 2 ? 2 : n;
 };
 
+/** evenOrigin() in bubble.go — a position may legitimately be 0, unlike a size. */
+const evenOrigin = (v: number) => {
+  let n = Math.trunc(v);
+  if (n % 2 !== 0) n--;
+  return n < 0 ? 0 : n;
+};
+
 export function bubbleLayout(b: Bubble, w: number, h: number): BubbleGeom {
   const size = clamp(b.size || BUBBLE_DEFAULTS.size, 0.05, BUBBLE_DEFAULTS.maxSize);
   const d = even(h * size);
@@ -39,8 +46,8 @@ export function bubbleLayout(b: Bubble, w: number, h: number): BubbleGeom {
   if (border < 0) border = 0;
   return {
     d,
-    x: even((w - d) / 2),
-    y: even((h - d) / 2),
+    x: evenOrigin((w - d) / 2),
+    y: evenOrigin((h - d) / 2),
     radius,
     border: (border * h) / 1080,
   };

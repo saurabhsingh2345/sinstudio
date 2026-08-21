@@ -19,7 +19,7 @@ import { DeviceLayer } from "./DeviceLayer";
 import { LumaScope } from "./LumaScope";
 import { IconBtn } from "./TopBar";
 import { deviceLayout } from "../../device";
-import { backdropCSS, backdropLayout } from "../../backdrop";
+import { backdropCSS, backdropLayout, backdropShadow } from "../../backdrop";
 import { bubbleLayout } from "../../bubble";
 import { watermarkLayout, watermarkOpacity } from "../../watermark";
 import { trackBackgroundCSS } from "../../trackBackground";
@@ -759,7 +759,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                 const g = backdropLayout(clip.backdrop, asset.width || W, asset.height || H, W, H);
                 const pct = (v: number, of: number) => `${(v / of) * 100}%`;
                 const k = box.vw / W;
-                const shadow = clip.backdrop.shadow || 0.55;
+                const shadow = backdropShadow(clip.backdrop);
                 return (
                   <div
                     key={clip.id}

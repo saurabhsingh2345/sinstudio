@@ -74,8 +74,8 @@ func backdropLayout(b *schema.Backdrop, vw, vh, w, h int) backdropGeom {
 	// sizes, then capped so it cannot swallow the card.
 	radius = clampF(radius*float64(h)/1080, 0, math.Min(float64(cw), float64(ch))/2)
 	return backdropGeom{
-		x:      even((float64(w) - float64(cw)) / 2),
-		y:      even((float64(h) - float64(ch)) / 2),
+		x:      evenOrigin((float64(w) - float64(cw)) / 2),
+		y:      evenOrigin((float64(h) - float64(ch)) / 2),
 		w:      cw,
 		h:      ch,
 		radius: radius,
