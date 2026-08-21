@@ -284,6 +284,25 @@ export interface Clip {
   lut?: string; // .cube color LUT filename (in the project's luts dir)
   mute?: boolean; // silence this clip's own audio (used after detaching audio)
   hold?: number; // seconds of frozen last frame appended after the source plays out
+  /*
+   * How far `in` and `out` may be dragged, in source seconds.
+   *
+   * `in`/`out` say what this clip plays; these say what it is *allowed* to play.
+   * Absent means the whole asset, so every document written before this means
+   * exactly what it did.
+   *
+   * A split writes them. Razor a file in two and each half is its own video from
+   * then on — which is what a person means by splitting. Without them, dragging
+   * the left half's end just kept eating the right half's footage, because the
+   * file had more frames and the trim handed them over; the freeze-frame that
+   * should have appeared at the half's own end never arrived.
+   *
+   * The renderer never reads these — `in`/`out` still say everything about what
+   * gets rendered. They constrain the editor, which is where the boundary is a
+   * decision rather than a consequence.
+   */
+  srcIn?: number;
+  srcOut?: number;
   sourceClip?: string; // detached audio clip → the video clip it came from (UI grouping)
   disabled?: boolean; // excluded from render/preview without deleting (per-clip enable toggle)
   title?: Title; // when set, this is a text clip (no asset)
@@ -572,6 +591,37 @@ export const clipSrcDur = (c: Clip): number => {
   const d = (c.out - c.in) / sp;
   return d > 0 ? d : 0;
 };
+
+/**
+ * The span of source this clip may draw from: [lo, hi] in source seconds.
+ *
+ * Falls back to the whole asset, which is what an unsplit clip is entitled to
+ * and what every document predating srcIn/srcOut asked for. An asset whose
+ * duration is unknown stays unbounded rather than being clamped to zero.
+ */
+export const srcWindow = (
+  c: Pick<Clip, "srcIn" | "srcOut">,
+  asset: Pick<Asset, "duration"> | undefined
+): [number, number] => {
+  const lo = c.srcIn && c.srcIn > 0 ? c.srcIn : 0;
+  const dur = asset && asset.duration > 0 ? asset.duration : Infinity;
+  const hi = c.srcOut && c.srcOut > 0 ? Math.min(c.srcOut, dur) : dur;
+  return [lo, Math.max(lo, hi)];
+};
+
+/**
+ * The two halves' windows when a clip is cut at `srcCut`.
+ *
+ * Both inherit the parent's bounds — splitting a half again must not hand back
+ * footage the first split took away — so this composes rather than replaces.
+ */
+export const splitSrcWindow = (
+  c: Pick<Clip, "srcIn" | "srcOut">,
+  srcCut: number
+): { left: Pick<Clip, "srcIn" | "srcOut">; right: Pick<Clip, "srcIn" | "srcOut"> } => ({
+  left: { srcIn: c.srcIn, srcOut: c.srcOut && c.srcOut > 0 ? Math.min(c.srcOut, srcCut) : srcCut },
+  right: { srcIn: Math.max(c.srcIn ?? 0, srcCut), srcOut: c.srcOut },
+});
 
 /** Source media time (seconds from first frame) at clip-local play time. */
 export const clipSourceAt = (c: Pick<Clip, "in" | "speed">, localT: number): number => {

@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { api, ConflictError } from "./api";
 import type { Annotation, AnnoKind, Asset, CaptionCue, Clip, EditDoc, Keyable, Keyframe, Track, TitleAnim, TitleReveal } from "./types";
-import { newId, clipPlayDur } from "./types";
+import { newId, clipPlayDur, splitSrcWindow } from "./types";
 import { buildTitleAnim } from "./titleAnim";
 import { newAnnotation } from "./annotation";
 import { buildMotionPreset, type MotionPreset } from "./motionPresets";
@@ -576,11 +576,27 @@ export const useStudio = create<StudioState>((set, get) => ({
             // the moment it was covering, which for a redaction means exposing
             // the thing it was hiding.
             const wholeDur = (c.out - c.in) / sp;
+            /*
+             * Each half becomes its own video, which is what splitting means.
+             *
+             * Without a recorded boundary the halves stay two views onto one
+             * file, so dragging the left half's end kept serving the right
+             * half's footage — the file had the frames, so the trim handed them
+             * over — and the freeze-frame that belongs at the half's own end
+             * never appeared.
+             */
+            const win = splitSrcWindow(c, srcCut);
             list.push({
               ...c,
               out: srcCut,
               fadeOut: 0,
               transitionOut: undefined,
+              // The trailing freeze sat at the END of the clip, so it belongs to
+              // the right half alone. Copying it onto both put a frozen frame in
+              // the middle of the cut.
+              hold: undefined,
+              srcIn: win.left.srcIn,
+              srcOut: win.left.srcOut,
               redactions: splitRedactions(c.redactions, 0, off, wholeDur),
             });
             list.push({
@@ -590,6 +606,8 @@ export const useStudio = create<StudioState>((set, get) => ({
               start: playhead,
               fadeIn: 0,
               transitionIn: undefined,
+              srcIn: win.right.srcIn,
+              srcOut: win.right.srcOut,
               keyframes: Object.keys(rightKf).length ? rightKf : undefined,
               redactions: splitRedactions(c.redactions, off, wholeDur, wholeDur),
             });

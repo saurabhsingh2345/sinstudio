@@ -53,7 +53,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { Clip, EditDoc, Track } from "../../types";
-import { clipPlayDur, clipSrcDur, mediaUrl } from "../../types";
+import { clipPlayDur, clipSrcDur, mediaUrl, srcWindow } from "../../types";
 import { getPeaks, peaksNow } from "../../peaks";
 import { zOrder } from "../../clipZ";
 import { hueFor, fmtTC, volumePatch } from "./bridge";
@@ -1096,7 +1096,10 @@ function ClipBar({
     const origEnd0 = origStart + dur; // #5 ripple reference
     const retime = mode === "out" && e.altKey; // #10 Alt-drag right edge = retime
     const sp = clip.speed && clip.speed > 0 ? clip.speed : 1;
-    const srcDur = asset && asset.duration > 0 ? asset.duration : Infinity;
+    // What this clip may draw from — the whole asset normally, its own half after
+    // a split. The trim used asset.duration directly, so a split half kept
+    // serving its sibling's footage instead of freezing at its own end.
+    const [srcLo, srcHi] = srcWindow(clip, asset);
     let curTrack = track.id;
 
     const move = (ev: PointerEvent) => {
@@ -1154,7 +1157,7 @@ function ClipBar({
         } else if (isPicture) {
           s2.updateClip(curTrack, clip.id, { out: +desiredPlay.toFixed(3) });
         } else {
-          const maxSrcPlay = (srcDur - origIn) / sp; // seconds of real footage left
+          const maxSrcPlay = (srcHi - origIn) / sp; // seconds of real footage left
           const play = Math.min(desiredPlay, maxSrcPlay);
           const newOut = +(origIn + play * sp).toFixed(3);
           const newHold = +Math.max(0, desiredPlay - play).toFixed(3);
@@ -1170,7 +1173,9 @@ function ClipBar({
           s2.updateClip(curTrack, clip.id, { start: +ns.toFixed(3), out: +(end - ns).toFixed(3) });
         } else {
           const delta = rawStart - origStart;
-          const newIn = Math.min(Math.max(0, origIn + delta * sp), origOut - 0.1);
+          // Floors at srcLo, not 0: dragging the right half's head left used to
+          // reveal the left half's footage for the same reason the tail did.
+          const newIn = Math.min(Math.max(srcLo, origIn + delta * sp), origOut - 0.1);
           const applied = (newIn - origIn) / sp;
           s2.updateClip(curTrack, clip.id, { in: +newIn.toFixed(3), start: +(origStart + applied).toFixed(3) });
         }
