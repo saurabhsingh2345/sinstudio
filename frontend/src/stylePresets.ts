@@ -14,9 +14,27 @@ export interface StylePreset {
   smartFocus?: Partial<SmartFocusOptions>;
   /** Motion blur strength for camera keyframe moves (0..1). */
   motionBlur?: number;
+  /** Removes the backdrop rather than replacing it — see the "none" preset. */
+  clears?: boolean;
 }
 
 export const STYLE_PRESETS: StylePreset[] = [
+  {
+    /*
+     * The picture, flush to the frame, nothing around it.
+     *
+     * Every other preset writes a backdrop, and a backdrop's whole job is to
+     * pull the picture in from the edges — so once one had been applied there
+     * was no way back to "just my recording" from this panel at all. For a
+     * capture that is already framed the way its author wants, this is the
+     * right answer and it was missing.
+     */
+    id: "none",
+    name: "No frame",
+    description: "The picture flush to the frame — no scene, no padding",
+    swatch: "repeating-linear-gradient(45deg, #3f3f46 0 6px, #27272a 6px 12px)",
+    clears: true,
+  },
   {
     id: "product-demo",
     name: "Product demo",

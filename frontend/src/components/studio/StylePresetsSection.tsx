@@ -6,7 +6,13 @@ import { useStudio } from "../../state";
 import { toast } from "../../toast";
 import type { Asset, Clip } from "../../types";
 import { STYLE_PRESETS, type StylePreset } from "../../stylePresets";
-import { Section } from "./inspector-bits";
+import {
+  BACKDROP_DEFAULTS,
+  backdropShown,
+  backdropStored,
+} from "../../backdrop";
+import { Section, SliderRow } from "./inspector-bits";
+import type { Backdrop } from "../../types";
 
 export function StylePresetsSection({
   trackId,
@@ -38,27 +44,97 @@ export function StylePresetsSection({
 
   if (asset.kind === "audio") return null;
 
+  const bd = clip.backdrop;
+  const patchBackdrop = (p: Partial<Backdrop>) =>
+    updateClip(trackId, clip.id, { backdrop: { ...(bd ?? {}), ...p } });
+
+  /*
+   * Collapsed by default, and it stays where you put it (Section remembers).
+   *
+   * Five two-column cards carrying a swatch, a name AND a description made this
+   * the tallest panel in the inspector, permanently open, for a control you use
+   * once per clip. One line each, description in the tooltip.
+   */
   return (
-    <Section label="Style presets" defaultOpen>
+    <Section label="Style presets" defaultOpen={false}>
       <div className="text-[10.5px] leading-relaxed text-muted-foreground">
-        One-click backdrop, cursor polish{asset.hasCursor ? ", and auto-zoom" : ""}. Undo restores the previous look.
+        One-click backdrop, cursor polish{asset.hasCursor ? ", and auto-zoom" : ""}. Undo restores the
+        previous look.
       </div>
-      <div className="grid grid-cols-2 gap-1.5 pt-1">
-        {STYLE_PRESETS.map((p) => (
+      <div className="space-y-1 pt-0.5">
+        {STYLE_PRESETS.map((p) => {
+          // The space it will take, stated on the card. A preset's padding is
+          // what actually shrinks the picture, and nothing here used to say so —
+          // the control lived in a different section entirely.
+          const pad = p.clears
+            ? "none"
+            : `${Math.round(backdropShown(p.backdrop?.inset, BACKDROP_DEFAULTS.inset) * 100)}%`;
+          return (
+            <button
+              key={p.id}
+              type="button"
+              disabled={!!busy}
+              title={p.description}
+              onClick={() => void apply(p)}
+              className="flex w-full items-center gap-2 rounded-md border hairline bg-panel-2 px-1.5 py-1 text-left transition-colors hover:border-brand/40 hover:bg-panel-3 disabled:opacity-50"
+            >
+              <span className="h-4 w-6 shrink-0 rounded" style={{ background: p.swatch }} />
+              <span className="flex-1 truncate text-[11px] font-medium leading-tight">{p.name}</span>
+              <span className="tabular shrink-0 text-[9px] text-muted-foreground">
+                {busy === p.id ? "applying…" : `pad ${pad}`}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/*
+        The space, adjustable where it was chosen.
+
+        A preset's padding is the thing people want to change straight after
+        applying one, and it used to mean finding the Backdrop section further
+        down the inspector and working out that "Padding" was the same number.
+        All three reach a true zero now — see backdropStored.
+      */}
+      {bd && (
+        <div className="space-y-2 border-t hairline pt-2">
+          <div className="label-caps">Space it takes</div>
+          <SliderRow
+            label="Padding"
+            value={Math.round(backdropShown(bd.inset, BACKDROP_DEFAULTS.inset) * 100)}
+            min={0}
+            max={35}
+            step={1}
+            onChange={(v) => patchBackdrop({ inset: backdropStored(v / 100) })}
+            fmt={(v) => (v === 0 ? "none" : `${v}%`)}
+          />
+          <SliderRow
+            label="Corners"
+            value={Math.round(backdropShown(bd.radius, BACKDROP_DEFAULTS.radius))}
+            min={0}
+            max={60}
+            step={2}
+            onChange={(v) => patchBackdrop({ radius: backdropStored(v) })}
+            fmt={(v) => (v === 0 ? "square" : `${v}px`)}
+          />
+          <SliderRow
+            label="Shadow"
+            value={Math.round(backdropShown(bd.shadow, BACKDROP_DEFAULTS.shadow) * 100)}
+            min={0}
+            max={100}
+            step={5}
+            onChange={(v) => patchBackdrop({ shadow: backdropStored(v / 100) })}
+            fmt={(v) => (v === 0 ? "none" : `${v}%`)}
+          />
           <button
-            key={p.id}
             type="button"
-            disabled={!!busy}
-            onClick={() => void apply(p)}
-            className="flex flex-col gap-1 rounded-lg border hairline bg-panel-2 p-2 text-left transition-colors hover:border-brand/40 hover:bg-panel-3 disabled:opacity-50"
+            onClick={() => updateClip(trackId, clip.id, { backdrop: undefined })}
+            className="w-full rounded-md bg-panel-3 py-1 text-[10px] text-muted-foreground hover:text-foreground"
           >
-            <span className="h-6 w-full rounded-md" style={{ background: p.swatch }} />
-            <span className="text-[11px] font-medium leading-tight">{p.name}</span>
-            <span className="text-[9px] leading-snug text-muted-foreground">{p.description}</span>
-            {busy === p.id && <span className="text-[9px] text-brand">Applying…</span>}
+            Remove the frame entirely
           </button>
-        ))}
-      </div>
+        </div>
+      )}
     </Section>
   );
 }
@@ -106,7 +182,10 @@ export function StylePresetQuickPick({
         <Sparkles className="h-3 w-3" /> Pick a style
       </div>
       <div className="grid grid-cols-3 gap-1">
-        {STYLE_PRESETS.slice(0, 3).map((p) => (
+        {/* Looks only: "No frame" is a way back, not a first choice. */}
+        {STYLE_PRESETS.filter((p) => !p.clears)
+          .slice(0, 3)
+          .map((p) => (
           <Button
             key={p.id}
             size="sm"
