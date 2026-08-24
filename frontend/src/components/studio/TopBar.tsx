@@ -73,6 +73,7 @@ export function TopBar({
   const dirty = useStudio((s) => s.dirty);
   const conflict = useStudio((s) => s.conflict);
   const resolveConflict = useStudio((s) => s.resolveConflict);
+  const keepMine = useStudio((s) => s.keepMine);
   const undo = useStudio((s) => s.undo);
   const redo = useStudio((s) => s.redo);
   const mutate = useStudio((s) => s.mutate);
@@ -152,7 +153,15 @@ export function TopBar({
         <div className="flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-1 text-[11px] text-red-200">
           <span>Someone else saved this project. Your changes are not being saved.</span>
           <button
+            onClick={keepMine}
+            title="Save your version over theirs"
+            className="rounded border border-red-400/50 px-1.5 py-0.5 font-medium hover:bg-red-500/20"
+          >
+            Keep mine
+          </button>
+          <button
             onClick={resolveConflict}
+            title="Discard your unsaved changes and load their version"
             className="rounded border border-red-400/50 px-1.5 py-0.5 font-medium hover:bg-red-500/20"
           >
             Reload theirs
