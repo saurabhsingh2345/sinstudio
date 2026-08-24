@@ -9,6 +9,30 @@ import { cn } from "@/lib/utils";
 // doesn't, and then fails at module-evaluation time in a way that reads as
 // nothing rendering at all.
 
+/*
+ * Remembered per section, across mounts.
+ *
+ * The open flag used to be plain useState, so collapsing a panel lasted until
+ * the inspector re-mounted — selecting another clip, switching panels — and then
+ * every section sprang back to its default. A panel you cannot put away is a
+ * panel that decides for you how much of the inspector it gets, which is
+ * precisely the complaint about the tall Style presets grid.
+ *
+ * Keyed by label rather than by clip: "I don't want to see Style presets" is a
+ * statement about the panel, not about this clip.
+ */
+const OPEN_KEY = "studio-section-open";
+
+function readOpen(label: string, dflt: boolean): boolean {
+  try {
+    const raw = localStorage.getItem(`${OPEN_KEY}:${label}`);
+    return raw === null ? dflt : raw === "1";
+  } catch {
+    // Private mode, or storage disabled. The default is a fine answer.
+    return dflt;
+  }
+}
+
 export function Section({
   label,
   children,
@@ -18,10 +42,23 @@ export function Section({
   children: React.ReactNode;
   defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, setOpen] = useState(() => readOpen(label, defaultOpen));
   return (
     <div className="rounded-lg border hairline bg-panel-2/40">
-      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between px-2.5 py-2">
+      <button
+        onClick={() =>
+          setOpen((o) => {
+            const next = !o;
+            try {
+              localStorage.setItem(`${OPEN_KEY}:${label}`, next ? "1" : "0");
+            } catch {
+              /* not remembered; still toggles for this session */
+            }
+            return next;
+          })
+        }
+        className="flex w-full items-center justify-between px-2.5 py-2"
+      >
         <span className="label-caps">{label}</span>
         <ChevronDown className={cn("h-3.5 w-3.5 text-muted-foreground transition-transform", !open && "-rotate-90")} />
       </button>

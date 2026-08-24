@@ -61,8 +61,8 @@ func bubbleLayout(b *schema.Bubble, w, h int) bubbleGeom {
 	}
 	return bubbleGeom{
 		d:      d,
-		x:      even((float64(w) - float64(d)) / 2),
-		y:      even((float64(h) - float64(d)) / 2),
+		x:      evenOrigin((float64(w) - float64(d)) / 2),
+		y:      evenOrigin((float64(h) - float64(d)) / 2),
 		radius: radius,
 		border: border * float64(h) / 1080,
 	}

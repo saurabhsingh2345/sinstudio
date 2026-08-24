@@ -97,6 +97,27 @@ func even(v float64) int {
 }
 
 /*
+evenOrigin is even() for a POSITION rather than a size.
+
+The distinction is schema.Pixels's, and it is right there: "a size floors at 2;
+an origin does not, because zero is where an untrimmed edge legitimately
+starts." Every layout here computes both with even(), so an origin that should
+be 0 came back 2 — which nobody saw while backdrop padding had a 6% floor and
+the offsets were large, and which puts the picture 2px off the corner and 2px
+over the opposite edge the moment the padding is actually none.
+*/
+func evenOrigin(v float64) int {
+	n := int(v)
+	if n%2 != 0 {
+		n--
+	}
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+/*
 deviceBox fits a device into the canvas, centred, leaving a margin.
 
 The margin is not decoration: a frame drawn hard against the canvas edge has its
@@ -123,8 +144,8 @@ func deviceLayout(kind string, w, h int) deviceGeom {
 	spec := deviceSpecFor(kind)
 	bx, by, bw, bh := deviceBox(spec, w, h)
 	return deviceGeom{
-		x:      even(bx + spec.sx*bw),
-		y:      even(by + spec.sy*bh),
+		x:      evenOrigin(bx + spec.sx*bw),
+		y:      evenOrigin(by + spec.sy*bh),
 		w:      even(spec.sw * bw),
 		h:      even(spec.sh * bh),
 		radius: spec.screenRadius * bw,

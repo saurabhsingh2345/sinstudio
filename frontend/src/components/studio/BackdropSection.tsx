@@ -1,6 +1,6 @@
 import { useStudio } from "../../state";
 import type { Backdrop, Clip } from "../../types";
-import { BACKDROP_DEFAULTS, BACKDROP_PRESETS, backdropCSS } from "../../backdrop";
+import { BACKDROP_DEFAULTS, BACKDROP_PRESETS, backdropCSS, backdropShown, backdropStored } from "../../backdrop";
 import { ColorSwatch, Field, Section, SliderRow } from "./inspector-bits";
 
 /*
@@ -55,32 +55,39 @@ export function BackdropSection({ trackId, clip }: { trackId: string; clip: Clip
           <Field label="Bottom">
             <ColorSwatch color={bd.color2 || bd.color1 || BACKDROP_DEFAULTS.color1} onChange={(color2) => patch({ color2 })} />
           </Field>
+          {/*
+            All three reach a true zero, via backdropStored's negative sentinel.
+            Padding's floor used to be 2% and 0 was silently re-read as the 6%
+            default, so "the picture flush to the frame, no space anywhere" was
+            not expressible — which is exactly what someone asks for when their
+            recording is already the shape they want.
+          */}
           <SliderRow
             label="Padding"
-            value={Math.round((bd.inset || BACKDROP_DEFAULTS.inset) * 100)}
-            min={2}
+            value={Math.round(backdropShown(bd.inset, BACKDROP_DEFAULTS.inset) * 100)}
+            min={0}
             max={35}
             step={1}
-            onChange={(v) => patch({ inset: v / 100 })}
-            fmt={(v) => `${v}%`}
+            onChange={(v) => patch({ inset: backdropStored(v / 100) })}
+            fmt={(v) => (v === 0 ? "none" : `${v}%`)}
           />
           <SliderRow
             label="Corners"
-            value={bd.radius || BACKDROP_DEFAULTS.radius}
+            value={Math.round(backdropShown(bd.radius, BACKDROP_DEFAULTS.radius))}
             min={0}
             max={60}
             step={2}
-            onChange={(v) => patch({ radius: v })}
-            fmt={(v) => `${v}px`}
+            onChange={(v) => patch({ radius: backdropStored(v) })}
+            fmt={(v) => (v === 0 ? "square" : `${v}px`)}
           />
           <SliderRow
             label="Shadow"
-            value={Math.round((bd.shadow || BACKDROP_DEFAULTS.shadow) * 100)}
+            value={Math.round(backdropShown(bd.shadow, BACKDROP_DEFAULTS.shadow) * 100)}
             min={0}
             max={100}
             step={5}
-            onChange={(v) => patch({ shadow: v / 100 })}
-            fmt={(v) => `${v}%`}
+            onChange={(v) => patch({ shadow: backdropStored(v / 100) })}
+            fmt={(v) => (v === 0 ? "none" : `${v}%`)}
           />
           {clip.device && (
             <p className="text-[10px] leading-snug text-muted-foreground">

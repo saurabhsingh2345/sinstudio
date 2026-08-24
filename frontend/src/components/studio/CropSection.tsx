@@ -1,12 +1,15 @@
 import { useRef } from "react";
-import { Crop as CropIcon, Maximize2, RotateCcw } from "lucide-react";
+import { Crop as CropIcon, Frame, Maximize2, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useStudio } from "../../state";
 import { cropPixels, cropToAspect, fitMode, isEmptyCrop, sourceSize } from "../../crop";
+import { barsAgainst, canvasForClip } from "../../matchCanvas";
+import { applyCanvas } from "../../setCanvas";
 import type { Asset, Clip, Crop, FitMode } from "../../types";
 import { isCameraClip } from "../../virtualCamera";
+import { toast } from "../../toast";
 import { Field, NumInput, Section } from "./inspector-bits";
 
 /*
@@ -40,6 +43,7 @@ export function CropSection({ trackId, clip, asset }: { trackId: string; clip: C
   const croppingClip = useStudio((s) => s.croppingClip);
   const setCroppingClip = useStudio((s) => s.setCroppingClip);
   const doc = useStudio((s) => s.doc);
+  const mutate = useStudio((s) => s.mutate);
 
   const canvas = doc?.canvas;
   const cropped = sourceSize(asset, clip);
@@ -54,6 +58,24 @@ export function CropSection({ trackId, clip, asset }: { trackId: string; clip: C
   const croppedA = cropped ? cropped.width / cropped.height : 0;
   const barred =
     mode === "fit" && canvasA > 0 && croppedA > 0 && Math.abs(croppedA - canvasA) / canvasA > 0.005;
+
+  /*
+   * Which way it is barred, and the canvas that would end it.
+   *
+   * Named directions rather than a boolean because "black down both sides" and
+   * "black above and below" are what a person actually sees — a panel that says
+   * "bars" leaves them working out which, and the two have different causes.
+   */
+  const bars = barsAgainst(asset, clip, canvas);
+  const matchTo = canvas ? canvasForClip(asset, clip, canvas.fps) : null;
+
+  const matchCanvas = async () => {
+    if (!doc || !matchTo) return;
+    const summary = await applyCanvas(doc, matchTo, mutate, { matchedClipId: clip.id });
+    toast.success(
+      `Canvas is now ${matchTo.width}×${matchTo.height}${summary ? ` — ${summary}` : ""}`
+    );
+  };
 
   /*
    * Which axis actually overflows when this clip fills.
@@ -171,18 +193,41 @@ export function CropSection({ trackId, clip, asset }: { trackId: string; clip: C
 
       {/*
         The other half of "cut the top off": what is left is a different shape,
-        so it letterboxes, and the clip that filled the frame a moment ago now
-        sits in bars. Offered only when that is actually happening.
+        so it bars, and the clip that filled the frame a moment ago now sits in
+        black. Offered only when that is actually happening.
+
+        BOTH answers, with their costs named. Fill was the only offer here, so it
+        read as the only answer — and Fill crops. For a picture that is already
+        framed the way its author wants, every fit is wrong and the fix is to
+        reshape the CANVAS, which costs nothing and loses nothing. That option
+        existed nowhere in the app.
       */}
       {barred && (
-        <Button
-          size="sm"
-          className="h-7 w-full text-xs"
-          onClick={() => updateClip(trackId, clip.id, { fit: "fill" })}
-        >
-          <Maximize2 className="mr-1.5 h-3 w-3" />
-          Fill the frame — no bars
-        </Button>
+        <div className="space-y-1.5 rounded-md border hairline bg-panel-3/60 p-2">
+          <p className="text-[10px] leading-snug text-muted-foreground">
+            Black {bars === "sides" ? "down both sides" : "above and below"} — the picture is{" "}
+            {bars === "sides" ? "narrower" : "wider"} than the {canvas?.width}×{canvas?.height} canvas.
+          </p>
+          {matchTo && (
+            <Button size="sm" className="h-7 w-full text-xs" onClick={() => void matchCanvas()}>
+              <Frame className="mr-1.5 h-3 w-3" />
+              Match canvas to this clip ({matchTo.width}×{matchTo.height})
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 w-full bg-panel-2 text-xs"
+            onClick={() => updateClip(trackId, clip.id, { fit: "fill" })}
+          >
+            <Maximize2 className="mr-1.5 h-3 w-3" />
+            Fill the frame — crops the {bars === "sides" ? "top and bottom" : "sides"}
+          </Button>
+          <p className="text-[10px] leading-snug text-muted-foreground">
+            Matching keeps every pixel and changes the project's shape. Filling keeps the shape and
+            throws the overflow away.
+          </p>
+        </div>
       )}
     </Section>
   );

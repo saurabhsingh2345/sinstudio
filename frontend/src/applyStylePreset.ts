@@ -25,7 +25,14 @@ export async function applyStylePreset(
   const applied: string[] = [];
   const patch: Partial<Clip> = {};
 
-  if (preset.backdrop) {
+  if (preset.clears) {
+    // Explicitly undefined, not an empty object: an empty Backdrop is already a
+    // usable scene by design ("zero values mean the defaults"), so {} would
+    // apply a dark slate card with 6% padding — the opposite of "no frame".
+    patch.backdrop = undefined;
+    patch.device = undefined;
+    applied.push("no frame");
+  } else if (preset.backdrop) {
     patch.backdrop = { ...preset.backdrop };
     applied.push("backdrop");
   }

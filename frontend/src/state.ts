@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { api, ConflictError } from "./api";
 import type { Annotation, AnnoKind, Asset, CaptionCue, Clip, EditDoc, Keyable, Keyframe, Track, TitleAnim, TitleReveal } from "./types";
-import { newId, clipPlayDur } from "./types";
+import { newId, clipPlayDur, splitSrcWindow } from "./types";
 import { buildTitleAnim } from "./titleAnim";
 import { newAnnotation } from "./annotation";
 import { buildMotionPreset, type MotionPreset } from "./motionPresets";
@@ -55,6 +55,8 @@ interface StudioState {
   redo: () => void;
   // Discard local edits and adopt the server's document after a conflict.
   resolveConflict: () => void;
+  // Keep local edits after a conflict and save them over the server's copy.
+  keepMine: () => void;
 
   addAsset: (a: Asset) => void;
   updateAsset: (a: Asset) => void;
@@ -220,6 +222,22 @@ export const useStudio = create<StudioState>((set, get) => ({
     });
   },
 
+  // keepMine is the other way out of a conflict, and the one that loses nothing:
+  // rebase the local document onto the server's revision so the next save is no
+  // longer stale, and let it write over their copy.
+  //
+  // A conflict used to offer only "reload theirs", which throws away every edit
+  // made since the last successful save — and because save() refuses to run
+  // while a conflict is latched, that is potentially a long session's work. An
+  // editor must never make discarding your work the only exit.
+  keepMine: () => {
+    const { conflict, doc } = get();
+    if (!conflict || !doc) return;
+    set({ doc: { ...doc, version: conflict.current.version }, conflict: null, dirty: true });
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => get().save(), 0);
+  },
+
   // mutate applies fn to a cloned doc, records history, autosaves. During a
   // transient gesture, history is not touched (beginTransient captured the one
   // snapshot; commitTransient will push it).
@@ -267,7 +285,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   undo: () => {
     const { past, doc } = get();
     if (!past.length || !doc) return;
-    const prev = past[past.length - 1];
+    const prev = restoreRev(past[past.length - 1], doc);
     const sel = pruneSelection(prev, get());
     set((s) => ({ doc: prev, past: s.past.slice(0, -1), future: [doc, ...s.future].slice(0, 60), dirty: true, ...sel }));
     if (saveTimer) clearTimeout(saveTimer);
@@ -277,7 +295,7 @@ export const useStudio = create<StudioState>((set, get) => ({
   redo: () => {
     const { future, doc } = get();
     if (!future.length || !doc) return;
-    const next = future[0];
+    const next = restoreRev(future[0], doc);
     const sel = pruneSelection(next, get());
     set((s) => ({ doc: next, future: s.future.slice(1), past: [...s.past, doc].slice(-60), dirty: true, ...sel }));
     if (saveTimer) clearTimeout(saveTimer);
@@ -576,11 +594,27 @@ export const useStudio = create<StudioState>((set, get) => ({
             // the moment it was covering, which for a redaction means exposing
             // the thing it was hiding.
             const wholeDur = (c.out - c.in) / sp;
+            /*
+             * Each half becomes its own video, which is what splitting means.
+             *
+             * Without a recorded boundary the halves stay two views onto one
+             * file, so dragging the left half's end kept serving the right
+             * half's footage — the file had the frames, so the trim handed them
+             * over — and the freeze-frame that belongs at the half's own end
+             * never appeared.
+             */
+            const win = splitSrcWindow(c, srcCut);
             list.push({
               ...c,
               out: srcCut,
               fadeOut: 0,
               transitionOut: undefined,
+              // The trailing freeze sat at the END of the clip, so it belongs to
+              // the right half alone. Copying it onto both put a frozen frame in
+              // the middle of the cut.
+              hold: undefined,
+              srcIn: win.left.srcIn,
+              srcOut: win.left.srcOut,
               redactions: splitRedactions(c.redactions, 0, off, wholeDur),
             });
             list.push({
@@ -590,6 +624,8 @@ export const useStudio = create<StudioState>((set, get) => ({
               start: playhead,
               fadeIn: 0,
               transitionIn: undefined,
+              srcIn: win.right.srcIn,
+              srcOut: win.right.srcOut,
               keyframes: Object.keys(rightKf).length ? rightKf : undefined,
               redactions: splitRedactions(c.redactions, off, wholeDur, wholeDur),
             });
@@ -1208,6 +1244,19 @@ function unmuteOrphanedSources(d: EditDoc, removed: Clip[]) {
       if (src) src.mute = false;
     }
   }
+}
+
+// restoreRev re-stamps a document coming back off the undo/redo stacks with the
+// revision the editor is currently based on.
+//
+// doc.version is the server's revision, not editable content, so a history entry
+// carries whatever revision happened to be current when it was snapshotted. Undo
+// used to hand that stale number straight back to save(), which sends it as the
+// optimistic-concurrency base — so the first undo after any successful save was
+// rejected as a 409 and the editor announced that "someone else" had saved the
+// project. Nobody else had; the editor was arguing with its own past.
+function restoreRev(snap: EditDoc, cur: EditDoc): EditDoc {
+  return snap.version === cur.version ? snap : { ...snap, version: cur.version };
 }
 
 // pruneSelection drops selection entries pointing at clips/cues that no longer

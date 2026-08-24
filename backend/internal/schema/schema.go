@@ -85,6 +85,24 @@ type Clip struct {
 	// plays out, so a clip can cover trailing audio without cutting to black.
 	// Added to PlayDur; the renderer extends the video with tpad=clone.
 	Hold float64 `json:"hold,omitempty"`
+	/*
+		SrcIn/SrcOut bound how far In and Out may be dragged, in source seconds.
+
+		In/Out say what this clip plays; these say what it is ALLOWED to play. A
+		fresh clip may reach the whole asset, so both are absent and every
+		document written before this means exactly what it did. A SPLIT writes
+		them: razor a file in two and each half is its own video from then on,
+		which is what a person means by splitting. Without them, dragging the
+		left half's end just kept eating the right half's footage — the file had
+		more frames, so the trim handed them over — and the freeze-frame that
+		should have appeared at the half's own end never did.
+
+		The renderer never reads these: In/Out still say everything about what
+		gets rendered. They constrain the editor, which is where the boundary is
+		a decision rather than a consequence.
+	*/
+	SrcIn  float64 `json:"srcIn,omitempty"`
+	SrcOut float64 `json:"srcOut,omitempty"`
 	// SourceClip links a detached audio clip back to the video clip it came from.
 	// UI grouping only; the renderer ignores it.
 	SourceClip string `json:"sourceClip,omitempty"`

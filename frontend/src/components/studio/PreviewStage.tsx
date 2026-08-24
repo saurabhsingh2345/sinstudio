@@ -19,7 +19,7 @@ import { DeviceLayer } from "./DeviceLayer";
 import { LumaScope } from "./LumaScope";
 import { IconBtn } from "./TopBar";
 import { deviceLayout } from "../../device";
-import { backdropCSS, backdropLayout } from "../../backdrop";
+import { backdropCSS, backdropLayout, backdropShadow } from "../../backdrop";
 import { bubbleLayout } from "../../bubble";
 import { watermarkLayout, watermarkOpacity } from "../../watermark";
 import { trackBackgroundCSS } from "../../trackBackground";
@@ -34,6 +34,9 @@ import { playClicksBetween } from "../../clickAudio";
 import { activeVisuals, activeAudios, clipBox, cssFilter, audioLevel, upcomingVisuals } from "./preview-engine";
 import { cropLayout, fillsFrame, fitMode, isEmptyCrop, sourceSize } from "../../crop";
 import { CropOverlay, CropToolbar } from "./CropOverlay";
+import { barsAgainst, canvasForClip } from "../../matchCanvas";
+import { applyCanvas } from "../../setCanvas";
+import { toast } from "../../toast";
 import { RedactOverlay, RedactToolbar } from "./RedactOverlay";
 import { clampRedaction } from "../../redaction";
 import { CroppedMedia } from "./CroppedMedia";
@@ -106,6 +109,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
   const setPlayhead = useStudio((s) => s.setPlayhead);
   const addCue = useStudio((s) => s.addCue);
   const updateClip = useStudio((s) => s.updateClip);
+  const mutate = useStudio((s) => s.mutate);
   const beginTransient = useStudio((s) => s.beginTransient);
   const commitTransient = useStudio((s) => s.commitTransient);
   const croppingClip = useStudio((s) => s.croppingClip);
@@ -759,7 +763,7 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                 const g = backdropLayout(clip.backdrop, asset.width || W, asset.height || H, W, H);
                 const pct = (v: number, of: number) => `${(v / of) * 100}%`;
                 const k = box.vw / W;
-                const shadow = clip.backdrop.shadow || 0.55;
+                const shadow = backdropShadow(clip.backdrop);
                 return (
                   <div
                     key={clip.id}
@@ -986,20 +990,27 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
           </div>
         </div>
 
-        {/*
-          Clip tools, below the picture rather than on it.
+      </div>
 
-          Two reasons they are not hung off the selection box, which is where
-          they started. A screen recording fills the canvas, so its box IS the
-          frame and anything above that box lands outside the frame's
-          overflow-hidden — invisible in the commonest case there is. And the
-          edges a crop takes off are the top and bottom, so a bar floating there
-          covers the exact thing being aimed at.
+        {/*
+          Clip tools, in the layout flow BELOW the stage — not floating over it.
+
+          They used to be `absolute bottom-1 z-20` inside the stage area, which
+          put them over the frame's lower edge the moment the frame used the
+          height available (i.e. always), and CropToolbar wraps to two or three
+          rows on a narrow stage — growing upward into the picture and, at z-20,
+          swallowing the pointer events for the bottom crop grip. The edges a
+          crop takes off are the top and the bottom, so covering the bottom one
+          is covering half the tool.
+
+          As a flow row it cannot overlap at any size or wrap count: the stage
+          area is flex-1, so it gives up the height and the ResizeObserver
+          refits the frame.
         */}
         {selClip && selAsset && selAsset.kind !== "audio" && (
           <div
             onPointerDown={(e) => e.stopPropagation()}
-            className="absolute bottom-1 left-1/2 z-20 max-w-full -translate-x-1/2 px-2"
+            className="flex shrink-0 justify-center px-2 pb-1.5 pt-1"
           >
             {cropping ? (
               <CropToolbar
@@ -1007,11 +1018,23 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
                 crop={cropping.crop}
                 fit={cropping.fit}
                 canvasAspect={ratio}
+                matchTo={
+                  barsAgainst(selAsset, cropping, doc.canvas) !== "none"
+                    ? canvasForClip(selAsset, cropping, doc.canvas.fps)
+                    : null
+                }
                 onBegin={beginTransient}
                 onChange={(crop) =>
                   updateClip(selTrackId, cropping.id, { crop: isEmptyCrop(crop) ? undefined : crop })
                 }
                 onFit={(fit) => updateClip(selTrackId, cropping.id, { fit })}
+                onMatchCanvas={() => {
+                  const next = canvasForClip(selAsset, cropping, doc.canvas.fps);
+                  if (!next) return;
+                  void applyCanvas(doc, next, mutate, { matchedClipId: cropping.id }).then((sum) =>
+                    toast.success(`Canvas is now ${next.width}×${next.height}${sum ? ` — ${sum}` : ""}`)
+                  );
+                }}
                 onCommit={commitTransient}
                 onDone={() => setCroppingClip(null)}
               />
@@ -1049,7 +1072,6 @@ export function PreviewStage({ doc, aspect, selection, total }: { doc: EditDoc; 
             )}
           </div>
         )}
-      </div>
 
       <div className="flex h-11 shrink-0 items-center gap-3 border-y hairline bg-panel/60 px-3">
         <div className="flex items-center gap-1">

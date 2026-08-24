@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Check, RotateCcw } from "lucide-react";
+import { Check, Frame, RotateCcw } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { MIN_CROP_SPAN, cropPixels, cropToAspect, fullCrop, isEmptyCrop } from "../../crop";
@@ -259,9 +259,11 @@ export function CropToolbar({
   crop,
   fit,
   canvasAspect,
+  matchTo,
   onBegin,
   onChange,
   onFit,
+  onMatchCanvas,
   onCommit,
   onDone,
 }: {
@@ -269,9 +271,12 @@ export function CropToolbar({
   crop: Crop | undefined;
   fit: FitMode | undefined;
   canvasAspect: number;
+  /** The canvas that would make this clip fill the frame exactly, when it doesn't. */
+  matchTo: { width: number; height: number } | null;
   onBegin: () => void;
   onChange: (c: Crop) => void;
   onFit: (f: FitMode | undefined) => void;
+  onMatchCanvas: () => void;
   onCommit: () => void;
   onDone: () => void;
 }) {
@@ -336,6 +341,27 @@ export function CropToolbar({
           </button>
         ))}
       </div>
+
+      {/*
+        The fourth answer, next to the three fits rather than in a panel.
+
+        Fit / Fill / Stretch are all a choice about what to sacrifice; this is
+        the one that sacrifices nothing, and it belongs where that choice is
+        being made. Shown only when the shapes actually differ.
+      */}
+      {matchTo && (
+        <>
+          <Divider />
+          <button
+            type="button"
+            title={`Make the canvas ${matchTo.width}×${matchTo.height} so this clip fills it exactly — nothing cropped, no bars`}
+            onClick={onMatchCanvas}
+            className="flex items-center gap-1 rounded-md bg-brand px-1.5 py-0.5 font-medium text-brand-foreground"
+          >
+            <Frame className="h-3 w-3" /> Match canvas
+          </button>
+        </>
+      )}
 
       <Divider />
 

@@ -92,6 +92,13 @@ function even(v: number): number {
   return n < 2 ? 2 : n;
 }
 
+/** Matches evenOrigin() in device.go — a position may legitimately be 0. */
+function evenOrigin(v: number): number {
+  let n = Math.trunc(v);
+  if (n % 2 !== 0) n--;
+  return n < 0 ? 0 : n;
+}
+
 export interface DeviceBox {
   x: number;
   y: number;
@@ -127,8 +134,8 @@ export function deviceLayout(kind: string, canvasW: number, canvasH: number): De
   const spec = deviceSpec(kind);
   const b = deviceBox(kind, canvasW, canvasH);
   return {
-    x: even(b.x + spec.sx * b.w),
-    y: even(b.y + spec.sy * b.h),
+    x: evenOrigin(b.x + spec.sx * b.w),
+    y: evenOrigin(b.y + spec.sy * b.h),
     w: even(spec.sw * b.w),
     h: even(spec.sh * b.h),
   };
